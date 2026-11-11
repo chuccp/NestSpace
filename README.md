@@ -9,9 +9,9 @@
 
 NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔离的实例，并在自带桌面上启动、整理它们。运行时、桌面和 AI 助手统一位于主应用内；`plugin-api` 对外提供 Java 插件 SDK，`MCP` 控制服务则让 Claude Code 等外部客户端从电脑上驱动设备。
 
-[简体中文](https://chuccp.github.io/NestSpace/zh/) · [English](https://chuccp.github.io/NestSpace/en/) · [繁體中文](https://chuccp.github.io/NestSpace/tw/) · [日本語](https://chuccp.github.io/NestSpace/ja/)
+[简体中文](README.md) · [English](README.en.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
 
-仓库 README：[简体中文](README.md) · [English](README.en.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
+在线文档：[简体中文](https://chuccp.github.io/NestSpace/zh/) · [English](https://chuccp.github.io/NestSpace/en/) · [繁體中文](https://chuccp.github.io/NestSpace/tw/) · [日本語](https://chuccp.github.io/NestSpace/ja/)
 
 > ⚠️ NestSpace 是实验性项目，主要用于验证 AI 能力，不保证所安装 App 的兼容性和安全性。
 
