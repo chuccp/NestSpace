@@ -78,6 +78,7 @@ internal fun DesktopSlotCell(
     folderTarget: Boolean,
     onWallpaper: Boolean,
     tabletLayout: Boolean = false,
+    showUpdateBadge: Boolean = false,
     onLaunch: () -> Unit,
     onDragStart: (Int, Rect) -> Unit,
     onDrag: (Int, Offset) -> Unit,
@@ -149,7 +150,9 @@ internal fun DesktopSlotCell(
                     Box(Modifier.size(if (tabletLayout) 64.dp else 56.dp)) {
                         AppGlyph(
                             entry = slot.entry,
-                            modifier = Modifier.matchParentSize()
+                            modifier = Modifier.matchParentSize(),
+                            showUpdateBadge = showUpdateBadge &&
+                                slot.entry.kind == LauncherKind.SPACES
                         )
                     }
                     Spacer(Modifier.height(6.dp))
@@ -229,6 +232,7 @@ internal fun labelColor(onWallpaper: Boolean): Color =
 internal fun LauncherDock(
     entries: List<LauncherEntry>,
     onWallpaper: Boolean,
+    showUpdateBadge: Boolean = false,
     onLaunch: (LauncherEntry) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -254,7 +258,12 @@ internal fun LauncherDock(
                     .padding(vertical = 2.dp, horizontal = 2.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                AppGlyph(entry, Modifier.size(50.dp))
+                AppGlyph(
+                    entry = entry,
+                    modifier = Modifier.size(50.dp),
+                    showUpdateBadge = showUpdateBadge &&
+                        entry.kind == LauncherKind.SPACES
+                )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     entry.label,
@@ -270,72 +279,98 @@ internal fun LauncherDock(
 }
 
 @Composable
-internal fun AppGlyph(entry: LauncherEntry, modifier: Modifier = Modifier) {
-    if (entry.kind == LauncherKind.AGENT) {
-        // White rounded tile like the other launcher icons, with the assistant
-        // portrait cut out on a transparent background.
-        Box(
-            modifier = modifier
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color.White),
-            contentAlignment = Alignment.Center
-        ) {
+internal fun AppGlyph(
+    entry: LauncherEntry,
+    modifier: Modifier = Modifier,
+    showUpdateBadge: Boolean = false
+) {
+    Box(modifier = modifier) {
+        if (entry.kind == LauncherKind.AGENT) {
+            // White rounded tile like the other launcher icons, with the
+            // assistant portrait cut out on a transparent background.
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ai_assistant_cutout),
+                    contentDescription = entry.label,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        } else if (entry.icon != null) {
             Image(
-                painter = painterResource(R.drawable.ai_assistant_cutout),
+                bitmap = entry.icon,
                 contentDescription = entry.label,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(16.dp)),
                 contentScale = ContentScale.Crop
             )
+        } else if (entry.drawableRes != null) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(CircleShape)
+                    .background(Color(0xFFFDF6F0)),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(entry.drawableRes),
+                    contentDescription = entry.label,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        } else if (entry.vectorIcon != null) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surface),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    entry.vectorIcon,
+                    contentDescription = entry.label,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(30.dp)
+                )
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    entry.label.take(1),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
-        return
-    }
-    if (entry.icon != null) {
-        Image(
-            bitmap = entry.icon,
-            contentDescription = entry.label,
-            modifier = modifier.clip(RoundedCornerShape(16.dp)),
-            contentScale = ContentScale.Crop
-        )
-    } else if (entry.drawableRes != null) {
-        Box(
-            modifier = modifier
-                .clip(CircleShape)
-                .background(Color(0xFFFDF6F0)),
-            contentAlignment = Alignment.Center
-        ) {
-            Image(
-                painter = painterResource(entry.drawableRes),
-                contentDescription = entry.label,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
-        }
-    } else if (entry.vectorIcon != null) {
-        Box(
-            modifier = modifier
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surface),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                entry.vectorIcon,
-                contentDescription = entry.label,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(30.dp)
-            )
-        }
-    } else {
-        Box(
-            modifier = modifier
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                entry.label.take(1),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
+
+        if (showUpdateBadge) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(14.dp)
+                    .background(MaterialTheme.colorScheme.surface, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    Modifier
+                        .size(9.dp)
+                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                )
+            }
         }
     }
 }
@@ -453,6 +488,7 @@ internal fun FolderGlyph(
 @Composable
 internal fun FolderAppCell(
     entry: LauncherEntry,
+    showUpdateBadge: Boolean = false,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     onDragOut: () -> Unit
@@ -491,7 +527,12 @@ internal fun FolderAppCell(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(Modifier.size(52.dp)) {
-            AppGlyph(entry = entry, modifier = Modifier.matchParentSize())
+            AppGlyph(
+                entry = entry,
+                modifier = Modifier.matchParentSize(),
+                showUpdateBadge = showUpdateBadge &&
+                    entry.kind == LauncherKind.SPACES
+            )
         }
         Spacer(Modifier.height(5.dp))
         Text(

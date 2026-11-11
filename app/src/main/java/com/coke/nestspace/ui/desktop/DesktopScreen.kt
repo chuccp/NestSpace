@@ -116,6 +116,7 @@ internal fun DesktopScreen(
     onLaunchShortcut: (String, AppShortcut) -> Unit,
     loadShortcuts: suspend (String) -> List<AppShortcut>,
     onOpenRunning: () -> Unit,
+    showUpdateBadge: Boolean,
     onUninstallVirtual: (String) -> Unit,
     onDeleteVirtualInstance: (String, String) -> Unit,
     onOpenVirtualInstance: (String, String) -> Unit,
@@ -665,6 +666,7 @@ internal fun DesktopScreen(
                     folderTarget = folderTargetIndex == index,
                     onWallpaper = wallpaper != null,
                     tabletLayout = tabletLayout,
+                    showUpdateBadge = showUpdateBadge,
                     onLaunch = {
                         when (slot) {
                             is DesktopSlot.App -> launch(slot.entry)
@@ -765,6 +767,7 @@ internal fun DesktopScreen(
         LauncherDock(
             entries = dockEntries,
             onWallpaper = wallpaper != null,
+            showUpdateBadge = showUpdateBadge,
             onLaunch = { launch(it) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1106,6 +1109,7 @@ internal fun DesktopScreen(
                     ) { app ->
                         FolderAppCell(
                             entry = app,
+                            showUpdateBadge = showUpdateBadge,
                             onClick = {
                                 openFolderId = null
                                 launch(app)

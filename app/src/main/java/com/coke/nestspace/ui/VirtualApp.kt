@@ -129,12 +129,13 @@ import com.coke.nestspace.ui.agent.UserGateHost
 import com.coke.nestspace.ui.apps.AppManagerScreen
 import com.coke.nestspace.ui.apps.VirtualInstanceDetailScreen
 import com.coke.nestspace.browser.BrowserActivity
-import com.coke.nestspace.browser.BrowserProxyDialog
 import com.coke.nestspace.container.ContainerProcessPool
 import com.coke.nestspace.container.HeadlessMirrorWindow
 import com.coke.nestspace.ui.desktop.DesktopScreen
 import com.coke.nestspace.ui.running.RunningAppsScreen
 import com.coke.nestspace.ui.settings.AboutDetailScreen
+import com.coke.nestspace.ui.settings.AppProxyScreen
+import com.coke.nestspace.ui.settings.AppUpdateDetailScreen
 import com.coke.nestspace.ui.settings.AppearanceDetailScreen
 import com.coke.nestspace.ui.settings.ChildRunsScreen
 import com.coke.nestspace.ui.settings.FloatingDotDetailScreen
@@ -159,6 +160,8 @@ import com.coke.nestspace.ui.plugins.PluginCenterActivity
 import com.coke.nestspace.ui.settings.SettingsHomeScreen
 import com.coke.nestspace.ui.settings.SettingsCategory
 import com.coke.nestspace.location.MockLocationSettings
+import com.coke.nestspace.proxy.AppProxySettings
+import com.coke.nestspace.update.AppUpdateManager
 
 private enum class SpacesPage {
     ROOT,
@@ -189,6 +192,8 @@ private enum class SpacesPage {
     TOKEN_USAGE,
     PERMISSIONS,
     LANGUAGE,
+    APP_PROXY,
+    APP_UPDATE,
     ABOUT
 }
 
@@ -208,6 +213,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
     val llmTesting by viewModel.llmTesting.collectAsState()
     val agentBusy by viewModel.agentBusy.collectAsState()
     val mcpStatus by viewModel.mcpStatus.collectAsState()
+    val updateState by AppUpdateManager.state.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var spacesPage by remember { mutableStateOf(SpacesPage.ROOT) }
     var lastHomeBackAt by remember { mutableStateOf(0L) }
@@ -224,7 +230,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
     var instanceDetailPackage by remember { mutableStateOf("") }
     var instanceDetailId by remember { mutableStateOf("") }
     var instanceDetailFromDesktop by remember { mutableStateOf(false) }
-    var showBrowserProxyDialog by remember { mutableStateOf(false) }
+    var updatePromptArmed by remember { mutableStateOf(false) }
+    var showUpdatePrompt by remember { mutableStateOf(false) }
     val apkMimeTypes = arrayOf(
         "application/vnd.android.package-archive",
         "application/octet-stream"
@@ -246,6 +253,9 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
             viewModel.startMcp()
         }
     val context = LocalContext.current
+    var appProxyConfig by remember(context) {
+        mutableStateOf(AppProxySettings.load(context))
+    }
     LaunchedEffect(viewModel, context) {
         viewModel.llmToast.collect { message ->
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
@@ -287,6 +297,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
         locationSimulation = MockLocationSettings.load(context)
         permissionLevel = ToolPermissionSettings.load(context)
         customPermissions = ToolPermissionSettings.customCategories(context)
+        appProxyConfig = AppProxySettings.load(context)
     }
     val startMcp: () -> Unit = {
         val needsNotificationPermission =
@@ -302,6 +313,24 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
 
     LaunchedEffect(Unit) {
         DesktopNavigation.requests.collect { tab = 0 }
+    }
+    LaunchedEffect(context) {
+        updatePromptArmed = AppUpdateManager.checkOncePerDay(context).hasUnreadUpdate
+    }
+    LaunchedEffect(
+        updateState.release?.version,
+        updateState.skippedVersion,
+        updatePromptArmed,
+        showModelOnboarding
+    ) {
+        if (!showModelOnboarding &&
+            updatePromptArmed &&
+            AppUpdateManager.shouldPrompt(context, updateState)
+        ) {
+            AppUpdateManager.markPrompted(context, updateState)
+            updatePromptArmed = false
+            showUpdatePrompt = true
+        }
     }
     LaunchedEffect(Unit) {
         val openModelSettings = {
@@ -476,7 +505,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
             ) -> spacesPage = SpacesPage.SETTINGS_ASSISTANT
             spacesPage in setOf(
                 SpacesPage.APPEARANCE,
-                SpacesPage.LANGUAGE
+                SpacesPage.LANGUAGE,
+                SpacesPage.APP_PROXY
             ) -> spacesPage = SpacesPage.SETTINGS_SYSTEM
             spacesPage == SpacesPage.SETTINGS_CONTAINER_ADVANCED ->
                 spacesPage = SpacesPage.SETTINGS_APPS
@@ -547,6 +577,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
             SpacesPage.TOKEN_USAGE -> AppLanguage.tr("Token 统计", "Token usage")
             SpacesPage.PERMISSIONS -> AppLanguage.tr("权限级别", "Permissions")
             SpacesPage.LANGUAGE -> AppLanguage.tr("语言", "Language")
+            SpacesPage.APP_PROXY -> AppLanguage.tr("应用网络代理", "App network proxy")
+            SpacesPage.APP_UPDATE -> AppLanguage.tr("App 更新", "App update")
             SpacesPage.ABOUT -> AppLanguage.tr("关于", "About")
         }
         tab == 2 -> AppLanguage.tr("AI 助手", "AI assistant")
@@ -614,6 +646,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                     onLaunchShortcut = viewModel::launchAppShortcut,
                     loadShortcuts = viewModel::loadAppShortcuts,
                     onOpenRunning = { tab = 3 },
+                    showUpdateBadge = updateState.hasUnreadUpdate,
                     onUninstallVirtual = viewModel::uninstallVirtual,
                     onDeleteVirtualInstance = viewModel::deleteVirtualInstance,
                     onOpenVirtualInstance = { packageName, instanceId ->
@@ -656,7 +689,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                             onOpenApps = { spacesPage = SpacesPage.APPS },
                             onOpenHostControl = { spacesPage = SpacesPage.HOST_CONTROL },
                             onOpenLocationSimulation = { spacesPage = SpacesPage.LOCATION },
-                            onOpenBrowserProxy = { showBrowserProxyDialog = true },
+                            appProxy = appProxyConfig,
+                            onOpenAppProxy = { spacesPage = SpacesPage.APP_PROXY },
                             onOpenServices = { spacesPage = SpacesPage.SERVICES },
                             onOpenAppearance = { spacesPage = SpacesPage.APPEARANCE },
                             onOpenFloatingDot = { spacesPage = SpacesPage.FLOATING_DOT },
@@ -676,6 +710,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                             onOpenSlots = { spacesPage = SpacesPage.SLOTS },
                             onOpenSelfCheck = { spacesPage = SpacesPage.SELF_CHECK },
                             onOpenLanguage = { spacesPage = SpacesPage.LANGUAGE },
+                            updateState = updateState,
+                            onOpenUpdate = { spacesPage = SpacesPage.APP_UPDATE },
                             onOpenAbout = { spacesPage = SpacesPage.ABOUT },
                             onOpenCategory = { category ->
                                 spacesPage = when (category) {
@@ -689,11 +725,6 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                                 }
                             }
                         )
-                        if (showBrowserProxyDialog) {
-                            BrowserProxyDialog(
-                                onDismiss = { showBrowserProxyDialog = false }
-                            )
-                        }
                     }
 
                     SpacesPage.APPS -> AppManagerScreen(
@@ -849,6 +880,23 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                         onSelect = { AppLanguage.setMode(context, it) }
                     )
 
+                    SpacesPage.APP_PROXY -> AppProxyScreen()
+
+                    SpacesPage.APP_UPDATE -> AppUpdateDetailScreen(
+                        state = updateState,
+                        onCheck = {
+                            uiScope.launch {
+                                AppUpdateManager.checkNow(context)
+                            }
+                        },
+                        onDownload = { AppUpdateManager.openDownload(context) },
+                        onOpenRelease = { AppUpdateManager.openReleasePage(context) },
+                        onSkip = { AppUpdateManager.skipCurrentVersion(context) },
+                        onRestoreSkipped = {
+                            AppUpdateManager.restoreSkippedVersion(context)
+                        }
+                    )
+
                     SpacesPage.ABOUT -> AboutDetailScreen()
                 }
 
@@ -918,6 +966,51 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                 tab = 1
             },
             onSkip = completeModelOnboarding
+        )
+    }
+
+    val updateRelease = updateState.release
+    if (showUpdatePrompt && updateRelease != null) {
+        AlertDialog(
+            onDismissRequest = { showUpdatePrompt = false },
+            title = {
+                Text(AppLanguage.tr("发现新版本", "Update available"))
+            },
+            text = {
+                Text(
+                    AppLanguage.tr(
+                        "NestSpace ${updateRelease.tagName} 已发布。前往 App 更新页查看更新内容并下载。",
+                        "NestSpace ${updateRelease.tagName} is available. Open App update " +
+                            "to review the release and download it."
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showUpdatePrompt = false
+                        spacesPage = SpacesPage.APP_UPDATE
+                        tab = 1
+                    }
+                ) {
+                    Text(AppLanguage.tr("去更新", "Update"))
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            AppUpdateManager.skipCurrentVersion(context)
+                            showUpdatePrompt = false
+                        }
+                    ) {
+                        Text(AppLanguage.tr("跳过此版本", "Skip"))
+                    }
+                    TextButton(onClick = { showUpdatePrompt = false }) {
+                        Text(AppLanguage.tr("稍后", "Later"))
+                    }
+                }
+            }
         )
     }
 

@@ -12,6 +12,7 @@ import com.coke.nestspace.container.ContainerProcessPool
 import com.coke.nestspace.container.ContainerSessions
 import com.coke.nestspace.container.identity.HostIdentity
 import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.proxy.AppProxyManager
 import com.coke.nestspace.runtime.RuntimeHostIdentity
 import com.coke.nestspace.runtime.RuntimeHostHooks
 import com.coke.nestspace.task.OperationTaskRegistry
@@ -44,6 +45,10 @@ class NestSpaceApp : Application() {
         // Slot processes render container error screens too; every process
         // needs the persisted language.
         AppLanguage.init(this)
+        runCatching { AppProxyManager.applySaved(this) }
+            .onFailure {
+                android.util.Log.w("NestSpaceApp", "app proxy initialization failed", it)
+            }
         runCatching {
             com.coke.nestspace.plugin.PluginSourceLoader
                 .restoreBundled(this)

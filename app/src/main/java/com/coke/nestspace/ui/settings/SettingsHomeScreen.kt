@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
@@ -61,6 +62,8 @@ import com.coke.nestspace.agent.ToolPermissionLevel
 import com.coke.nestspace.i18n.AppLanguage
 import com.coke.nestspace.i18n.AppLanguageMode
 import com.coke.nestspace.location.MockLocationSettings
+import com.coke.nestspace.proxy.AppProxySettings
+import com.coke.nestspace.update.AppUpdateState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
@@ -87,7 +90,8 @@ internal fun SettingsHomeScreen(
     onOpenApps: () -> Unit,
     onOpenHostControl: () -> Unit,
     onOpenLocationSimulation: () -> Unit,
-    onOpenBrowserProxy: () -> Unit,
+    appProxy: AppProxySettings.Config,
+    onOpenAppProxy: () -> Unit,
     onOpenServices: () -> Unit,
     onOpenAppearance: () -> Unit,
     onOpenFloatingDot: () -> Unit,
@@ -104,6 +108,8 @@ internal fun SettingsHomeScreen(
     onOpenSlots: () -> Unit,
     onOpenSelfCheck: () -> Unit,
     onOpenLanguage: () -> Unit,
+    updateState: AppUpdateState,
+    onOpenUpdate: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenCategory: (SettingsCategory) -> Unit
 ) {
@@ -225,6 +231,30 @@ internal fun SettingsHomeScreen(
                             title = AppLanguage.tr("关于", "About"),
                             summary = AppLanguage.tr("版本 $versionName", "Version $versionName"),
                             onClick = onOpenAbout
+                        )
+                        HorizontalDivider(Modifier.padding(start = 68.dp))
+                        SettingsMenuRow(
+                            icon = Icons.Default.SystemUpdateAlt,
+                            title = AppLanguage.tr("App 更新", "App update"),
+                            summary = when {
+                                updateState.checking || updateState.currentVersion.isBlank() ->
+                                    AppLanguage.tr("正在检查更新…", "Checking for updates…")
+                                updateState.release == null && updateState.error != null ->
+                                    AppLanguage.tr("检查失败", "Check failed")
+                                updateState.release == null ->
+                                    AppLanguage.tr("已是最新版本", "Up to date")
+                                updateState.skippedVersion == updateState.release.version ->
+                                    AppLanguage.tr(
+                                        "已跳过 ${updateState.release.tagName}",
+                                        "Skipped ${updateState.release.tagName}"
+                                    )
+                                else -> AppLanguage.tr(
+                                    "发现新版本 ${updateState.release.tagName}",
+                                    "Version ${updateState.release.tagName} available"
+                                )
+                            },
+                            showBadge = updateState.hasUnreadUpdate,
+                            onClick = onOpenUpdate
                         )
                     }
                 }
@@ -498,12 +528,23 @@ internal fun SettingsHomeScreen(
                     SettingsGroup(AppLanguage.tr("网络", "Network")) {
                         SettingsMenuRow(
                             icon = Icons.Default.Language,
-                            title = AppLanguage.tr("浏览器代理", "Browser proxy"),
-                            summary = AppLanguage.tr(
-                                "HTTP/SOCKS 代理 · 所有标签页共用",
-                                "HTTP/SOCKS proxy shared by all tabs"
-                            ),
-                            onClick = onOpenBrowserProxy
+                            title = AppLanguage.tr("应用网络代理", "App network proxy"),
+                            summary = if (appProxy.enabled) {
+                                AppLanguage.tr(
+                                    "${appProxy.type.uppercase()} · " +
+                                        "${appProxy.host}:${appProxy.port} · " +
+                                        "${AppProxySettings.bypassRules(appProxy).size} 条直连",
+                                    "${appProxy.type.uppercase()} · " +
+                                        "${appProxy.host}:${appProxy.port} · " +
+                                        "${AppProxySettings.bypassRules(appProxy).size} direct"
+                                )
+                            } else {
+                                AppLanguage.tr(
+                                    "未启用 · 应用请求直连",
+                                    "Off · app requests connect directly"
+                                )
+                            },
+                            onClick = onOpenAppProxy
                         )
                     }
                 }
@@ -536,6 +577,7 @@ private fun SettingsMenuRow(
     icon: ImageVector,
     title: String,
     summary: String,
+    showBadge: Boolean = false,
     onClick: () -> Unit
 ) {
     Row(
@@ -545,19 +587,36 @@ private fun SettingsMenuRow(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(20.dp)
-            )
+        Box(Modifier.size(36.dp)) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            if (showBadge) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(13.dp)
+                        .background(MaterialTheme.colorScheme.surface, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .size(9.dp)
+                            .background(MaterialTheme.colorScheme.error, CircleShape)
+                    )
+                }
+            }
         }
         Spacer(Modifier.width(12.dp))
         Column(

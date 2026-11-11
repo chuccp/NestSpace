@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 
 /** Downloads a browser resource into the system Downloads collection. */
@@ -88,7 +89,9 @@ object BrowserDownloader {
             val connection = (if (proxy != null) {
                 remote.openConnection(proxy)
             } else {
-                remote.openConnection()
+                // Browser traffic follows the browser's own proxy setting; the
+                // app-wide proxy must not leak into WebView downloads.
+                remote.openConnection(Proxy.NO_PROXY)
             } as HttpURLConnection).apply {
                 // Follow redirects manually so a cookie for one site is never
                 // forwarded to a different host (HttpURLConnection otherwise
