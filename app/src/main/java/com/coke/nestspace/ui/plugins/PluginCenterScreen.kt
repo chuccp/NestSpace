@@ -1853,7 +1853,7 @@ private fun PluginDescriptor.matches(
 }
 
 private fun PluginManifest.exportFileName(): String =
-    "$id-$version.nestplugin"
+    "$id-$version.nest"
         .replace(Regex("[^A-Za-z0-9._-]"), "_")
 
 private fun Set<PluginCapability>.matchesCategory(

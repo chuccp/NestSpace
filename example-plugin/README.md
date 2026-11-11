@@ -18,7 +18,7 @@
 
 ## 直接拉源码开发（推荐）
 
-不需要先生成 `.nestplugin`。NestSpace 在 Debug 构建中会自动发现：
+不需要先生成 `.nest`。NestSpace 在 Debug 构建中会自动发现：
 
 ```bash
 example-plugin/plugin
@@ -34,7 +34,7 @@ Android Studio 的 Run / Apply Changes。也可以在命令行运行：
 ```
 
 插件会出现在“插件中心 → 已安装 → 源码开发插件”。这条路径不生成
-`.nestplugin`，不执行 DEX 工具，也不使用 `DexClassLoader`。
+`.nest`，不执行 DEX 工具，也不使用 `DexClassLoader`。
 
 源码插件的 assets 会自动隔离到：
 
@@ -43,7 +43,7 @@ assets/plugins-dev/com.example.runtime.demo/
 ```
 
 因此多个插件可以同时包含同名 `manifest.json`、`icons/` 和 `pages/`。Debug
-启动时，宿主先加载源码插件，再恢复外部 `.nestplugin`；同 ID 的外部包会被遮蔽，
+启动时，宿主先加载源码插件，再恢复外部 `.nest`；同 ID 的外部包会被遮蔽，
 避免重复注册和目标启动策略冲突。
 
 开发自己的插件时，复制 `example-plugin/plugin` 到 `dev-plugins/my-plugin`，
@@ -61,7 +61,7 @@ assets/plugins-dev/com.example.runtime.demo/
 产物：
 
 ```text
-build/plugin-packages/runtime-demo-plugin.nestplugin
+build/plugin-packages/runtime-demo-plugin.nest
 ```
 
 在 NestSpace 桌面打开“插件中心 → 从文件安装”即可安装。
@@ -70,14 +70,11 @@ build/plugin-packages/runtime-demo-plugin.nestplugin
 
 示例使用全零测试指纹，只返回 `CONTAINER` 策略，不包含目标应用逻辑。
 
-运行时代理可以使用稳定的 `plugin-api` 和 `runtime-api`，也可以按需要提供
-目标相关的兼容策略。
-
-目标专用运行时代理只依赖稳定的 `plugin-api` 和 `runtime-api`。源码模式
-下这两个模块由宿主直接提供，插件开发者无需额外打包 SDK。
+运行时代理只依赖稳定的 `plugin-api`，也可以按需要提供目标相关的兼容策略。
+源码模式下该模块由宿主直接提供，插件开发者无需额外打包 SDK。
 
 ## 源码插件分享
 
-Debug 构建会自动把源码插件编译成一份仅供分享/导出的 `.nestplugin` 资源，
+Debug 构建会自动把源码插件编译成一份仅供分享/导出的 `.nest` 资源，
 同时运行时仍然直接加载源码 ClassLoader。长按源码插件图标即可分享或导出，
 不需要开发者手动执行 `packagePlugin`。

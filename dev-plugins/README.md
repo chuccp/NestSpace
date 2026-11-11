@@ -35,7 +35,7 @@ cp -R example-plugin/plugin dev-plugins/my-plugin
 4. 图标、页面及 contribution 文件中的应用信息。
 
 源码插件只需要让 Android Studio 执行 Run 或 Apply Changes。它们随 Debug APK
-编译，不生成、不安装 `.nestplugin`，也不需要先构建 `plugin-api` AAR。
+编译，不生成、不安装 `.nest`，也不需要先构建 `plugin-api` AAR。
 
 模块的 `plugin-assets` 必须继续作为 assets 源。示例中的 Gradle 脚本会自动把
 它映射到：
@@ -48,8 +48,8 @@ assets/plugins-dev/<plugin-id>/
 多个插件会发生资源覆盖。
 
 源码插件仅进入 Debug 构建。Release 构建不会自动带上这些模块，独立分发时仍需
-生成带签名的 `.nestplugin`。
+生成带签名的 `.nest`。
 
-Debug 构建还会自动生成一份源码插件的 `.nestplugin` 分享资产。插件中心长按源码
+Debug 构建还会自动生成一份源码插件的 `.nest` 分享资产。插件中心长按源码
 插件可以直接“分享”或“导出”，不需要手工运行打包任务。正式发布版本仍应使用
 独立签名流程。

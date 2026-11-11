@@ -35,7 +35,10 @@ When the assistant calls `browser_open`, `headless=true` is the default:
 - Downloads triggered by a page are saved to the system **Download** directory.
 - On Android 10+, they are saved through MediaStore, returning the file name, path, size, and a `content://` URI.
 - A downloaded APK can be selected directly in **App management → Import APK**, or passed to `space_install_apk`.
-- The assistant can call `browser_download` to download a URL directly, or wait for a page-triggered download to finish.
+- The assistant starts a URL download with `browser_download`; it immediately returns `download_id` and `task_id`.
+- Use `task_wait` until `terminal=true`. Only `state=succeeded` means success; a timeout does not cancel the download.
+- `browser_download_status` returns detailed byte, percentage, and file information when needed.
+- Each assistant session keeps one current download. Starting a replacement cancels that session's previous download, while user downloads and other sessions can continue.
 
 ## Uploads
 

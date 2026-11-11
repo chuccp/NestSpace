@@ -4,19 +4,33 @@ Entry point: **Space settings → App management**.
 
 ![App management and multiple instances](screenshots/app-manager.jpg)
 
-This page is divided into three sections:
+The page has two add actions:
 
-1. **Install & import**: Import APK, Import desktop apps, Test APK.
-2. **Virtual apps**: Apps that have been installed inside NestSpace.
-3. **Desktop apps**: System apps currently placed on the desktop.
+1. **Import app**: Select APKs already installed on the host device and install copies into the virtual space.
+2. **Import APK**: Select a local APK or all files of a split APK.
 
-## Import APK
+Every imported app becomes a NestSpace virtual app with its own instances and data directories. The current UI no longer distinguishes "virtual apps" from desktop shortcuts and does not create system-app shortcuts.
+
+## Import an app installed on the host
+
+1. Tap **Import app**.
+2. NestSpace lists importable host apps.
+3. Select one or more apps.
+4. Tap **Import**.
+
+- Only the host APK is imported. Accounts, private data, and sign-in state are not copied.
+- The first launch creates **Instance 1**.
+- If the package already exists, the list warns that it will be overwritten.
+- Overwriting still validates the signature, minimum system version, and container compatibility.
+- System-level apps such as Gmail may be importable, but their runtime depends on system services and native libraries.
+
+## Import an APK
 
 1. Tap **Import APK**.
 2. Select the APK in the system file picker.
-3. Wait for parsing and installation to finish.
+3. Wait for parsing, copying, and installation.
 
-For a regular app, selecting a single APK is enough. For a split app, select all files at once:
+For a split app, select all files at once:
 
 ```text
 base.apk
@@ -27,117 +41,66 @@ split_config.xxhdpi.apk
 
 Selecting only the base leaves out code, native libraries, or resources, and the app may fail at launch.
 
-The import process performs the following checks:
-
 | Check | Behavior on failure |
 | --- | --- |
-| Package name | Rejects installation |
-| Signature consistency | If a record exists for the same package name but the signature differs, returns `SIGNATURE_MISMATCH` |
-| `minSdk` | Rejects installation if it is higher than the current system version |
-| `REQUIRE_SECURE_ENV` | Returns `SECURE_ENV_REQUIRED` if the target declares a secure environment requirement |
-| ABI | Installation succeeds; at launch, returns `ABI_MISMATCH` if there is no matching native library |
+| Package name | Reject installation |
+| Signature consistency | Return `SIGNATURE_MISMATCH` when the same package has a different signature |
+| `minSdk` | Reject when it is higher than the current system version |
+| `REQUIRE_SECURE_ENV` | Return `SECURE_ENV_REQUIRED` when the target requires a secure environment |
+| ABI | Installation can succeed; launch returns `ABI_MISMATCH` when no matching native library exists |
 
-After a successful install:
+## Virtual apps and instances
 
-- The APK is copied into NestSpace's app-private directory and no longer depends on the original file.
-- The app appears on the desktop and in the **Virtual apps** list.
-- The installation record is persisted and remains after restarting the app.
+Each app row shows its icon, name, package, version, instances, launch and duplicate actions, uninstall action, and native-library state when present.
 
-## Virtual apps list
+- Tap an instance to launch it.
+- Tap **Launch** to use the most recently selected instance.
+- Tap **Duplicate** to create another independent instance.
 
-Each app has one row containing:
+Each instance has separate `files`, `cache`, `code_cache`, `databases`, `getDir`, SharedPreferences, and native-library extraction directories. Instances cannot read each other's data.
 
-- The app icon, name, package name, and version.
-- An instance selector (**Instance 1**, **Instance 2**, ...).
-- **Launch**: Opens the currently selected instance.
-- **Duplicate**: Creates a new instance and launches it.
-- **Uninstall**: Deletes the APK and all instance data.
+### Instance details
 
-The first time an app is launched, **Instance 1** is created automatically. After that, tapping **Duplicate** creates instances 2, 3, and so on.
+Tap an instance to open its detail page. It shows the instance ID, creation time, last launch, environment version, compatibility settings, last probe, and actual data directory.
 
-### Instance and data isolation
+**Clear this instance's data** resets only that instance. Other instances of the same app and the installed APK are kept.
 
-Each instance has its own:
+### Simultaneous app limit
 
-- `files`
-- `cache`
-- `code_cache`
-- `databases`
-- `getDir`
-- SharedPreferences namespace
-- Native library extraction directory
-
-As a result, the same app can be signed in to two accounts at the same time, and the two instances cannot read each other's data. Instances of different apps are isolated from each other as well.
-
-Data directory structure:
-
-```text
-/data/user/0/com.coke.nestspace/files/vspace/
-  apps/<package>/...         Installed APKs
-  data/<package>/<instance>/ Instance data
-```
-
-### Number of apps that can run at once
-
-The container process pool is managed automatically by default and has a maximum of 16 slots. When memory is tight, the least recently used background container is closed; foreground containers are not closed. You can also set a fixed limit (1–16) in **Space settings → Container slots**.
-
-## Import desktop apps
-
-**Import desktop apps** only affects what is shown on the desktop; it does not copy or install apps:
-
-1. Tap **Import desktop apps**.
-2. Select the installed apps you need.
-3. Clear a selection to remove that app from the desktop.
-
-Virtual apps do not need to be selected; they appear automatically after installation.
-
-## Test APK
-
-**Test APK** is a shortcut for developers to verify container capabilities. It does not open a file picker; instead, it reads a fixed file from the external files directory:
-
-```text
-/sdcard/Android/data/com.coke.nestspace/files/stage-b-test.apk
-```
-
-Push the `testapp-debug.apk` produced by the repository to this path, then tap **Test APK**. Regular users can simply use **Import APK** to select any APK and do not need this entry point.
-
-testapp includes test pages for multiple Activity navigation, Service, Provider, broadcast, Job, PackageManager, and instance isolation. It is useful for confirming that container features work correctly.
+The process pool is managed automatically by default and has up to 16 slots. When memory is tight, the least recently used background container is closed; foreground containers are kept. A fixed limit from 1–16 can be selected in **Space settings → Apps & containers → Container slots**.
 
 ## Uninstall
 
-Uninstalling a virtual app deletes:
+Uninstalling a virtual app deletes its APK, every instance, instance data, caches, databases, and SharedPreferences under the NestSpace namespace. This cannot be undone.
 
-- The installed APK;
-- All instances;
-- All instance data, caches, and databases;
-- The app's SharedPreferences under the NestSpace namespace.
-
-This operation cannot be undone. System apps can be hidden with **Remove from desktop** in the desktop long-press menu without deleting any data; virtual apps currently do not have a separate hide option.
+Plugin data uses a separate boundary. Uninstalling a virtual app does not delete plugins, and deleting a plugin does not delete virtual apps.
 
 ## Common installation issues
 
 ### `SIGNATURE_MISMATCH`
 
-An APK with a different signature was previously installed under the same package name. Uninstall the old app before installing, or rebuild the APK with the same signature.
+An APK with a different signature was previously installed under the same package. Uninstall the old app or rebuild with the same signature.
 
 ### `SECURE_ENV_REQUIRED`
 
-The target app declares `REQUIRE_SECURE_ENV` in its manifest. NestSpace is not the secure environment it requires, so installation is currently rejected.
+The target requires a secure environment that NestSpace does not provide, so installation is rejected.
 
 ### `ABI_MISMATCH`
 
-The APK contains native libraries only for arm64 or armeabi-v7a, and the current device architecture does not match. Use a physical device with the corresponding architecture, or use a package that includes the matching ABI.
+The APK's native ABIs do not match the device or selected runtime. Use a matching package; ARM64 devices and ARM-translation emulators should normally use the arm64 host APK.
 
 ### Black screen or crash after launch
 
-This is usually an app compatibility issue, such as app hardening, a native SDK, dynamic loading, or dependency conflicts. First run **Space settings → Container self-check**, then submit an issue to the project with the app version and error information.
+This is usually caused by app hardening, native SDKs, dynamic loading, or dependency conflicts. Run **Space settings → Apps & containers → Container advanced → Container self-check** and include the app version, error, and self-check report when reporting an issue.
 
-### Install succeeds but there is no desktop icon
+### Installed but no desktop icon
 
-Go to **Space settings → App management** and check whether the app is in the **Virtual apps** list, then launch it there. System apps must first be selected under **Import desktop apps**.
+Check the app under **Space settings → App management** and launch it there. A reset or damaged desktop layout can hide the icon without removing the app.
 
 ## Related documentation
 
-- [Container slots and Permissions](settings.md)
+- [Settings](settings.md)
+- [Desktop & appearance](desktop.md)
 - [Architecture & limitations](architecture.md)
 - [Troubleshooting](troubleshooting.md)
+- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)

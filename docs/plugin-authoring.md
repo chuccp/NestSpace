@@ -76,12 +76,12 @@ Android View，以及完整的插件设置页面。
 断点和普通日志都可以直接使用。开发者修改 Java 或资源后，不需要先执行
 `packagePlugin`。
 
-安装包插件使用 `.nestplugin`。打开这个 ZIP 后，根目录有 `manifest.json` 和
+安装包插件使用 `.nest`。打开这个 ZIP 后，根目录有 `manifest.json` 和
 `classes.dex`，其余内容是图标、页面和贡献文件。宿主把安装包解压到私有目录，把
 `classes.dex` 包装成只读 `code.jar`，再通过 `DexClassLoader` 创建入口类。应用重启后，
 安装器会重新扫描已安装目录并恢复插件。
 
-Debug 构建还会为源码插件自动生成一份仅供分享和导出的 `.nestplugin`。运行时仍然使用
+Debug 构建还会为源码插件自动生成一份仅供分享和导出的 `.nest`。运行时仍然使用
 源码 ClassLoader，分享资产只用于把插件交给其他设备。因此源码开发不要求手工打包，
 但插件中心仍然可以从长按菜单分享、导出、停用或重新启用它。
 
@@ -1033,7 +1033,7 @@ Activity Hook。Profile 必须同时校验包名、`versionCode` 和需要的关
 
 插件中心长按菜单包含启用/停用、设置、重命名、分享和导出。停用后插件仍保留在网格中，
 但图标变暗并显示“停用”角标；再次长按即可启用。第三方安装包还支持删除。源码插件的
-分享和导出使用 Debug 构建自动生成的 `.nestplugin`，因此不需要开发者先手动打包。
+分享和导出使用 Debug 构建自动生成的 `.nest`，因此不需要开发者先手动打包。
 删除第三方插件会清理插件包、私有存储、缓存、SQLite、设置和密钥密文。
 
 系统内置模块仍在宿主内部按设置运行，但不会显示为插件中心列表项。它们不是可删除的
@@ -1066,7 +1066,7 @@ Capability。网络 Host 被拒绝，说明 `host_permissions` 缺失。设置�
 ## 15. 分享、导出和发布
 
 开发阶段不需要手工生成安装包。插件中心的“分享”会创建一个临时
-`<plugin-id>-<version>.nestplugin`，通过系统分享面板交给其他应用。“导出”会让用户
+`<plugin-id>-<version>.nest`，通过系统分享面板交给其他应用。“导出”会让用户
 选择保存位置。两者都要求包内有 `manifest.json` 和 `classes.dex`。
 
 如果插件需要走独立构建流程，示例模块包含 `packagePlugin` 任务：
@@ -1075,7 +1075,7 @@ Capability。网络 Host 被拒绝，说明 `host_permissions` 缺失。设置�
 ./gradlew :dev-plugin-hello:packagePlugin
 ```
 
-复制示例后要修改 `archiveFileName`，避免仍输出 `runtime-demo-plugin.nestplugin`。
+复制示例后要修改 `archiveFileName`，避免仍输出 `runtime-demo-plugin.nest`。
 正式发布前还要确定插件签名、版本升级、回滚和权限确认策略。当前安装器是开发版，
 发布者签名、信任等级和插件进程隔离尚未完成。
 

@@ -12,22 +12,11 @@ The AI assistant can observe virtual apps in NestSpace, tap the interface, enter
 
 The desktop assistant and the voice assistant share the same conversation history, so you can keep asking follow-up questions.
 
-## Two operating modes
+## Model required
 
-### Rule mode (default)
+The current version does not include an offline rule-based Agent. Until a usable model is configured, the assistant shows a disconnected state and configuration button, and it does not execute commands or tool calls.
 
-When no model is configured, the built-in rule-based Agent is used. It can perform simple fixed commands, such as:
-
-- Observe the current interface;
-- Open settings;
-- Tap a piece of text;
-- Back, home, screenshot.
-
-Rule mode does not access the network and is useful for quickly verifying that container control works correctly.
-
-### Large model mode
-
-After configuring an endpoint in **Space settings → Model settings**, the assistant uses a large model to plan steps and call tools. Supports:
+After configuring an endpoint in **Space settings → Model settings**, the assistant uses the model to plan steps and call tools. Supports:
 
 - **Claude-compatible**: `POST /v1/messages`, using native `tools` / `tool_use` / `tool_result`.
 - **OpenAI-compatible**: `POST /v1/chat/completions`, using native `tool_calls` / `tool` messages.
@@ -40,25 +29,46 @@ You can save multiple configurations and switch between them at any time. Each c
 
 | Field | Description |
 | --- | --- |
+| Name | Display name for the configuration |
 | Protocol | Claude-compatible / OpenAI-compatible |
 | Base URL | Endpoint address, for example `https://api.anthropic.com` |
 | API Key | Write-only field, encrypted with the Android Keystore |
 | Model | Model name required by the endpoint |
 | Context size | Context token limit; default 800000, minimum 100000 |
+| Max output | Visible output budget, excluding reasoning |
+| Temperature | 0–2 |
 | Max tool rounds | Maximum number of tool calls per conversation turn; default 128 |
+| Thinking level | Quick / light / standard / deep |
+| Streaming | On by default; disable it to wait for the complete response |
 
 After saving, tap **Test connection** to send a real request and confirm that the address, Key, and model are usable.
+Common compatible endpoints provide presets that fill Base URL and model automatically. A Claude-compatible endpoint automatically receives `/v1/messages` when the version path is missing.
+
+Plugin model providers use `plugin://<provider-id>` as the Base URL and the model ID returned by the plugin. Their API Key field may be left empty because the plugin owns the upstream credentials.
 
 The system prompt is a global setting, available under **Space settings → System prompt**, and is shared by all models. At runtime, the current time, memories, skill index, and tool rules are also appended automatically.
+
+## Application display modes
+
+Local assistant launches and in-app actions use a headless mirror by default. The assistant page shows a square mirror window while it operates the app. Call `hand_to_user` when login, CAPTCHA, payment, permission approval, or another user-only decision is required. If the task remains idle for 10 seconds after it finishes, the mirror and target process close together.
+
+MCP callers and assistant task tools can choose:
+
+- `background`: headless with no app or mirror window;
+- `mirror`: headless with the square mirror window;
+- `visible`: open the app normally.
+
+Only one managed mirror is retained at a time. Assistant-controlled apps stay in the mirror unless visible mode or `hand_to_user` is explicitly requested.
 
 ## Chat interface
 
 - The message stream shows user messages, assistant messages, and errors.
-- Replies use streaming output, with text displayed as it is generated; a spinner is shown while waiting for the first content.
-- Tool calls are displayed as expandable cards with their running status in real time, and you can view parameters and results.
+- Replies use streaming output by default; it can be disabled in each model configuration.
+- Tool calls are displayed as expandable cards with running status, parameters, and results.
 - Replies support basic Markdown, code blocks, copying, and text selection.
+- Browser downloads show progress, speed, and remaining time in the conversation and task center.
 - You can start a new conversation and return to the welcome page and quick task cards.
-- Conversation history keeps recent message turns, and every model request includes the context.
+- **History** opens saved runs that can be restored or deleted.
 
 ![Assistant performing a multi-step task](screenshots/assistant-task.jpg)
 
@@ -80,12 +90,24 @@ For supported models, native parameters are also sent: Claude uses `thinking.bud
 The assistant can use:
 
 - `space_*`: List, install, launch, duplicate, uninstall, stop, and manage permissions;
-- `ui_*`: Observe the view tree, tap, input, wait, take screenshots, and go back;
+- `ui_*`: Observe nodes, tap, input, and go back; `ui_observe` optionally includes a screenshot;
 - `browser_*`: Open tabs, read pages, click, download, upload, and hand to user;
+- `task_list` / `task_status` / `task_wait` / `task_cancel`: Inspect, wait for, and cancel asynchronous tasks;
+- `poll_tool`: Poll an external source or UI text that has no internal task event;
 - `spawn_agent`: Hand read-only subtasks to a child Agent;
 - `schedule_task`: Create scheduled tasks.
 
 Remote MCP settings tools and assistant bridge tools are not exposed to the assistant itself, avoiding recursive calls and prompt injection.
+
+All screen inspection uses `ui_observe`. The first observation reads node IDs, text, descriptions, bounds, and clickable/scrollable/editable state. Only when nodes are missing or materially incomplete, or when the page is a Canvas, game, Flutter/Unity view, video, image, or other visual scene, pass `include_screenshot=true` to add an image.
+
+## Built-in browser rules
+
+- HTTP/HTTPS links and page-triggered navigation stay in the built-in browser;
+- `target=_blank`, `window.open`, download popups, and `intent://` fallback URLs are kept inside;
+- assistant downloads return `download_id` and `task_id`; use `task_wait` until `terminal=true`;
+- only `state=succeeded` is success. `task_wait` timeouts do not cancel the task;
+- each assistant session has one current download; starting a replacement cancels only that session's old download.
 
 ## Permission confirmation
 
@@ -136,7 +158,7 @@ One-time, daily, weekly, and fixed-interval schedules are supported. When a task
 
 ### Using it
 
-1. Tap the circle on the Floating dot to open the full-screen voice assistant.
+1. Tap the circle on the Floating dot to open the compact bottom voice assistant.
 2. Tap the microphone or the circle to start/stop listening.
 3. Interim recognition results are shown in real time, and the final result is sent automatically.
 4. When the reply is finished, listening starts again automatically, so you can continue with follow-up questions.
@@ -146,8 +168,9 @@ The text input box is hidden by default; tap the keyboard icon in the lower-left
 ### Offline speech models
 
 - Uses Vosk for local recognition; audio never leaves the device.
-- On first use, a model of about 40 MB is downloaded on demand.
-- Multiple sources are provided: the HF China mirror, Hugging Face, and Vosk official; download speed is tested automatically and the fastest route is chosen, with automatic switching if a download is interrupted.
+- Chinese and English small models can be downloaded on demand.
+- Multiple sources are provided: the HF China mirror, Hugging Face, and Vosk official; each source is tested three times and the fastest working line is selected, with automatic switching if a download is interrupted.
+- The download UI shows transfer speed and estimated remaining time.
 - After download, the model is loaded in the background and preloaded automatically on the next start.
 - Supports two small models: Chinese and English.
 
@@ -161,6 +184,12 @@ The text input box is hidden by default; tap the keyboard icon in the lower-left
 - Results are returned to the main Agent as untrusted data.
 
 View and stop runs in **Space settings → Child runs**.
+
+## Plugin extensions
+
+Plugins can extend Agent prompts, pre-model questions, model requests, tools, tool-result views, settings, and target-app runtime profiles. Plugin tools share the permission and confirmation flow with external MCP tools. Plugins can also provide LLM and speech providers.
+
+Open **Plugin Center** from the desktop and install a `.nest` package there. Long-press an installed plugin to configure, rename, share, export, enable/disable, or delete it. Disabling a plugin immediately removes its hooks, tools, providers, settings, and runtime profiles from the current process.
 
 ## Common issues
 

@@ -100,8 +100,8 @@ MCP Server，供 NestSpace 自己的 AI 助手使用；它们和 NestSpace 对�
 - 工具名以 `mcp_<服务短 ID>_` 前缀提供给本地助手；
 - 不注册进 NestSpace 的 `ToolRegistry`，远程客户端看不到。
 
-本地助手在 App 内操作虚拟应用时，默认按用户意图选择全屏或无头方形小窗。
-远程 MCP 调用 `space_launch` 时仍需显式传 `headless=false` 才会显示普通窗口。
+本地助手在 App 内操作虚拟应用时默认使用镜像小窗；只有显式选择 `visible` 或调用 `hand_to_user` 时才进入前台。
+远程 MCP 调用 `space_launch`、`space_multi_open` 或助手任务时，可通过 `display_mode` 选择 `background`、`mirror` 或 `visible`；未指定时默认为 `background`。
 
 ## 会话与限制
 

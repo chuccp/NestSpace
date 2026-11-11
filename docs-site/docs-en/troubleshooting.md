@@ -39,8 +39,8 @@ Things to try:
 ### No app icon on the desktop
 
 - Go to **Space settings → App management** and confirm that the app is in the **Virtual apps** list.
-- If it was only removed from the desktop, reinstall it or use **Launch** in the app list.
-- System apps must be selected again under **Import desktop apps**.
+- If the icon is missing but the app is still listed, use **Launch** from the app list or repair the desktop layout.
+- If the app is missing from the list, import it again from the host app or APK.
 
 ### Installation records disappear after a restart
 
@@ -88,9 +88,11 @@ Android reclaims processes according to memory and background policies. NestSpac
 
 ## AI assistant
 
-### Rule mode works but the large model does not respond
+### The assistant says no model is configured
 
-- In **Space settings → Model settings**, confirm that a configuration has been saved and selected.
+The current version no longer includes an offline rule-based Agent. Configure a usable model before sending tasks; until then the assistant does not execute commands or tool calls.
+
+- In **Space settings → Model settings**, confirm that a usable configuration has been saved and selected.
 - Tap **Test connection** to confirm that the endpoint is available.
 - Check the Base URL, API Key, and model name.
 - Check error messages in the conversation and **Token usage**.

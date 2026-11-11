@@ -4,20 +4,22 @@ This document is intended for readers who want to understand implementation deta
 
 ## Overall structure
 
-NestSpace consists of three parts:
+NestSpace consists of four parts:
 
 - **App-level container**: Loads the target APK inside the host process and provides a virtualized Android runtime environment for the target app.
-- **Desktop and space management**: Installation, multiple instances, data isolation, icon organization, and system app selection.
+- **Desktop and space management**: Host-app/APK import, multiple instances, data isolation, icon and folder organization, and legacy desktop-shortcut compatibility.
 - **Control channel**: Binder-based UI control inside the container, the local AI assistant, and the externally facing MCP Server.
+- **Plugin platform**: A Java SDK and Plugin Center for Agent hooks, tools, Host APIs, model/speech providers, settings, and target-specific runtime profiles.
 
 The container is not system-level virtualization; it runs inside NestSpace's own process and simulates the environment the target app needs through ClassLoader, resources, Context, and system service proxies.
 
 ## Code modules
 
-The runtime is split into two Gradle modules with explicit boundaries:
+The main project contains three build modules and can add Debug source-plugin modules dynamically:
 
 - `plugin-api`: the public Java plugin SDK, including Agent hooks, Host APIs, declarative settings, LLM providers, speech providers, and launch policies.
 - `app`: the control plane and runtime implementation, including Compose UI, Agent, plugin center, APK/instance storage, sessions, Activity hosts, process slots, Providers, lifecycle handling, the native facade, MCP UI, hardened Application bootstrap resolution, and the target Application factory.
+- `testapp`: a container validation app with multiple Activities, Services, Providers, broadcasts, native probes, and process tests. It is not a runtime dependency of the main app.
 
 The only dependency direction is `app → plugin-api`. The container implementation lives directly in `app`; target launch decisions use `RuntimeProxyPlugin`, while versioned Application/Activity hooks use `RuntimeProfileProvider`.
 
@@ -59,14 +61,15 @@ The process pool is managed automatically by default and has a maximum of 16 slo
 
 ## Control and Agent
 
-- **Local AI assistant**: Supports Claude-compatible and OpenAI-compatible endpoints and operates the `virtual-1` space through `space_*`, `ui_*`, and `browser_*` tools.
+- **Local AI assistant**: Supports Claude-compatible and OpenAI-compatible endpoints and operates the `virtual-1` space through `space_*`, `ui_*`, and `browser_*` tools. Assistant-controlled apps stay in the mirror by default; only an explicit visible mode or `hand_to_user` brings one to the foreground.
 - **Remote MCP**: A built-in Streamable HTTP Server that listens only on `127.0.0.1` by default, with LAN listening available when explicitly enabled; supports multi-client sessions, SSE heartbeats, and DELETE sessions.
+- **Async tasks**: App operations, browser navigation, and downloads use the task journal and expose `task_list`, `task_status`, `task_wait`, and `task_cancel`. MCP launches can select `background`, `mirror`, or `visible`.
 - **External MCP tools**: The local assistant can connect to external MCP Servers; tool names are isolated with an `mcp_<id>_` prefix and are not exposed to remote clients.
 - **Browser**: A built-in multi-tab WebView; headless tabs are created by the Agent and can be taken over by the visible browser; downloads, uploads, and the proxy are shared with the container tools.
 
 ## Known limitations
 
-- Start with apps you are familiar with; if you run into compatibility issues, it is easier to tell whether the problem is in the app itself or in container adaptation, and it is also easier to report to the project.
+- NestSpace is primarily intended for validating AI capabilities and does not guarantee the compatibility or security of installed apps.
 - Compatibility depends on the target app's app hardening, native SDKs, dynamic loading, and dependency combination; not every app can run directly, and issues need to be adapted one app at a time.
 - At most 16 container processes can run at the same time, and the actual number is also limited by device memory; in automatic mode, when memory is insufficient, the least recently used background container is reclaimed.
 - Job, Alarm, and broadcast bridging work only while the container process is alive; after the process is reclaimed by the system, it will not be woken by the system. Full background keepalive still requires a foreground service strategy.

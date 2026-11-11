@@ -7,11 +7,11 @@
 
 **在 Android 上运行应用级虚拟空间的实验性开源项目。**
 
-NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔离的实例，并在自带桌面上启动、整理它们。内置的 AI 助手能够观察和操作虚拟应用；NestSpace 同时对外提供 MCP 控制服务，让 Claude Code 等外部客户端从电脑上驱动设备。
+NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔离的实例，并在自带桌面上启动、整理它们。运行时、桌面和 AI 助手统一位于主应用内；`plugin-api` 对外提供 Java 插件 SDK，`MCP` 控制服务则让 Claude Code 等外部客户端从电脑上驱动设备。
 
 [简体中文](https://chuccp.github.io/NestSpace/zh/) · [English](https://chuccp.github.io/NestSpace/en/) · [繁體中文](https://chuccp.github.io/NestSpace/tw/) · [日本語](https://chuccp.github.io/NestSpace/ja/)
 
-> ⚠️ NestSpace 是实验性项目，建议先安装自己熟悉的 App，方便判断兼容性问题。
+> ⚠️ NestSpace 是实验性项目，主要用于验证 AI 能力，不保证所安装 App 的兼容性和安全性。
 
 ## 交流群
 
@@ -26,6 +26,7 @@ NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔�
 - **不用 adb**：安装 APK、多开、整理桌面和使用 AI 助手都能直接在手机上完成。连接电脑只是可选功能。
 - **不用 root**：像普通应用一样安装即可使用，不修改系统。
 - **对 Android 版本要求宽松**：支持 Android 7.0（API 24）及以上，Android 7.1、15、16、17 都已验证。
+- **可按需扩展**：Java-first 插件 SDK 支持 Agent 工具与 Hook、模型 Provider、设置页、网络能力，以及按目标包名和版本匹配的运行时代理。
 
 ## 宿主控制（可选，需 Root）
 
@@ -33,7 +34,7 @@ NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔�
 
 ## 先了解这些限制
 
-- **应用兼容性是最大变量**：不是所有 App 都能正常运行。加固、自带 native SDK、热更新等都可能造成问题；这类问题可以通过逐个适配解决，遇到欢迎提 issue。
+- **NestSpace 主要用于验证 AI 能力**：它不是通用兼容容器，不保证所安装 App 的兼容性和安全性。加固、自带 native SDK、热更新等都可能造成问题；遇到问题欢迎提 issue。
 - **同时运行的虚拟应用有数量限制**：受手机内存和容器槽位限制，最多同时运行 16 个容器进程。默认自动管理，内存紧张时会关闭最久未使用的后台容器；前台正在使用的容器不会被关闭。
 
 ## 演示与截图
@@ -54,11 +55,11 @@ NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔�
 
 从 [Releases](https://github.com/chuccp/NestSpace/releases/latest) 下载 APK，按设备选择：
 
-- `NestSpace-vX-arm64.apk`：ARM64 真机、MuMu 等带 ARM 转译的模拟器（推荐）。
-- `NestSpace-vX-x86_64.apk`：x86_64 PC / 没有 ARM 转译的模拟器。
-- `NestSpace-vX-universal.apk`：包含全部 ABI，适合不确定或 32 位设备；在带 ARM 转译的 x86_64 设备上会按 x86_64 安装，ARM 虚拟应用的兼容性可能变差。
+- `NestSpace-vX.Y.Z-arm64.apk`：ARM64 真机、MuMu 等带 ARM 转译的模拟器（推荐）。
+- `NestSpace-vX.Y.Z-x86_64.apk`：x86_64 PC / 没有 ARM 转译的模拟器。
+- `NestSpace-vX.Y.Z-universal.apk`：包含全部 ABI，适合不确定或 32 位设备；在带 ARM 转译的 x86_64 设备上会按 x86_64 安装，ARM 虚拟应用的兼容性可能变差。
 
-也可以按下方「构建」自行打包。打开后进入 NestSpace 桌面，桌面上有「空间设置」「AI助手」「浏览器」「运行管理」等入口。
+也可以按下方「构建」自行打包。打开后进入 NestSpace 桌面，桌面上有「空间设置」「AI助手」「浏览器」「插件中心」「运行管理」等入口。
 
 ### 2. 导入宿主里已安装的应用
 
@@ -88,22 +89,35 @@ NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔�
 
 ### 6. 使用 AI 助手
 
-点桌面上的「AI助手」。没有配置模型时，内置规则 Agent 可以执行「观察」「打开设置」「点击 搜索」这类简单指令；配置模型后可以执行更复杂的多步任务。回复以流式输出，工具调用会显示为可展开的卡片。
+点桌面上的「AI助手」。首次使用需要先配置模型；未配置时页面会显示未连接状态和配置入口，不会执行规则命令或工具调用。配置模型后即可执行多步任务，回复以流式输出，工具调用会显示为可展开的卡片。
 
-首次打开 AI 助手时可以直接进入「配置模型」引导，也可以选择暂不配置。配置入口是「空间设置 → 模型设置」，支持：
+首次打开 AI 助手时需要先配置模型；未配置时只显示未连接状态和配置入口，不会执行命令或工具调用。配置入口是「空间设置 → 模型设置」，支持：
 
 - **Claude 兼容**：Base URL、API Key、模型。
 - **OpenAI 兼容**：Base URL、API Key、模型。
+- **插件 Provider**：Base URL 填 `plugin://<provider-id>`，模型填插件提供的模型 ID，API Key 可以留空。
 
-模型编辑页还支持第三方预设、API Key 明文查看、最大上下文 tokens、最大输出、Temperature、最大工具轮次和思考程度。填写后点「测试连接」即可验证；成功或失败结果通过 Toast 显示。API Key 使用 Android Keystore 加密保存。
+模型编辑页还支持第三方预设、API Key 明文查看、最大上下文 tokens、最大输出、Temperature、最大工具轮次、思考程度和流式输出开关。填写后点「测试连接」即可验证；成功或失败结果通过 Toast 显示。API Key 使用 Android Keystore 加密保存。
 
-助手固定在「虚拟空间 1」中操作，不会控制手机上的其他应用。用户要求直接打开或操作应用时使用全屏窗口；只要求查询、读取、整理或发送标题/结果时，使用方形无头小窗，不显示系统 PiP。
+助手固定在「虚拟空间 1」中操作，不会控制手机上的其他应用。助手控制的应用默认在方形镜像小窗中运行；可通过 `display_mode` 选择后台、镜像或可见模式，登录、验证码、付款或授权等需要用户处理的步骤使用 `hand_to_user` 交还用户。
 
 助手会在对话后自动整理记忆，并从成功的多步骤任务中起草技能。事实和偏好直接生效；可复用的做法在标准权限下直接生效，严格权限下会先显示确认卡片。自动起草的技能默认停用，需要手动启用。
 
 想在任意界面唤起语音助手，可以在「空间设置 → 悬浮球」打开悬浮球并授予悬浮窗权限，然后点圆点说话；首次使用需要下载离线语音模型。
 
-### 7. 卸载虚拟应用
+### 7. 使用插件中心
+
+插件中心是桌面上的独立入口，集中显示源码开发插件和从 `.nest` 安装的外部插件。点击插件图标可以查看版本、发布者、权限、详情页和设置；长按可以启用/停用、重命名、分享和导出，外部安装包还可以删除。
+
+停用后插件仍会保留在插件中心，图标变暗并显示「停用」标记；再次长按选择「启用」即可重新挂载，无需重启 NestSpace。
+
+仓库 Debug 构建会自动加载 `example-plugin/plugin` 和 `dev-plugins/*` 下的源码插件。复制示例到 `dev-plugins/<name>`，修改 Manifest ID、Gradle namespace、Java 包名和入口类后，直接运行宿主或 Apply Changes 即可调试，不需要先生成安装包。需要独立分发时再执行 `:dev-plugin-runtime-demo:packagePlugin`，或使用插件中心的「从文件安装」。
+
+插件可以贡献 Agent 工具和 Hook、自定义工具展示 View、设置页、命令、后台任务、LLM Provider 以及 HTTP / SSE / WebSocket 能力。运行时代理可以按目标包名和精确、通配符、前缀或区间 `versionCode` 匹配，选择继续使用容器、回退到宿主应用或阻止启动。
+
+> `.nest` 安装器和插件 SDK 仍属于持续改进中，未来可能会发生变化。
+
+### 8. 卸载虚拟应用
 
 长按桌面上的应用图标选择「卸载」，或在「空间设置 → 应用管理」的应用行里点「卸载」。卸载会删除 APK 和该应用的全部实例数据。
 
@@ -114,10 +128,12 @@ NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔�
 - **桌面**：显示导入到虚拟空间的应用，支持文件夹、拖动排序、壁纸和布局保存。
 - **AI 助手**：Claude / OpenAI 兼容接口，流式回复；可用自然语言观察和操作虚拟应用。
 - **自动记忆与技能**：对话后自动整理偏好和做法；从成功的多步骤任务起草技能，并跟踪使用结果。
+- **插件平台**：Java-first SDK、插件中心、插件启停与状态标记、`.nest` 安装，以及 Agent Tool/Hook、设置 View、LLM Provider、HTTP/SSE/WebSocket 等受控 Host API。
+- **运行时代理**：插件可按目标包名和版本贡献启动策略与兼容 Profile，使用只读 APK 类名索引和受控 ClassLoader scope 处理目标差异。
 - **内置浏览器**：多标签、后台无头标签、页面阅读、下载上传和代理；网页弹窗、外部回退链接和下载页都留在自带浏览器中。
 - **坐标模拟**：为虚拟应用设置固定经纬度，不影响真实设备定位。
 - **宿主控制（可选，需 Root）**：开启后助手和 MCP 可以操作真实设备上的应用。
-- **电脑控制（可选）**：内置 MCP 服务，Claude Code 等客户端可以远程调用容器工具。
+- **电脑控制（可选）**：内置 MCP 服务，Claude Code 等客户端可以远程调用容器工具；`plugin_list` 和 `plugin_manage` 可以查看、安装、卸载、配置及调用插件。
 - **知识与技能**：内置 23 个 App、19 个网站的中文使用指南和 7 个技能包。
 
 更细的兼容能力（Activity/Service/Provider/广播/PackageManager/通知/JobScheduler 等）和实现方式见 [架构与限制](docs/architecture.md)。
@@ -140,6 +156,8 @@ claude mcp add --transport http space http://127.0.0.1:8765/mcp \
 
 如果要在不打开 NestSpace 界面的情况下由 Agent 启动容器，需要授予**悬浮窗权限**：应用用一个 1×1 透明、不可聚焦的窗口获得后台 Activity 启动豁免。未授权时 `space_launch` 返回 `LAUNCH_BLOCKED`。
 
+远程客户端还可以通过 MCP 管理插件：`plugin_list` 列出源码、外部和内置插件；`plugin_manage` 支持 `install`、`uninstall`、`rename`、读写设置、启停插件，以及列出和执行插件命令。插件贡献的 Agent 工具会以动态工具出现在 MCP 工具表中。
+
 也可以使用仓库自带 CLI：
 
 ```bash
@@ -157,14 +175,20 @@ tools/nestspace-mcp shell
 
 ## 构建
 
-需要 JDK 21、Android SDK Platform 37.0 和 Build-Tools 36.0.0。
+需要 JDK 21、Android SDK Platform 37.0、Build-Tools 36.0.0、NDK 27.2.12479018 和 CMake 3.22.1。
 
 ```bash
-./gradlew :app:assembleDebug
+./gradlew :app:assembleDebug -PnestspaceHostAbi=arm64
 ./gradlew :testapp:assembleDebug
 
 # 可选：用于验证 REQUIRE_SECURE_ENV 拒绝逻辑
 ./gradlew :testapp:assembleSecure
+
+# 公共插件 SDK
+./gradlew :plugin-api:assembleDebug
+
+# 完整示例插件安装包
+./gradlew :dev-plugin-runtime-demo:packagePlugin
 ```
 
 产物：
@@ -173,22 +197,27 @@ tools/nestspace-mcp shell
 app/build/outputs/apk/debug/app-debug.apk
 testapp/build/outputs/apk/debug/testapp-debug.apk
 testapp/build/outputs/apk/secure/testapp-secure.apk
+build/plugin-packages/runtime-demo-plugin.nest
 ```
 
-`testapp` 是用于验证容器能力的示例 APK，包含多 Activity、Service、Provider、广播和 Job 测试入口，可以像普通 APK 一样导入。
+宿主 APK 需要指定 `nestspaceHostAbi`，`gradle.properties` 默认使用 `arm64`。也可以按运行环境改用 `-PnestspaceHostAbi=universal` 或 `-PnestspaceHostAbi=x86_64`；Windows PowerShell 使用 `.\gradlew.bat`。
+
+`testapp` 是用于验证容器能力的示例 APK，包含多 Activity、Service、Provider、广播和 Job 测试入口，可以像普通 APK 一样导入。Debug 构建会自动把源码插件编入宿主；只有独立分发时才需要生成 `.nest`。
 
 ## 项目结构
 
 ```text
-app/       Android 主应用：容器、桌面、AI 助手、浏览器、MCP
-plugin-api/ Java 优先的外部插件 SDK
-runtime-plugin-api/ 稳定的运行时代理 Java API
-example-plugin/ 功能完整的插件示例
-dev-plugins/ Debug 源码插件自动发现目录
-testapp/   验证容器能力的示例 APK
-tools/     nestspace-mcp CLI（零依赖 Python）
-docs/      架构、技术方案、MCP 工具参考和知识包文档
-.github/   CI：构建 APK，打 v* 标签时发布 Release
+app/                 主应用与运行时：Compose UI、桌面、AI 助手、插件中心、浏览器、MCP、
+                     容器、Activity Host、进程槽位、Native Facade 和 Application 启动链
+plugin-api/          唯一插件 SDK：Manifest、Agent Hook、Host API、LLM Provider、
+                     启动策略、RuntimeProfile、类名索引和 ClassLoader scope
+example-plugin/      功能完整的源码插件与安装包示例
+dev-plugins/         Debug 源码插件自动发现目录
+testapp/             验证容器能力的示例 APK
+tools/               nestspace-mcp CLI（零依赖 Python）
+docs/                架构、技术方案、插件平台、MCP 工具参考和知识包文档
+docs-site/           多语言在线手册生成配置
+.github/             CI：构建 APK，打 v* 标签时发布 Release
 ```
 
 ## 文档
@@ -210,6 +239,8 @@ docs/      架构、技术方案、MCP 工具参考和知识包文档
 - [技术方案：应用级容器与 Agent/MCP](docs/android-virtual-space-agent-mcp.md)
 - [MCP 工具参考](docs/mcp-tools.md)
 - [插件平台与 Java SDK](docs/plugin-center.md)
+- [插件编写指南](docs/plugin-authoring.md)
+- [运行时模块边界](docs/runtime-modules.md)
 - [App / 网站知识包](docs/knowledge-packs.md)
 - [发布更新日志规范](docs/releases/README.md)
 - [nestspace-mcp CLI](tools/README.md)
@@ -219,7 +250,9 @@ docs/      架构、技术方案、MCP 工具参考和知识包文档
 欢迎提交 issue 和 pull request。提交前请至少跑一遍单元测试：
 
 ```bash
-./gradlew :app:testDebugUnitTest
+./gradlew \
+  :plugin-api:testDebugUnitTest \
+  :app:testDebugUnitTest
 ```
 
 文档截图统一放在 `docs/screenshots/`，建议压缩到 540px 宽、单张 150KB 以内。

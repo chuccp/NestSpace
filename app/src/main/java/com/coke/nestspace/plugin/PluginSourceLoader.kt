@@ -115,7 +115,7 @@ internal object PluginSourceLoader {
         ).apply { mkdirs() }
         val safeName = "${manifest.id}-${manifest.version}"
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
-        val target = File(directory, "$safeName.nestplugin")
+        val target = File(directory, "$safeName.nest")
         val temporary = File(directory, ".$safeName.tmp")
         temporary.delete()
         try {
@@ -338,7 +338,7 @@ internal object PluginSourceLoader {
         require(pluginId.matches(Regex("[a-z0-9][a-z0-9._-]{2,127}"))) {
             "invalid source plugin id"
         }
-        return "source-plugin-packages/$pluginId.nestplugin"
+        return "source-plugin-packages/$pluginId.nest"
     }
 
     private fun copyLimited(

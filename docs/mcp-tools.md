@@ -19,7 +19,8 @@ NestSpace 内置 Streamable HTTP MCP Server，向本地 AI 助手和远程 MCP �
 | `plugin_manage` | 统一管理插件：`install`、`uninstall`、`rename`、`settings_get`、`settings_set`、`settings_remove`、`set_enabled`、`commands`、`invoke_command` |
 
 `plugin_manage install` 的 `source` 支持 `https://`、`http://`、`content://`、`file://`
-和宿主可读的本地路径。安装包仍然执行现有路径、大小、Manifest、API 版本和 DEX 校验。
+和宿主可读的本地路径，插件包统一使用 `.nest` 扩展名。安装包仍然执行现有路径、大小、
+Manifest、API 版本和 DEX 校验。
 安装和卸载使用“安装/卸载软件”确认项；修改设置和执行插件命令使用“插件工具”确认项。
 
 源码插件、外部安装包和内置插件都可以通过 `set_enabled` 启用或停用。停用后会立即
@@ -36,8 +37,8 @@ Debug 构建提供，不能通过 MCP 删除；外部插件可以卸载并清理
 | `space_list_installed` | 列出已安装的虚拟应用、实例、签名和 native 状态 |
 | `space_running` | 列出正在运行的虚拟应用、实例和槽位；操作前先检查，已运行就直接用 `ui_*` |
 | `space_install_apk` | 安装 APK；`apk_uri`，split 安装时附带 `split_uris` |
-| `space_launch` | 启动应用。默认操作 `virtual-1`，默认无头；已运行的实例会被复用，不会重新打开。系统应用传 `space_id=system` |
-| `space_multi_open` | 创建新实例并启动，默认无头 |
+| `space_launch` | 启动应用。默认操作 `virtual-1`；已运行的实例会被复用，不会重新打开。系统应用传 `space_id=system` |
+| `space_multi_open` | 创建新实例并启动 |
 | `space_uninstall` | 删除应用及全部实例数据 |
 | `space_stop` | 关闭当前容器界面，回到桌面 |
 | `space_permissions` | `list` / `grant` / `revoke` 容器内权限 |
@@ -65,10 +66,13 @@ MCP 调用未指定时默认 `background`，调用方可按任务自行选择。
 | `ui_observe` | 观察当前容器的 View 树、页面文本和可交互元素 |
 | `ui_tap` | 按文本、资源 ID 或坐标点击 |
 | `ui_set_text` | 向输入框写入文本 |
+| `hand_to_user` | 暂停自动操作，先向用户确认，再把当前虚拟应用交给用户完成登录、验证码、支付或授权 |
 | `ui_wait_for` | 旧调用兼容的 UI 文本等待快捷方式；新流程使用 `poll_tool` + `ui_observe` |
 | `ui_key` | 发送按键，目前支持 `back` |
 
 `ui_*` 支持用 `package` / `instance_id` 路由到指定容器实例；省略时操作最近启动的实例。目标 Activity 自建的 Dialog、底部弹窗等独立窗口也会合并进观察和截图。
+`ui_observe` 默认只返回节点；需要画面时可传 `include_screenshot=true`，结果会同时给出
+`node_count` 和 `screenshot_recommended`。
 
 `poll_tool` 用于 UI 文本或外部服务等没有内部事件源的观察。它按 `max_checks` 和
 `interval_ms` 调用受控的只读状态工具；达到次数上限返回 `POLL_TIMEOUT`，不会当作成功。
@@ -77,6 +81,7 @@ MCP 调用未指定时默认 `background`，调用方可按任务自行选择。
 
 | 工具 | 说明 |
 | --- | --- |
+| `task_list` | 列出当前助手或 MCP 身份最近的异步任务 |
 | `task_status` | 非阻塞返回状态、进度、速度、剩余时间、空闲时间、结果和错误 |
 | `task_wait` | 等待生命周期变化、终态或超时；进度变化不会唤醒 |
 | `task_cancel` | 请求取消并立即返回，随后用 `task_wait` 等待清理完成 |
@@ -85,6 +90,9 @@ MCP 调用未指定时默认 `background`，调用方可按任务自行选择。
 `task_status` 和 `task_wait` 只汇报状态，不会仅因为下载慢而自行取消；模型可根据速度、
 剩余时间和空闲时间决定是否调用 `task_cancel`。启动同一助手的新下载时，系统仍会强制
 停止旧连接，避免并行任务。
+
+远程客户端还可以使用 `session_acquire`、`session_release` 和 `session_status`
+管理空间控制租约；需要设备版本、电量、网络和内存信息时使用 `system_status`。
 
 ## 宿主控制（需要 Root）
 

@@ -15,7 +15,7 @@
 
 ## 先了解这些限制
 
-- **应用兼容性是最大变量**：不是所有 App 都能正常运行；加固、native SDK、热更新等都可能造成问题。这类问题可以逐个适配解决，遇到欢迎提 issue。
+- **NestSpace 主要用于验证 AI 能力**：不保证所安装 App 的兼容性和安全性；加固、native SDK、热更新等都可能造成问题。遇到问题欢迎提 issue。
 - **同时运行的虚拟应用有数量限制**：受手机内存和容器槽位限制，最多同时运行 16 个容器进程。默认自动管理，内存紧张时会关闭最久未使用的后台容器。
 
 ## 手册导航
@@ -40,7 +40,7 @@
 | [架构与限制](architecture.md) | 容器实现、进程模型和已知边界 |
 | [单 APK 兼容运行时设计](single-apk-android-compatibility-runtime.md) | 免 Root 条件下的统一环境、Native Facade 和分阶段改造方案 |
 | [插件平台与 Java SDK](plugin-center.md) | Java SDK、Agent Tools/Hook、文件与密钥、任务/事件、UI、LLM Provider、目标版本匹配和插件中心计划 |
-| [插件编写指南](plugin-authoring.md) | 从创建源码插件到 Manifest、Java API、设置 View、Host API、运行时代理、调试和发布 |
+| [插件编写指南](plugin-authoring.md) | 从创建源码插件到 Manifest、Java API、声明式设置、Host API、运行时代理、调试和发布 |
 | [整体性能审计与修改建议](performance-audit-and-improvement-plan.md) | 容器启动、Hook、进程池、截图和 target 热路径的性能优化路线 |
 | [MCP 工具参考](mcp-tools.md) | 全部 MCP 工具和参数 |
 | [App / 网站知识包](knowledge-packs.md) | 知识包的格式、匹配和新增方法 |
@@ -54,8 +54,8 @@
 - 文档中的「空间设置」指桌面上的「空间设置」图标。
 - 空间设置首页保留常用入口，下方按「应用与容器」「AI 助手」「系统与网络」分类；较少使用的功能放在分类的第三层。
 - 「导入应用」会把宿主已安装的 APK 安装到虚拟空间，不再创建系统应用快捷方式。
-- AI 助手的全屏与无头小窗、模型配置和浏览器行为以当前应用界面为准。
-- NestSpace 是实验性项目，应用兼容性和同时运行数量都有边界，详见[架构与限制](architecture.md)。
+- 本地 AI 助手默认在镜像小窗中操作虚拟应用，后台和可见模式通过 `display_mode` 显式选择；模型配置和浏览器行为以当前应用界面为准。
+- NestSpace 是实验性项目，主要用于验证 AI 能力，不保证所安装 App 的兼容性和安全性；同时运行数量也有边界，详见[架构与限制](architecture.md)。
 
 ## License
 

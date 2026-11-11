@@ -15,7 +15,7 @@
 
 ## 先了解這些限制
 
-- **應用程式相容性是最大變數**：不是所有 App 都能正常執行；加固、native SDK、熱更新等都可能造成問題。這類問題可以逐個調適解決，遇到問題歡迎提出 issue。
+- **NestSpace 主要用於驗證 AI 能力**：它不是通用相容容器，不保證所安裝 App 的相容性和安全性。加固、native SDK、熱更新等都可能造成問題；遇到問題歡迎提出 issue。
 - **同時執行的虛擬應用程式有數量限制**：受手機記憶體和容器槽位限制，最多同時執行 16 個容器處理程序。預設自動管理，記憶體緊張時會關閉最久未使用的背景容器。
 
 ## 手冊導覽
@@ -38,6 +38,8 @@
 | 文件 | 內容 |
 | --- | --- |
 | [架構與限制](architecture.md) | 容器實作、處理程序模型和已知邊界 |
+| [外掛平台與 Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md) | 外掛中心、`.nest` 套件、Agent 工具/Hook、Host API、Provider 和執行階段 Profile |
+| [外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md) | 原始碼外掛、Manifest、Java API、設定、測試和封裝 |
 | [MCP 工具參考](mcp-tools.md) | 全部 MCP 工具和參數 |
 | [App / 網站知識包](knowledge-packs.md) | 知識包的格式、匹配和新增方法 |
 | [從原始碼建置](building.md) | 環境需求、建置命令和 CI |
@@ -48,7 +50,7 @@
 
 - 文件中的「空间设置」（空間設定）是指桌面上的空間設定圖示。
 - 「应用管理」（應用程式管理）、「模型设置」（模型設定）等都是空間設定裡的第二層頁面。
-- NestSpace 是實驗性專案，應用程式相容性和同時執行數量都有邊界，詳見[架構與限制](architecture.md)。
+- NestSpace 是主要用於驗證 AI 能力的實驗性專案，不保證所安裝 App 的相容性和安全性，同時執行數量也有邊界，詳見[架構與限制](architecture.md)。
 
 ## License
 

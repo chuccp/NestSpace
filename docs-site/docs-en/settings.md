@@ -2,17 +2,25 @@
 
 Every entry in the desktop's Space settings is described here. Some pages have more detailed standalone documentation, which is linked in the corresponding section.
 
+Space settings uses two levels. The home page keeps common entries, followed by **Apps & containers**, **Assistant**, and **System & network** categories; low-frequency options remain in third-level pages. Plugin Center is not inside Space settings and opens as a separate desktop entry.
+
+## Plugin Center
+
+Plugin Center manages source plugins and installed `.nest` packages. Built-in modules are managed internally and are not shown in the plugin grid. Click a plugin to view its version, publisher, capabilities, detail page, and declarative settings. Long-press it to enable/disable, configure, rename, share, export, or delete an external package.
+
+Disabling a plugin immediately removes its hooks, tools, providers, settings, and runtime profiles from the current process while keeping its installed files. See the [plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md).
+
 ## Apps & containers
 
 ### App management
 
-Install APKs, import desktop apps, and manage virtual apps and instances. For details, see [App installation & management](app-manager.md).
+Import host-installed apps, import APKs, and manage virtual apps, instances, compatibility settings, and per-instance data. For details, see [App installation & management](app-manager.md).
 
 ### Host control (root)
 
 Requires a rooted device and su access for NestSpace.
 
-- When enabled, the AI assistant and MCP get `host_*` tools to observe, tap, type, take screenshots, launch apps and open URLs on the whole real device, not just the virtual space.
+- When enabled, the AI assistant and MCP get `host_*` tools to observe, tap, type, take screenshots, and launch apps on the whole real device, not just the virtual space.
 - Turning it off removes those tools from the assistant and MCP tool lists immediately.
 - Every enable attempt re-checks su; the switch cannot be turned on when root is unavailable.
 - These are powerful permissions; only use them on a trusted device.
@@ -67,19 +75,24 @@ For details, see [Built-in browser](browser.md).
 Configures the model endpoints used by the AI assistant, with support for both Claude-compatible and OpenAI-compatible protocols. You can save multiple configurations and switch between them. Each configuration contains:
 
 - Protocol;
+- Name and protocol preset;
 - Base URL;
 - API Key;
 - Model name;
 - Context token limit;
-- Maximum number of tool calls per turn.
+- Maximum output tokens;
+- Temperature;
+- Maximum number of tool calls per turn;
+- Thinking level;
+- Streaming output.
 
-The API Key is encrypted with the Android Keystore, and no tool result ever returns it in plaintext. Tapping **Test connection** sends a real request.
+The API Key is encrypted with the Android Keystore, and no tool result ever returns it in plaintext. Common endpoint presets fill Base URL and model automatically. Claude-compatible URLs receive `/v1/messages` when the version path is missing. Plugin providers use `plugin://<provider-id>` and may leave the API Key empty. Tapping **Test connection** sends a real request.
 
 For details, see [AI assistant](assistant.md).
 
 ### System prompt
 
-All models share a single system prompt. You can edit and save it, or restore the built-in default with one tap. At runtime, NestSpace also automatically appends the current time, memories, the skill index, and tool rules.
+All models share a single system prompt. You can edit and save it, or restore the built-in default with one tap. At runtime, NestSpace also automatically appends the current time, memories, the skill index, tool rules, and display-mode rules.
 
 ### MCP tools
 
@@ -152,7 +165,7 @@ The categories that can require confirmation include installation, permissions, 
 - Adjust opacity;
 - Choose the speech language;
 - Adjust its position;
-- Download or delete offline speech models.
+- Switch offline speech-model download lines, and download or delete models.
 
 The first time you enable it, you must grant the "Display over other apps" permission. The Floating dot is a shortcut to the voice assistant. For details, see [AI assistant](assistant.md).
 
@@ -187,3 +200,5 @@ Displays the current version number and project information.
 - [AI assistant](assistant.md)
 - [MCP control service](mcp.md)
 - [Troubleshooting](troubleshooting.md)
+- [Plugin platform and Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md)
+- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)

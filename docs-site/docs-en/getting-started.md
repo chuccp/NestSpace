@@ -10,7 +10,7 @@ This guide walks through the entire process from scratch: installing NestSpace, 
 
 ## 2. Install NestSpace
 
-Download the official packaged APK from [Releases](https://github.com/chuccp/NestSpace/releases/latest) (the file is named like `NestSpace-v1.0.1.apk`), or build it yourself by following [Building from source](building.md), then install it like an ordinary APK.
+Download the official packaged APK from [Releases](https://github.com/chuccp/NestSpace/releases/latest) (for example `NestSpace-vX.Y.Z-arm64.apk`), or build it yourself by following [Building from source](building.md), then install it like an ordinary APK.
 
 The first launch opens the NestSpace desktop. By default, the desktop contains:
 
@@ -19,21 +19,21 @@ The first launch opens the NestSpace desktop. By default, the desktop contains:
 - **Browser**: The built-in multi-tab browser.
 - **Running apps**: View the currently running container processes and their memory usage.
 
-Virtual apps installed later, along with any selected system apps, also appear here.
+Virtual apps imported from host APKs or local APK files also appear here.
+**Plugin Center** is an additional desktop entry. It opens as its own app and manages source plugins and installed `.nest` packages.
 
 ![NestSpace desktop](screenshots/desktop.jpg)
 
-## 3. Put system apps on the desktop (optional)
+## 3. Import apps installed on the host (optional)
 
-If you want to open apps already installed on the phone directly from the NestSpace desktop:
+NestSpace installs a virtual copy of the host APK instead of creating a system-app shortcut:
 
-1. Tap **Space settings**.
-2. Tap **App management**.
-3. Tap **Import desktop apps**.
-4. Select the apps you need; tap an app again to deselect it.
-5. Return to the desktop. The selected apps are now there.
+1. Open **Space settings → App management**.
+2. Tap **Import app**.
+3. Select one or more apps installed on the device.
+4. Tap **Import** and wait for installation.
 
-NestSpace does not copy these system apps; it only creates a desktop shortcut. Tapping it still opens the original app.
+Accounts, private data, and sign-in state are not copied from the host app. The first launch creates an independent **Instance 1**.
 
 ## 4. Import your first APK
 
@@ -70,7 +70,7 @@ Each instance has its own `files`, `cache`, `code_cache`, `databases`, and Share
 
 ## 6. Organize the desktop
 
-- Long-press an app icon: Open, app shortcuts, move to front/back, app info; if folders already exist, you can also add the app to a folder. Virtual apps can be uninstalled, and system apps can be removed from the desktop.
+- Long-press an app icon: Open, app shortcuts, move to front/back, app info; if folders already exist, you can also add the app to a folder. Virtual apps can be uninstalled with all instance data.
 - Long-press an empty area: New folder, Model settings, Permissions.
 - Long-press and drag: Reorder icons. Drag onto another app and, with a small overlap, a folder ghost appears and a folder is created; once the overlap reaches 30% or more, the behavior changes to insertion/shifting. Drag onto an existing folder to add the app to it.
 - Folders: You can open, rename, add apps to, or dissolve them. Once open, long-press an app to remove it, or drag it upward to remove it. A folder with only one app left dissolves automatically.
@@ -81,8 +81,9 @@ Each instance has its own `files`, `cache`, `code_cache`, `databases`, and Share
 
 Tap **AI assistant** on the desktop:
 
-- If no model is configured, the built-in rule-based Agent is used. It can perform simple actions such as "observe", "open settings", or "tap Search".
+- If no model is configured, the assistant shows a disconnected state and a configuration button; it does not execute commands or tool calls until setup is complete.
 - After configuring a Claude-compatible or OpenAI-compatible endpoint in **Space settings → Model settings**, the assistant can perform more complex multi-step tasks. Replies are displayed as streaming text, and tool calls appear as expandable cards.
+- Assistant-controlled virtual apps use the mirror by default. `background` and `visible` modes are selected through `display_mode`; `hand_to_user` transfers the current app to you for login, CAPTCHA, payment, or approval.
 - When a conversation ends, the assistant automatically organizes memories; successful multi-step tasks can be drafted into skills automatically. Facts and preferences take effect directly; reusable procedures take effect directly under Standard permissions and are confirmed in the chat first under Strict permissions. Automatically drafted skills are disabled by default and must be enabled manually.
 
 For details, see [AI assistant](assistant.md).
@@ -113,3 +114,5 @@ Regular users do not need to access these directories manually. Uninstalling Nes
 - [App installation & management](app-manager.md): Details about split APKs, signatures, instances, and data directories.
 - [Settings](settings.md): Container slots, Permissions, the Floating dot, and more.
 - [MCP control service](mcp.md): Control NestSpace with Claude Code on your computer.
+- [Plugin platform and Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md): Plugin Center, `.nest` packages, Agent hooks, and runtime profiles.
+- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md): Develop, test, share, and package plugins.

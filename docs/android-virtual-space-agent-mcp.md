@@ -3,7 +3,7 @@
 > 本文是技术设计与实现记录，面向开发和二次开发；日常使用请看 [NestSpace 使用手册](README.md)。
 >
 > 项目：`NestSpace`（`com.coke.nestspace`，Jetpack Compose，minSdk 24 / targetSdk 37）
-> 日期：2026-11-03
+> 日期：2026-11-11
 > 约束：普通 APK、不能控制 ROM；**使用自研容器引擎**；本地 Agent 与远程 MCP 双通道都要支持。
 > 状态：Stage A/B + Stage C-lite + Stage C-D（独立进程/崩溃隔离、Job/通知虚拟化、宿主/系统广播桥接、Binder/UID 权限模型、完整 VPMS、跨虚拟应用查询、权限授予、多实例 .so 进程隔离）已实现并在 Android 7.1.1 / Android 16 / Android 17（API 37 模拟器）/ MuMu(Android 15, ARM bridge) 验证；本地 LLM Agent（Claude/OpenAI 兼容，共用 chat 协议）已实现并用 mock 与第三方 Anthropic 兼容端点实网验通；完整后台 Job/Alarm 唤醒与系统侧真实 UID 欺骗仍属于后续增强
 
@@ -778,7 +778,7 @@ claude mcp add --transport http space http://127.0.0.1:8765/mcp \
 - `LlmAgentRuntime` 复用 `ToolRegistry`，`ToolContext(sessionId, LOCAL_AGENT, "virtual-1")`，排除 session/approval 工具，最多 16 轮工具调用，单次工具结果截断 12k 字符。
 - 未配置或没有可用模型时，助手直接提示前往模型设置，不执行规则命令或工具调用。
 - `AssistantConversation` 统一维护助手页与悬浮球语音助手共用的消息流和最近 24 条文本轮次；`LlmAgentRuntime.run(history = ...)` 在每次请求前回放历史，实现多轮追问。语音入口默认隐藏文字输入，最终识别结果自动提交，回复后自动恢复聆听。
-- 语音识别使用内置 Vosk 离线模型（`com.alphacephei:vosk-android`），不经过云端 STT。模型在首次使用时下载，也可在悬浮球设置中管理并切换下载路径；下载前会探测 HF 国内镜像、Hugging Face 和 Vosk 官网等线路，每条线路测试 3 次并取最大值，选择最优线路，失败自动切换。中文/English 小模型分别缓存，语音结果会整理中文逐字空格，模型就绪后 `SpeechService` 持续提供 partial/final 结果。
+- 语音识别使用内置 Vosk 离线模型（`com.alphacephei:vosk-android`），不经过云端 STT。模型在首次使用时下载，也可在悬浮球设置中管理并切换下载线路；下载前会探测 HF 国内镜像、Hugging Face 和 Vosk 官网等线路，每条线路测试 3 次并取最大值，选择最优线路，失败自动切换。中文/English 小模型分别缓存，语音结果会整理中文逐字空格，模型就绪后 `SpeechService` 持续提供 partial/final 结果。
 - `LocalSpeechEngine` 在进程内缓存已加载的 `Model`；下载完成立即后台加载，App 启动时若模型已缓存也会预加载，语音页只创建 `Recognizer`/`SpeechService`，打开即可聆听。切换语言时先加载新模型；旧模型保留到进程退出，避免暂停中的语音页仍持有旧 Recognizer 时被提前释放。
 - 已用本地 mock 分别验通两种协议的核心转换与工具调用往返；用户配置的 Anthropic 兼容端点在模拟器实网验通 `space_list` + `space_list_apps` 多轮工具调用。
 - 单元测试：`app/src/test/java/com/coke/nestspace/llm/AnthropicChatServiceTest.kt`、`OpenAiChatServiceTest.kt`。

@@ -1,6 +1,6 @@
 # Desktop & appearance
 
-The NestSpace desktop is not the system launcher; it is a launcher inside the app. It shows fixed entry points, virtual apps, and shortcuts to the system apps you select.
+The NestSpace desktop is not the system launcher; it is an in-app launcher for the fixed entry points, imported virtual apps, Plugin Center, and your folders.
 
 ![NestSpace desktop](screenshots/desktop.jpg)
 
@@ -17,17 +17,19 @@ Default entry points:
 
 The following also appear:
 
-- Virtual apps installed through **App management → Import APK**.
-- System apps selected through **App management → Import desktop apps**.
+- Virtual apps imported from host apps or APKs.
+- **Plugin Center** as a separate desktop entry outside the bottom dock.
 - Folders you create yourself.
+
+Plugin Center and virtual apps share one desktop layout and can be sorted or placed in folders. Plugin Center is a built-in entry and does not provide an uninstall action.
 
 ## Icon actions
 
 ### Tap
 
 - Virtual app: Launches the most recently used instance.
-- System app: Opens the original system app.
 - Folder: Opens the folder.
+- Plugin Center: Opens the standalone plugin management screen and returns directly to the desktop.
 
 ### Long-press an app
 
@@ -38,8 +40,9 @@ Long-pressing an app icon opens a menu:
 - **Add to folder**: Shown when folders already exist on the desktop; choose which folder to add the app to.
 - **Move to front / Move to back**: Adjusts the order.
 - **App info**: View the app's package name, version, and instance information.
-- **Uninstall**: Deletes the virtual app and all instance data (virtual apps only).
-- **Remove from desktop**: Hides the app from the desktop only and does not delete it (system apps only).
+- **Uninstall**: Deletes the virtual app and all instance data.
+
+Plugin Center can be moved or placed in a folder. Plugin settings, rename, share, export, enable/disable, and delete actions are handled by long-pressing a plugin inside Plugin Center.
 
 ### Long-press an empty area
 
@@ -84,13 +87,14 @@ Entry point: **Space settings → Desktop wallpaper**.
 - You can clear the wallpaper and restore the default background.
 - The wallpaper is stored in the app-private directory and is deleted when NestSpace is uninstalled.
 
-## System app shortcuts
+## Icons imported from host apps
 
-Entry point: **Space settings → App management → Import desktop apps**.
+Entry point: **Space settings → App management → Import app**.
 
-- Selected apps appear on the desktop, and tapping one runs the original app installed in the system.
-- Clearing a selection removes the app from the desktop without affecting the app itself.
-- NestSpace does not copy system apps or modify their data.
+- Selected host apps are installed as virtual copies inside NestSpace.
+- A desktop icon launches the virtual copy, not the original host app.
+- Host sign-in state and private data are not copied.
+- If the same package already exists, NestSpace reports that the existing version will be overwritten.
 
 ## Running apps
 
@@ -114,10 +118,11 @@ An app that was ended recreates its processes and loads its original data the ne
 
 - **Icons are missing**: Check whether the app is still present in **Space settings → App management**. The desktop layout is stored inside the app; clearing NestSpace data resets the layout.
 - **The order is wrong**: Long-press and drag to rearrange the icons; the layout is saved automatically.
-- **A system app does not appear**: Check its selection state under **Import desktop apps**, and make sure the app is still installed in the system.
+- **An imported host app does not appear**: Check that its import completed under **App management** and launch it from the app list.
 - **The wallpaper is not displayed**: Open **Space settings → Desktop wallpaper** and set it again; if the image has been deleted, choose a new one.
 
 ## Related documentation
 
 - [App installation & management](app-manager.md)
 - [Settings](settings.md)
+- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)

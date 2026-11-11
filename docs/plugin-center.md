@@ -49,7 +49,7 @@
 | 插件文件存储 | 已实现 | 插件私有目录、原子写入和路径校验 |
 | 内置安装引导插件 | 已实现 | 演示问答和提示 Hook |
 | 自定义页面 | 部分实现 | 声明式页面/Renderer 已可注册，页面宿主 UI 尚未完成 |
-| `.nestplugin` 安装包 | 开发版已实现 | 文件安装、路径/大小校验、DEX 加载和重启恢复；签名信任待补 |
+| `.nest` 安装包 | 开发版已实现 | 文件安装、路径/大小校验、DEX 加载和重启恢复；签名信任待补 |
 | Debug 源码插件直开 | 已实现 | Gradle 自动发现、资源隔离、宿主 ClassLoader 加载和外部同 ID 包遮蔽 |
 | 插件中心 UI | 应用中心风格 | 已安装插件网格、搜索、分类、详情、启停、自定义设置、分享、导出和删除 |
 | 运行时代理扩展 API | 已实现 | `plugin-api` 提供启动描述、Profile、类名索引和 ClassLoader scope |
@@ -174,7 +174,7 @@ Application factory、Agent 和容器代码统一位于 `app`。
 
 ### 3.1 Debug 源码插件直开
 
-插件开发不要求先生成 `.nestplugin`。NestSpace 根工程会自动加入：
+插件开发不要求先生成 `.nest`。NestSpace 根工程会自动加入：
 
 ```text
 :dev-plugin-runtime-demo -> example-plugin/plugin
@@ -199,7 +199,7 @@ Class.forName(entry_class, context.classLoader)
 PluginRuntimeManager.attach(...)
 ```
 
-这条路径不执行 `packagePlugin`、不生成 DEX、不写临时 `.nestplugin`，也不经过
+这条路径不执行 `packagePlugin`、不生成 DEX、不写临时 `.nest`，也不经过
 `DexClassLoader`。插件资源和 Java 代码都随宿主 APK 编译，因此 IDE 可以正常
 编译、断点和增量部署。
 
@@ -221,7 +221,7 @@ assets/plugins-dev/<plugin-id>/
   ↓
 Debug 源码插件
   ↓
-外部 .nestplugin
+外部 .nest
 ```
 
 如果外部包与源码插件 ID 相同，外部包不会被恢复；调试期修改源码插件应立即生效，
@@ -1125,16 +1125,16 @@ compileSdk: 37
 
 ## 10. 开发版安装器与 Manifest
 
-当前可以在插件中心从 `.nestplugin` 文件安装开发版插件。安装器已经实现 Manifest 校验、
+当前可以在插件中心从 `.nest` 文件安装开发版插件。安装器已经实现 Manifest 校验、
 ZIP 路径和大小限制、DEX 加载、重启恢复和运行时注册。发布者签名、信任等级、隔离进程、
 在线仓库和回滚仍未完成，因此不应作为正式商店安全模型。
 
-### 10.1 `.nestplugin` 包
+### 10.1 `.nest` 包
 
 当前格式：
 
 ```text
-example.nestplugin
+example.nest
 ├── manifest.json
 ├── classes.dex
 ├── contributions/
@@ -1281,7 +1281,7 @@ Set<String> webSocketHosts = manifest.getWebSocketHosts();
 
 页面采用应用中心式布局，直接展示已安装内容，不提供“推荐 / 已安装”切换，包括：
 
-- **已安装插件网格**：源码插件和第三方 `.nestplugin` 放在同一个网格中，图标在上、
+- **已安装插件网格**：源码插件和第三方 `.nest` 放在同一个网格中，图标在上、
   名称和状态在下；
 - **源码标识**：Debug 源码插件不单独分组，只在图标左下角显示“源码”角标；
 - **详情弹窗**：显示名称、版本、发布者、插件 ID、Capability，并在存在
@@ -1291,9 +1291,9 @@ Set<String> webSocketHosts = manifest.getWebSocketHosts();
 - **长按菜单**：启用/停用、设置、重命名、分享、导出；第三方安装包额外提供删除；
 - **设置表单**：插件通过 Schema 声明 `PluginSettingView`，宿主统一渲染、校验和保存；
 - **重命名**：只改变插件中心显示名称，不修改 Manifest ID；
-- **分享与导出**：源码插件和第三方插件都生成可安装的 `.nestplugin`；
+- **分享与导出**：源码插件和第三方插件都生成可安装的 `.nest`；
 - **删除**：仅第三方安装包可删除，并清理插件包、私有存储、缓存、SQLite、设置和密钥；
-- **文件安装**：从系统文件选择器安装开发版 `.nestplugin`；
+- **文件安装**：从系统文件选择器安装开发版 `.nest`；
 - **系统内置模块**：仍由宿主内部按开关运行，但不在插件中心列表展示；
 - **其它已加载插件**：不属于源码、安装包或系统内置模块的当前进程插件会单独展示。
 
@@ -1310,7 +1310,7 @@ Set<String> webSocketHosts = manifest.getWebSocketHosts();
 插件显示，不会混入系统内置列表。工具类模块启停后会立即从 Agent/MCP 工具表加入或
 移除。
 
-外部 `.nestplugin` 已可从文件安装。在线市场、自动更新、回滚、详情截图、评分和最近日志
+外部 `.nest` 已可从文件安装。在线市场、自动更新、回滚、详情截图、评分和最近日志
 尚未实现。
 
 MCP 客户端可以使用 `plugin_list` 和 `plugin_manage` 完成相同的核心操作，包括从
@@ -1528,7 +1528,7 @@ public final class ExamplePlugin implements AgentHookPlugin {
 - 事件来源不可伪造；
 - 通知动作回传；
 - 命令、UI Renderer 和 LLM Provider 注册表。
-- `.nestplugin` ZIP 路径穿越、大小限制、DEX 只读加载和重启恢复；
+- `.nest` ZIP 路径穿越、大小限制、DEX 只读加载和重启恢复；
 - 应用中心式插件列表、搜索、分类、文件和详情。
 
 ### Manifest

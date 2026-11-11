@@ -1,10 +1,11 @@
 # 运行时模块边界
 
-NestSpace 现在只保留两个 Gradle 模块：
+主工程包含三个构建模块，并会按需加入 Debug 源码插件模块：
 
 ```text
 :app
-└── :plugin-api
+:plugin-api
+:testapp
 
 :dev-plugin-runtime-demo -> example-plugin/plugin
 :dev-plugin-<name>       -> dev-plugins/<name>
@@ -31,6 +32,10 @@ NestSpace 现在只保留两个 Gradle 模块：
 ```text
 :app ──> :plugin-api
 ```
+
+`testapp` 用于验证容器 Activity、Service、Provider、广播、native 探针和多进程能力，
+不参与 NestSpace 主程序依赖。源码插件模块只在 Debug 构建中作为插件加载，不会被写入
+正式主程序的运行时依赖图。
 
 源码插件在 Debug 构建中通过 `debugImplementation` 自动加入 `example-plugin/plugin`
 和 `dev-plugins/*`。插件资源生成到 `assets/plugins-dev/<plugin-id>/`，启动时由

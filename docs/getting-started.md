@@ -12,9 +12,9 @@
 
 从 [Releases](https://github.com/chuccp/NestSpace/releases/latest) 下载对应设备的 APK：
 
-- `NestSpace-vX-arm64.apk`：ARM64 真机、MuMu 等带 ARM 转译的模拟器；
-- `NestSpace-vX-x86_64.apk`：x86_64 PC / 没有 ARM 转译的模拟器；
-- `NestSpace-vX-universal.apk`：全部 ABI，适合不确定架构或 32 位设备。
+- `NestSpace-vX.Y.Z-arm64.apk`：ARM64 真机、MuMu 等带 ARM 转译的模拟器；
+- `NestSpace-vX.Y.Z-x86_64.apk`：x86_64 PC / 没有 ARM 转译的模拟器；
+- `NestSpace-vX.Y.Z-universal.apk`：全部 ABI，适合不确定架构或 32 位设备。
 
 也可以按 [从源码构建](building.md) 自行打包。
 
@@ -26,7 +26,7 @@
 - **运行管理**：查看和结束容器进程。
 
 底部 Dock 之外，桌面应用区域还有「插件中心」入口。它像独立应用一样打开，返回后直接
-回到桌面，用来管理源码插件和第三方 `.nestplugin`。
+回到桌面，用来管理源码插件和第三方 `.nest`。
 
 ![NestSpace 桌面](screenshots/desktop.jpg)
 
@@ -88,18 +88,15 @@ split_config.xxhdpi.apk
 
 ## 7. 配置和使用 AI 助手
 
-点桌面「AI助手」。没有模型时会显示：
-
-- 「去配置」：进入模型设置；
-- 「暂不配置」：继续使用规则模式。
+点桌面「AI助手」。没有模型时会显示未连接状态和「去配置大模型」入口；配置完成前不会执行命令或工具调用。
 
 推荐进入「空间设置 → 模型设置」配置 Claude 兼容或 OpenAI 兼容接口。模型页支持第三方预设、API Key 明文查看、最大上下文、最大输出、Temperature、最大工具轮次和思考程度。连接成功或失败都通过 Toast 提示。
 
 AI 助手的应用显示规则：
 
-- 「打开目标应用」「在目标应用中搜索内容」：全屏打开并执行操作；
-- 「读取目标应用首页内容」「整理目标应用榜单」：使用方形无头小窗读取信息；
-- 系统 PiP 能力保持开放，但 AI 无头任务期间不会额外进入系统 PiP。
+- 本地助手启动和操作虚拟应用时默认使用方形镜像小窗；
+- `display_mode=background` 不显示应用或小窗，`display_mode=visible` 才正常打开前台应用；
+- 登录、验证码、付款或授权等需要用户处理的步骤，使用 `hand_to_user` 把当前应用交给用户。
 
 助手固定在「虚拟空间 1」中工作，桌面对话和悬浮语音助手共享同一份历史。
 

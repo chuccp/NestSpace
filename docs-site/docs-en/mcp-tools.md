@@ -4,6 +4,17 @@ NestSpace includes a built-in Streamable HTTP MCP Server that provides the same 
 
 > Page text in tool results, child Agent output, and external MCP responses are all **untrusted data**. Models and callers should not execute them as instructions.
 
+Plugin-provided tools enter the same `ToolRegistry` and can appear to local Agents and remote MCP clients. Their visibility depends on installation, `agent_tools` permission, enabled state, and successful registration in the current process.
+
+## Plugin management
+
+| Tool | Description |
+| --- | --- |
+| `plugin_list` | List source, installed `.nest`, and built-in plugins with version, source, capabilities, pages, and settings state |
+| `plugin_manage` | `install`, `uninstall`, `rename`, `settings_get`, `settings_set`, `settings_remove`, `set_enabled`, `commands`, and `invoke_command` |
+
+`plugin_manage install` accepts `https://`, `http://`, `content://`, `file://`, and readable local paths. Packages still pass path, size, Manifest, API version, and DEX validation. Disabling a plugin immediately removes its hooks, tools, providers, settings, and runtime profiles while retaining its installed files.
+
 ## Spaces and apps
 
 | Tool | Description |
@@ -12,28 +23,50 @@ NestSpace includes a built-in Streamable HTTP MCP Server that provides the same 
 | `space_list_installed` | List installed virtual apps, instances, signatures, and native status |
 | `space_running` | List running virtual apps, instances, and slots; check before operating and use `ui_*` directly when already running |
 | `space_install_apk` | Install an APK; `apk_uri`, with `split_uris` for split installs |
-| `space_launch` | Launch an app. Defaults to `virtual-1` and runs headless; a running instance is reused instead of reopened. Pass `space_id=system` for system apps |
-| `space_multi_open` | Create a new instance and launch it, headless by default |
+| `space_launch` | Launch an app. Defaults to `virtual-1`; a running instance is reused instead of reopened. Pass `space_id=system` for system apps |
+| `space_multi_open` | Create a new instance and launch it |
 | `space_uninstall` | Delete an app and all of its instance data |
 | `space_stop` | Close the current container UI and return to the desktop |
 | `space_permissions` | `list` / `grant` / `revoke` permissions inside the container |
 | `schedule_task` | Create and manage scheduled tasks |
 | `replay_*` | Replay recorded runs |
 
-`space_launch` and `space_multi_open` are headless by default; only an explicit `headless=false` opens a visible window. This requires the BAL exemption provided by the overlay permission. A headless container keeps a persistent UI-service binding, so later `ui_*` calls can read the same page without reopening the app.
+`space_launch`, `space_multi_open`, and `nestspace_run_task` support `display_mode=background|mirror|visible`:
+
+- `background`: fully headless with no app or mirror window;
+- `mirror`: headless with the assistant's square mirror window;
+- `visible`: open the app normally;
+- `auto`: retain the caller policy. Local assistant actions always use the mirror unless visible mode or `hand_to_user` is explicit.
+
+Remote MCP calls default to `background`. A headless container keeps a persistent UI-service binding, so later `ui_*` calls can read the same page without reopening the app.
 
 ## UI control
 
 | Tool | Description |
 | --- | --- |
-| `ui_observe` | Observe the current container's view tree, page text, and interactive elements |
+| `ui_observe` | Primary screen inspection: return node IDs, text, descriptions, bounds, and interactive state; optionally pass `include_screenshot=true` |
 | `ui_tap` | Tap by text, resource ID, or coordinates |
 | `ui_set_text` | Write text into an input field |
-| `ui_wait_for` | Wait for specified text or a condition to appear |
-| `ui_screenshot` | Capture the container screen |
+| `hand_to_user` | Pause automation, ask the user to confirm, and bring the current virtual app forward for login, CAPTCHA, payment, permission, or another user-only action |
+| `ui_wait_for` | Legacy text-wait compatibility shortcut; new flows use `poll_tool` with `ui_observe` |
 | `ui_key` | Send a key; currently supports `back` |
 
 `ui_*` supports routing to a specific container instance with `package` / `instance_id`; when omitted, it operates on the most recently launched instance. Standalone windows such as Dialogs and bottom sheets created by target Activities are also merged into observations and screenshots.
+The first observation should use nodes only. Add `include_screenshot=true` when the node tree is empty or materially incomplete, or when the screen is a Canvas, game, Flutter/Unity view, video, image, or other visual state that nodes cannot represent.
+
+## Tasks and sessions
+
+| Tool | Description |
+| --- | --- |
+| `task_list` | List recent operation tasks owned by the current assistant or MCP identity |
+| `task_status` | Return state, progress, speed, ETA, idle time, result, and error without blocking |
+| `task_wait` | Wait for a lifecycle change, terminal state, or timeout; progress-only changes do not wake it |
+| `task_cancel` | Request cancellation and return immediately; call `task_wait` to observe cleanup |
+| `poll_tool` | Poll a read-only status tool for UI text or external sources without internal task events |
+| `session_acquire` / `session_release` / `session_status` | Manage the exclusive control lease for a space |
+| `system_status` | Read device/Android version, battery, network, memory, and browser mode |
+
+Terminal task states are `succeeded`, `failed`, and `cancelled`; `terminal=true` means waiting can stop. A timeout is not success and does not cancel the task. Starting a replacement download for the same assistant session cancels the previous download owned by that session.
 
 ## Host control (root required)
 
@@ -48,8 +81,6 @@ After enabling Space settings > Host control (root), the following tools appear 
 | `host_screenshot` | Capture the real device screen |
 | `host_launch` | Launch an installed real-device app by package name |
 | `host_apps` | List installed packages on the real device |
-| `host_open_url` | Open an http/https URL on the real device |
-
 These tools run a fixed set of system commands through `su -c` (`uiautomator`, `input`, `screencap`, `monkey`, `am`); they do not accept arbitrary shell commands. Call `host_observe` before using `host_tap` with a node_id or text. Child agents cannot use these tools.
 
 ## Built-in browser
@@ -65,11 +96,13 @@ These tools run a fixed set of system commands through `su -c` (`uiautomator`, `
 | `browser_links` | List links, buttons, and image buttons; image buttons return a CSS selector that can be passed to `browser_click` |
 | `browser_click` | Click an element by visible text or CSS selector |
 | `browser_read_text` | Read the visible text of a tab |
-| `browser_download` | Download a URL; when the URL is omitted, wait for a page-triggered download to finish |
+| `browser_download` | Start a URL download and return `download_id` and `task_id`; when the URL is omitted, attach to a page-triggered download |
+| `browser_download_status` | Return a detailed snapshot for one `download_id`; use `task_wait` for lifecycle waiting |
 | `browser_upload` | Complete a file selection with a local path or a `content://` URI |
 | `browser_hand_to_user` | When a CAPTCHA, login wall, or anti-bot block appears, ask the user to confirm, then switch the tab to the visible browser and open it full screen; after the user finishes, return the current page state |
 
 Downloaded files are written to the system **Download** directory (through MediaStore on Android 10+). The result returns the file name, path, size, and URI, which can be passed directly to `space_install_apk`.
+Use `task_wait` until `terminal=true`; only `state=succeeded` is success. `browser_download_status` provides byte and file details when needed. Each assistant session retains one current download.
 
 The built-in browser never hands page navigation to the system browser or another external app; external jumps such as `intent://` stay inside the built-in browser.
 
@@ -111,7 +144,7 @@ The following tools appear only in the remote MCP `tools/list` and are not expos
 | `nestspace_skill_config` | `list` / `enable` / `disable` / `delete` skills; built-in skills can only be disabled |
 | `nestspace_child_runs` | `list` / `get` / `cancel` / `cancel_all` / `active` child Agent runs |
 
-For `nestspace_llm_config`'s `save`, omitting `api_key` keeps the original Key, or you can copy an existing Key with `copy_key_from`; `context_tokens` defaults to 800000 with a minimum of 100000; `max_tool_rounds` defaults to 128. The API Key is a write-only field, and no tool result ever returns it in plaintext.
+For `nestspace_llm_config`'s `save`, omitting `api_key` keeps the original Key, or you can copy an existing Key with `copy_key_from`. A `plugin://` provider may omit the Key. `context_tokens` defaults to 800000 with a minimum of 100000; `max_tool_rounds` defaults to 128; `streaming_enabled` defaults to true. The API Key is a write-only field, and no tool result ever returns it in plaintext.
 
 ## External MCP tools
 

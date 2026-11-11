@@ -83,7 +83,7 @@ Release 会分别构建三个宿主变体：
 
 Debug 宿主会自动发现 `example-plugin/plugin` 和 `dev-plugins/*`，把插件 Java 直接编入
 宿主，并把资源隔离到 `assets/plugins-dev/<plugin-id>/`。正常开发插件只需要运行
-`:app:assembleDebug`，不需要手工生成 `.nestplugin`。
+`:app:assembleDebug`，不需要手工生成 `.nest`。
 
 构建公共 SDK：
 
@@ -100,10 +100,10 @@ Debug 宿主会自动发现 `example-plugin/plugin` 和 `dev-plugins/*`，把插
 产物：
 
 ```text
-build/plugin-packages/runtime-demo-plugin.nestplugin
+build/plugin-packages/runtime-demo-plugin.nest
 ```
 
-Debug APK 还会为源码插件自动生成仅供插件中心分享和导出的 `.nestplugin`。运行时仍直接
+Debug APK 还会为源码插件自动生成仅供插件中心分享和导出的 `.nest`。运行时仍直接
 使用宿主 ClassLoader，源码开发不依赖这份分享资产。
 
 运行插件相关测试：

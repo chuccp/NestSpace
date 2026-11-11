@@ -69,17 +69,18 @@ NestSpace 由四部分组成：
 
 ## 控制与 Agent
 
-- **本地 AI 助手**：支持 Claude 兼容和 OpenAI 兼容接口，通过 `space_*`、`ui_*`、`browser_*` 工具操作 `virtual-1` 空间。直接打开或操作应用时使用全屏窗口，查询和读取信息时使用方形无头小窗。
+- **本地 AI 助手**：支持 Claude 兼容和 OpenAI 兼容接口，通过 `space_*`、`ui_*`、`browser_*` 工具操作 `virtual-1` 空间。助手控制的应用默认使用镜像小窗，只有显式选择可见模式或调用 `hand_to_user` 把应用交还用户时才进入前台。
 - **远程 MCP**：内置 Streamable HTTP Server，默认只监听 `127.0.0.1`，可显式开启局域网监听；支持多客户端会话、SSE 心跳和 DELETE 会话。
+- **异步任务**：应用操作、浏览器导航和下载统一进入任务中心，支持 `task_status`、`task_wait`、`task_cancel` 和 `task_list`；MCP 启动应用或助手任务时可选择 `background`、`mirror` 或 `visible`。
 - **外部 MCP 工具**：本地助手可以连接外部 MCP Server，工具名以 `mcp_<id>_` 前缀隔离，不暴露给远程客户端。
 - **浏览器**：内置多标签 WebView，无头标签由 Agent 创建，可被可见浏览器接管；网页弹窗、外部回退链接和下载页不会交给系统浏览器。
 - **插件平台**：插件可以扩展 Agent 提示、问答、模型请求、工具和工具展示，也可以提供
   声明式 SettingView、网络、任务、事件、缓存和 SQLite。Debug 源码插件直接使用宿主
-  ClassLoader；正式 `.nestplugin` 当前使用 `DexClassLoader`。
+  ClassLoader；正式 `.nest` 当前使用 `DexClassLoader`。
 
 ## 已知限制
 
-- 建议先安装自己熟悉的 App；遇到兼容性问题时更容易判断是应用本身还是容器适配的问题，也方便向项目反馈。
+- NestSpace 主要用于验证 AI 能力，不保证所安装 App 的兼容性和安全性。
 - 兼容性取决于目标应用的加固、native SDK、动态加载和依赖组合；不是所有应用都能直接运行，遇到问题需要逐个适配。
 - 同时运行的容器进程最多 16 个，实际数量还受设备内存限制；自动模式下内存不足会回收最久未使用的后台容器。
 - Job、Alarm 和广播桥接只在容器进程存活期间有效，进程被系统回收后不会由系统唤醒；完整后台保活仍需前台服务策略。

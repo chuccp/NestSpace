@@ -35,7 +35,10 @@ NestSpace 自帶一個以 WebView 為基礎的多分頁瀏覽器，桌面有「�
 - 頁面觸發的下載會寫入系統 **Download** 目錄。
 - Android 10+ 透過 MediaStore 儲存，傳回檔案名稱、路徑、大小和 `content://` URI。
 - 下載好的 APK 可以直接在「应用管理」（應用程式管理）→「导入 APK」（匯入 APK）裡選擇，或交給 `space_install_apk`。
-- 助手可以呼叫 `browser_download` 直接下載 URL，或等待頁面觸發的下載完成。
+- 助手使用 `browser_download` 啟動 URL 下載，會立即回傳 `download_id` 和 `task_id`。
+- 使用 `task_wait` 等待到 `terminal=true`。只有 `state=succeeded` 才算成功，逾時不會取消下載。
+- 需要位元組數、百分比或檔案資訊時，使用 `browser_download_status`。
+- 每個助手工作階段只保留一個目前下載。啟動新下載會取消該工作階段先前的下載，使用者和其他工作階段的下載仍可繼續。
 
 ## 上傳
 

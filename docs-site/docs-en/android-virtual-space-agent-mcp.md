@@ -823,6 +823,8 @@ Rules:
 
 ### 5.7 Tool list
 
+The tables below document the early design and may contain proposed tool names that were never registered or have since been replaced. The current authoritative tool list is [MCP tool reference](mcp-tools.md).
+
 **Space management**
 
 | Tool | Purpose |
@@ -842,7 +844,6 @@ Rules:
 | Tool | Purpose |
 |---|---|
 | `ui_observe` | Return the node tree (optionally a screenshot) |
-| `ui_screenshot` | Return a screenshot |
 | `ui_tap` / `ui_long_press` | Tap/long-press |
 | `ui_swipe` / `ui_scroll` | Swipe/scroll |
 | `ui_set_text` | Input text |
@@ -1195,7 +1196,7 @@ Verified on an Android 7.1.1 x86 emulator:
 - ✅ Uninstall cleans up APKs, instance data, and state; the directory is empty.
 - ✅ When launching the second instance, the first instance goes to the background/is replaced under the single-process model; data is not lost.
 - ✅ The target Context's `getPackageName`, `getFilesDir`, `getSharedPreferences`, and `getApplicationInfo` are redirected.
-- ✅ Clean desktop: by default only virtual apps + "Space settings" are shown; system apps appear only after being selected in **Space settings**; supports setting/clearing wallpaper, which persists after a restart.
+- ✅ Clean desktop: fixed entries, Plugin Center, and imported virtual apps are shown. Host apps are normally installed as independent virtual copies; the `nestspace_desktop_apps` compatibility tool still controls legacy system-app shortcuts. Wallpaper settings persist after a restart.
 - ✅ Android 16 (API 36) retest: desktop, container, multiple instances, and instance data isolation work normally.
 - ✅ Android 14+ writable dex restriction: after the installed APK is made read-only, `DexClassLoader` loads it normally.
 - ✅ Android 9+ hidden API: integrated HiddenApiBypass 6.2; reflection such as `Activity.attach` works; without exemption, `Activity.attach not found`.

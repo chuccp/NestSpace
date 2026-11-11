@@ -152,7 +152,7 @@ abstract class PrepareSourcePluginShareAsset : DefaultTask() {
                 classesJar.absolutePath
             )
         }
-        val archive = File(work, "${pluginId.get()}.nestplugin")
+        val archive = File(work, "${pluginId.get()}.nest")
         ZipOutputStream(archive.outputStream().buffered()).use { zip ->
             val assetsRoot = sourceAssets.get().asFile
             assetsRoot.walkTopDown()
@@ -180,7 +180,7 @@ abstract class PrepareSourcePluginShareAsset : DefaultTask() {
         fileSystemOperations.delete { delete(output) }
         val target = File(
             output,
-            "source-plugin-packages/${pluginId.get()}.nestplugin"
+            "source-plugin-packages/${pluginId.get()}.nest"
         )
         target.parentFile.mkdirs()
         check(archive.renameTo(target)) {
@@ -309,7 +309,7 @@ if (androidSdk != null && d8 != null && androidJar != null) {
 
     tasks.register<Zip>("packagePlugin") {
         dependsOn("dexPluginPackage")
-        archiveFileName.set("runtime-demo-plugin.nestplugin")
+        archiveFileName.set("runtime-demo-plugin.nest")
         destinationDirectory.set(
             rootProject.layout.buildDirectory.dir("plugin-packages")
         )

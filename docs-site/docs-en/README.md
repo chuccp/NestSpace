@@ -15,7 +15,7 @@
 
 ## Limitations to know first
 
-- **App compatibility is the biggest variable**: Not every app runs correctly; app hardening, native SDKs, and hot updates can all cause problems. These issues can be resolved one app at a time through adaptation; if you encounter one, feel free to open an issue.
+- **NestSpace is primarily for validating AI capabilities**: It is not a general-purpose compatibility container and does not guarantee the compatibility or security of installed apps. App hardening, native SDKs, and hot updates can all cause failures; feel free to open an issue when you encounter one.
 - **There is a limit on how many virtual apps can run at once**: Limited by phone memory and container slots, at most 16 container processes can run simultaneously. They are managed automatically by default; when memory is tight, the least recently used background container is closed.
 
 ## Guide contents
@@ -38,6 +38,8 @@
 | Document | Contents |
 | --- | --- |
 | [Architecture & limitations](architecture.md) | Container implementation, process model, and known boundaries |
+| [Plugin platform and Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md) | Plugin Center, `.nest` packages, Agent tools/hooks, Host APIs, providers, and runtime profiles |
+| [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md) | Source plugins, Manifest, Java APIs, settings, testing, and packaging |
 | [MCP tool reference](mcp-tools.md) | All MCP tools and parameters |
 | [App / website knowledge packs](knowledge-packs.md) | Knowledge pack format, matching, and how to add one |
 | [Building from source](building.md) | Environment requirements, build commands, and CI |
@@ -48,7 +50,7 @@
 
 - In this documentation, "Space settings" refers to the Space settings icon on the desktop.
 - "App management", "Model settings", and similar pages are secondary pages within Space settings.
-- NestSpace is an experimental project; both app compatibility and the number of simultaneously running apps have limits. See [Architecture & limitations](architecture.md) for details.
+- NestSpace is an experimental project focused on validating AI capabilities. It does not guarantee the compatibility or security of installed apps, and the number of simultaneously running apps is limited. See [Architecture & limitations](architecture.md) for details.
 
 ## License
 

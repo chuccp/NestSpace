@@ -823,6 +823,8 @@ data class ControlLease(
 
 ### 5.7 工具清單
 
+以下表格記錄早期設計，可能包含從未註冊或已被替換的工具名稱。目前正式清單請見 [MCP 工具參考](mcp-tools.md)。
+
 **虛擬空間管理**
 
 | 工具 | 用途 |
@@ -842,7 +844,6 @@ data class ControlLease(
 | 工具 | 用途 |
 |---|---|
 | `ui_observe` | 傳回節點樹（可選截圖） |
-| `ui_screenshot` | 傳回截圖 |
 | `ui_tap` / `ui_long_press` | 點擊/長按 |
 | `ui_swipe` / `ui_scroll` | 滑動/捲動 |
 | `ui_set_text` | 輸入文字 |
@@ -1195,7 +1196,7 @@ Agent                         MCP Server / ToolRegistry      Engine / Control
 - ✅ 卸載清理 APK、執行個體資料、state；目錄為空。
 - ✅ 啟動第二個執行個體時，第一個執行個體在單處理程序模型下切換到背景/被取代；資料不遺失。
 - ✅ 目標 Context 的 `getPackageName`、`getFilesDir`、`getSharedPreferences`、`getApplicationInfo` 已重新導向。
-- ✅ 純淨桌面：預設僅顯示虛擬應用程式 + 「空间管理」（空間管理）；系統應用程式需在空間管理裡勾選後才上桌面；支援設定/清除壁紙，重新啟動後保留。
+- ✅ 純淨桌面：顯示固定入口、外掛中心和已匯入的虛擬應用程式。宿主應用程式通常會安裝為獨立虛擬副本；`nestspace_desktop_apps` 相容工具仍可管理舊系統應用程式捷徑。壁紙設定會在重新啟動後保留。
 - ✅ Android 16（API 36）複測：桌面、容器、多開、執行個體資料隔離正常。
 - ✅ Android 14+ 可寫 dex 限制：安裝後的 APK 設為唯讀後，`DexClassLoader` 正常載入。
 - ✅ Android 9+ hidden API：接入 HiddenApiBypass 6.2，`Activity.attach` 等反射可用；未豁免時 `Activity.attach not found`。

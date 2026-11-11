@@ -15,7 +15,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Development installer for signed .nestplugin packages.
+ * Development installer for signed .nest packages.
  *
  * Production installation must add publisher signatures, trust levels and an
  * isolated process. This implementation validates paths, sizes, Manifest,
@@ -75,7 +75,7 @@ internal class PluginPackageInstaller private constructor(
     @Synchronized
     fun importIncomingPackages() {
         incomingRoot.listFiles()
-            ?.filter { it.isFile && it.extension.equals("nestplugin", true) }
+            ?.filter { it.isFile && it.extension.equals("nest", true) }
             ?.sortedBy { it.name }
             ?.forEach { file ->
                 runCatching {
@@ -98,7 +98,7 @@ internal class PluginPackageInstaller private constructor(
     fun installFromInput(input: InputStream): PluginManifest {
         val temporary = File.createTempFile(
             "nestspace-plugin-",
-            ".nestplugin",
+            ".nest",
             context.cacheDir
         )
         return try {
@@ -179,7 +179,7 @@ internal class PluginPackageInstaller private constructor(
         } ?: error("Plugin is not installed")
         val temporary = File.createTempFile(
             "nestspace-export-",
-            ".nestplugin",
+            ".nest",
             context.cacheDir
         )
         try {
@@ -205,7 +205,7 @@ internal class PluginPackageInstaller private constructor(
         }
         val safeName = "${record.manifest.id}-${record.manifest.version}"
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
-        val target = File(directory, "$safeName.nestplugin")
+        val target = File(directory, "$safeName.nest")
         val temporary = File(directory, ".$safeName.tmp")
         temporary.delete()
         try {
