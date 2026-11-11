@@ -38,8 +38,8 @@
 | Document | Contents |
 | --- | --- |
 | [Architecture & limitations](architecture.md) | Container implementation, process model, and known boundaries |
-| [Plugin platform and Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md) | Plugin Center, `.nest` packages, Agent tools/hooks, Host APIs, providers, and runtime profiles |
-| [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md) | Source plugins, Manifest, Java APIs, settings, testing, and packaging |
+| [Plugin platform and Java SDK](plugin-center.md) | Plugin Center, `.nest` packages, Agent tools/hooks, Host APIs, providers, and runtime profiles |
+| [Plugin authoring guide](plugin-authoring.md) | Source plugins, Manifest, Java APIs, settings, testing, and packaging |
 | [MCP tool reference](mcp-tools.md) | All MCP tools and parameters |
 | [App / website knowledge packs](knowledge-packs.md) | Knowledge pack format, matching, and how to add one |
 | [Building from source](building.md) | Environment requirements, build commands, and CI |

@@ -103,4 +103,4 @@ APK のネイティブ ABI がデバイスまたは選択中の実行環境と�
 - [デスクトップと外観](desktop.md)
 - [アーキテクチャと制限](architecture.md)
 - [よくある質問](troubleshooting.md)
-- [プラグイン作成ガイド](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [プラグイン作成ガイド](plugin-authoring.md)

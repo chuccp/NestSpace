@@ -38,8 +38,8 @@
 | ドキュメント | 内容 |
 | --- | --- |
 | [アーキテクチャと制限](architecture.md) | コンテナの実装、プロセスモデル、既知の制限 |
-| [プラグインプラットフォームと Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md) | プラグインセンター、`.nest` パッケージ、Agent ツール/Hook、Host API、Provider、ランタイムプロファイル |
-| [プラグイン作成ガイド](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md) | ソースプラグイン、Manifest、Java API、設定、テスト、パッケージ作成 |
+| [プラグインプラットフォームと Java SDK](plugin-center.md) | プラグインセンター、`.nest` パッケージ、Agent ツール/Hook、Host API、Provider、ランタイムプロファイル |
+| [プラグイン作成ガイド](plugin-authoring.md) | ソースプラグイン、Manifest、Java API、設定、テスト、パッケージ作成 |
 | [MCP ツールリファレンス](mcp-tools.md) | すべての MCP ツールとパラメータ |
 | [アプリ / ウェブサイト知識パック](knowledge-packs.md) | 知識パックの形式、マッチング、追加方法 |
 | [ソースからのビルド](building.md) | 環境要件、ビルドコマンド、CI |

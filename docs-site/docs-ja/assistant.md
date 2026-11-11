@@ -224,4 +224,5 @@ MCP とアシスタントのタスクでは次のモードを指定できます�
 - [設定の詳細](settings.md)
 - [内蔵ブラウザ](browser.md)
 - [MCP ツールリファレンス](mcp-tools.md)
-- [プラグイン作成ガイド](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [プラグインプラットフォームと Java SDK](plugin-center.md)
+- [プラグイン作成ガイド](plugin-authoring.md)

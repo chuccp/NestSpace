@@ -114,5 +114,5 @@ NestSpace のアプリ専用ディレクトリ内に保存されます。
 - [アプリのインストールと管理](app-manager.md)：split、署名、インスタンスとデータディレクトリの詳細。
 - [設定の詳細](settings.md)：コンテナスロット、権限レベル、フローティングドットなど。
 - [MCP 制御サービス](mcp.md)：PC 上の Claude Code で NestSpace を制御する方法。
-- [プラグインプラットフォームと Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md)：プラグインセンター、`.nest` パッケージ、Agent hook、ランタイムプロファイル。
-- [プラグイン作成ガイド](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)：プラグインの開発、テスト、共有、パッケージ作成。
+- [プラグインプラットフォームと Java SDK](plugin-center.md)：プラグインセンター、`.nest` パッケージ、Agent hook、ランタイムプロファイル。
+- [プラグイン作成ガイド](plugin-authoring.md)：プラグインの開発、テスト、共有、パッケージ作成。

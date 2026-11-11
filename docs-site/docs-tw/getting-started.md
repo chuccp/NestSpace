@@ -114,5 +114,5 @@ NestSpace 的應用程式私有目錄下：
 - [應用程式安裝與管理](app-manager.md)：split、簽章、執行個體和資料目錄的細節。
 - [設定詳解](settings.md)：容器槽位、權限等級、懸浮球等。
 - [MCP 控制服務](mcp.md)：用電腦上的 Claude Code 控制 NestSpace。
-- [外掛平台與 Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md)：外掛中心、`.nest` 套件、Agent Hook 和執行階段 Profile。
-- [外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)：開發、測試、分享和封裝外掛。
+- [外掛平台與 Java SDK](plugin-center.md)：外掛中心、`.nest` 套件、Agent Hook 和執行階段 Profile。
+- [外掛撰寫指南](plugin-authoring.md)：開發、測試、分享和封裝外掛。

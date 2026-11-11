@@ -8,7 +8,7 @@ Space settings uses two levels. The home page keeps common entries, followed by 
 
 Plugin Center manages source plugins and installed `.nest` packages. Built-in modules are managed internally and are not shown in the plugin grid. Click a plugin to view its version, publisher, capabilities, detail page, and declarative settings. Long-press it to enable/disable, configure, rename, share, export, or delete an external package.
 
-Disabling a plugin immediately removes its hooks, tools, providers, settings, and runtime profiles from the current process while keeping its installed files. See the [plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md).
+Disabling a plugin immediately removes its hooks, tools, providers, settings, and runtime profiles from the current process while keeping its installed files. See the [plugin authoring guide](plugin-authoring.md).
 
 ## Apps & containers
 
@@ -200,5 +200,5 @@ Displays the current version number and project information.
 - [AI assistant](assistant.md)
 - [MCP control service](mcp.md)
 - [Troubleshooting](troubleshooting.md)
-- [Plugin platform and Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md)
-- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [Plugin platform and Java SDK](plugin-center.md)
+- [Plugin authoring guide](plugin-authoring.md)

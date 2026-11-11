@@ -103,4 +103,4 @@ APK 的 native ABI 與裝置或目前執行環境不符。請使用相符的套�
 - [桌面與外觀](desktop.md)
 - [架構與限制](architecture.md)
 - [疑難排解](troubleshooting.md)
-- [外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [外掛撰寫指南](plugin-authoring.md)

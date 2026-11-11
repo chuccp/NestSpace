@@ -38,8 +38,8 @@
 | 文件 | 內容 |
 | --- | --- |
 | [架構與限制](architecture.md) | 容器實作、處理程序模型和已知邊界 |
-| [外掛平台與 Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md) | 外掛中心、`.nest` 套件、Agent 工具/Hook、Host API、Provider 和執行階段 Profile |
-| [外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md) | 原始碼外掛、Manifest、Java API、設定、測試和封裝 |
+| [外掛平台與 Java SDK](plugin-center.md) | 外掛中心、`.nest` 套件、Agent 工具/Hook、Host API、Provider 和執行階段 Profile |
+| [外掛撰寫指南](plugin-authoring.md) | 原始碼外掛、Manifest、Java API、設定、測試和封裝 |
 | [MCP 工具參考](mcp-tools.md) | 全部 MCP 工具和參數 |
 | [App / 網站知識包](knowledge-packs.md) | 知識包的格式、匹配和新增方法 |
 | [從原始碼建置](building.md) | 環境需求、建置命令和 CI |

@@ -224,4 +224,5 @@ MCP 與助手任務可以選擇：
 - [設定詳解](settings.md)
 - [內建瀏覽器](browser.md)
 - [MCP 工具參考](mcp-tools.md)
-- [外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [外掛平台與 Java SDK](plugin-center.md)
+- [外掛撰寫指南](plugin-authoring.md)

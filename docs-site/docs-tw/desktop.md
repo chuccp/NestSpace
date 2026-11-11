@@ -125,4 +125,4 @@ NestSpace 的桌面不是系統桌面，而是應用程式內的啟動器，顯�
 
 - [應用程式安裝與管理](app-manager.md)
 - [設定詳解](settings.md)
-- [外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [外掛撰寫指南](plugin-authoring.md)

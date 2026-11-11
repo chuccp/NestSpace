@@ -24,6 +24,8 @@ nav:
   - Troubleshooting: troubleshooting.md
   - Reference:
       - Architecture & limitations: architecture.md
+      - Plugin authoring guide: plugin-authoring.md
+      - Plugin platform & Java SDK: plugin-center.md
       - MCP tool reference: mcp-tools.md
       - App / site knowledge packs: knowledge-packs.md
       - Build from source: building.md

@@ -103,4 +103,4 @@ Check the app under **Space settings → App management** and launch it there. A
 - [Desktop & appearance](desktop.md)
 - [Architecture & limitations](architecture.md)
 - [Troubleshooting](troubleshooting.md)
-- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [Plugin authoring guide](plugin-authoring.md)

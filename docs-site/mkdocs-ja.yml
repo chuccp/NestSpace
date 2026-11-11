@@ -24,6 +24,8 @@ nav:
   - よくある質問: troubleshooting.md
   - リファレンス:
       - アーキテクチャと制限: architecture.md
+      - プラグイン作成ガイド: plugin-authoring.md
+      - プラグインプラットフォームと Java SDK: plugin-center.md
       - MCP ツールリファレンス: mcp-tools.md
       - アプリ・サイト知識パック: knowledge-packs.md
       - ソースからビルド: building.md

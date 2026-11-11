@@ -224,3 +224,5 @@ Open **Plugin Center** from the desktop and install a `.nest` package there. Lon
 - [Settings](settings.md)
 - [Built-in browser](browser.md)
 - [MCP tool reference](mcp-tools.md)
+- [Plugin platform and Java SDK](plugin-center.md)
+- [Plugin authoring guide](plugin-authoring.md)

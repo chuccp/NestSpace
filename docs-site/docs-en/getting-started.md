@@ -114,5 +114,5 @@ Regular users do not need to access these directories manually. Uninstalling Nes
 - [App installation & management](app-manager.md): Details about split APKs, signatures, instances, and data directories.
 - [Settings](settings.md): Container slots, Permissions, the Floating dot, and more.
 - [MCP control service](mcp.md): Control NestSpace with Claude Code on your computer.
-- [Plugin platform and Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md): Plugin Center, `.nest` packages, Agent hooks, and runtime profiles.
-- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md): Develop, test, share, and package plugins.
+- [Plugin platform and Java SDK](plugin-center.md): Plugin Center, `.nest` packages, Agent hooks, and runtime profiles.
+- [Plugin authoring guide](plugin-authoring.md): Develop, test, share, and package plugins.

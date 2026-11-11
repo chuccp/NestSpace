@@ -125,4 +125,4 @@ NestSpace のデスクトップはシステムのホーム画面ではなく、�
 
 - [アプリのインストールと管理](app-manager.md)
 - [設定の詳細](settings.md)
-- [プラグイン作成ガイド](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [プラグイン作成ガイド](plugin-authoring.md)

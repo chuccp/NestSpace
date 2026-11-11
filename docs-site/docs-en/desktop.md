@@ -125,4 +125,4 @@ An app that was ended recreates its processes and loads its original data the ne
 
 - [App installation & management](app-manager.md)
 - [Settings](settings.md)
-- [Plugin authoring guide](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [Plugin authoring guide](plugin-authoring.md)

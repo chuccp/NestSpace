@@ -8,7 +8,7 @@
 
 プラグインセンターはソースプラグインとインストール済み `.nest` パッケージを管理します。内蔵モジュールは内部管理され、一覧には表示されません。プラグインをタップするとバージョン、提供元、Capability、詳細ページ、宣言型設定を確認できます。長押しすると有効化/無効化、設定、名前変更、共有、エクスポート、外部パッケージの削除ができます。
 
-無効化すると Hook、ツール、Provider、設定、ランタイムプロファイルが現在のプロセスから直ちに削除され、インストール内容だけが保持されます。詳しくは[プラグイン作成ガイド](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)を参照してください。
+無効化すると Hook、ツール、Provider、設定、ランタイムプロファイルが現在のプロセスから直ちに削除され、インストール内容だけが保持されます。詳しくは[プラグイン作成ガイド](plugin-authoring.md)を参照してください。
 
 ## アプリとコンテナ
 
@@ -200,5 +200,5 @@ API Key は Android Keystore で暗号化して保存され、どのツール結
 - [AI アシスタント](assistant.md)
 - [MCP 制御サービス](mcp.md)
 - [よくある質問](troubleshooting.md)
-- [プラグインプラットフォームと Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md)
-- [プラグイン作成ガイド](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [プラグインプラットフォームと Java SDK](plugin-center.md)
+- [プラグイン作成ガイド](plugin-authoring.md)

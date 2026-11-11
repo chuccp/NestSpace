@@ -24,6 +24,8 @@ nav:
   - 常見問題: troubleshooting.md
   - 參考:
       - 架構與限制: architecture.md
+      - 外掛撰寫指南: plugin-authoring.md
+      - 外掛平台與 Java SDK: plugin-center.md
       - MCP 工具參考: mcp-tools.md
       - App／網站知識包: knowledge-packs.md
       - 從原始碼建置: building.md

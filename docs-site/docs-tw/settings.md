@@ -8,7 +8,7 @@
 
 外掛中心管理原始碼外掛和已安裝的 `.nest` 套件，內建模組由系統內部管理，不會顯示在列表中。點擊外掛可以查看版本、發行者、Capability、詳細頁面和宣告式設定；長按可以啟用/停用、設定、重新命名、分享、匯出或刪除外部套件。
 
-停用外掛會立即從目前處理程序移除 Hook、工具、Provider、設定和執行階段 Profile，但保留安裝內容。詳見[外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)。
+停用外掛會立即從目前處理程序移除 Hook、工具、Provider、設定和執行階段 Profile，但保留安裝內容。詳見[外掛撰寫指南](plugin-authoring.md)。
 
 ## 應用程式與容器
 
@@ -200,5 +200,5 @@ API Key 使用 Android Keystore 加密儲存，任何工具結果都不會傳回
 - [AI 助手](assistant.md)
 - [MCP 控制服務](mcp.md)
 - [常見問題](troubleshooting.md)
-- [外掛平台與 Java SDK](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-center.md)
-- [外掛撰寫指南](https://github.com/chuccp/NestSpace/blob/main/docs/plugin-authoring.md)
+- [外掛平台與 Java SDK](plugin-center.md)
+- [外掛撰寫指南](plugin-authoring.md)
