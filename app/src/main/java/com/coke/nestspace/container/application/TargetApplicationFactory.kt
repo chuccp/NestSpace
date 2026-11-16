@@ -2,6 +2,7 @@ package com.coke.nestspace.container.application
 
 import android.app.Application
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.coke.nestspace.container.ContainerCompat
 import com.coke.nestspace.container.ContainerContext
@@ -178,7 +179,18 @@ object TargetApplicationFactory {
             }.getOrNull()
             if (attachBase != null) {
                 attachBase.isAccessible = true
+                val started = SystemClock.elapsedRealtime()
+                Log.d(
+                    TAG,
+                    "attachBaseContext start application=${application.javaClass.name} " +
+                        "context=${context.javaClass.name} package=${context.packageName}"
+                )
                 attachBase.invoke(application, context)
+                Log.d(
+                    TAG,
+                    "attachBaseContext done application=${application.javaClass.name} " +
+                        "took=${SystemClock.elapsedRealtime() - started}ms"
+                )
                 return
             }
             type = type.superclass

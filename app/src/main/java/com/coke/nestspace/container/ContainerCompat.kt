@@ -33,6 +33,11 @@ object ContainerCompat {
         val factoryClass = findAppComponentFactory(spec, loader) ?: return loader
         return runCatching {
             val factory = factoryClass.getDeclaredConstructor().newInstance()
+            Log.d(
+                TAG,
+                "instantiateClassLoader start factory=${factoryClass.name} " +
+                    "loader=${loader.javaClass.name} package=${spec.packageName}"
+            )
             val installed = factoryClass
                 .getMethod(
                     "instantiateClassLoader",
@@ -46,13 +51,37 @@ object ContainerCompat {
                 ?: loader
             Log.d(
                 TAG,
-                "runtime class loader ${factoryClass.name}: same=${installed === loader}"
+                "instantiateClassLoader done factory=${factoryClass.name} " +
+                    "loader=${installed.javaClass.name} same=${installed === loader} " +
+                    "dex=${loaderDexPaths(installed)}"
             )
             installed
         }.onFailure {
             Log.w(TAG, "runtime class loader hook failed: ${factoryClass.name}", it)
         }.getOrDefault(loader)
     }
+
+    private fun loaderDexPaths(loader: ClassLoader): List<String> = runCatching {
+        val pathList = Class.forName("dalvik.system.BaseDexClassLoader")
+            .getDeclaredField("pathList")
+            .apply { isAccessible = true }
+            .get(loader)
+            ?: return@runCatching emptyList()
+        val elements = pathList.javaClass
+            .getDeclaredField("dexElements")
+            .apply { isAccessible = true }
+            .get(pathList) as? Array<*>
+            ?: return@runCatching emptyList()
+        elements.mapNotNull { element ->
+            runCatching {
+                val dexFile = element?.javaClass
+                    ?.getDeclaredField("dexFile")
+                    ?.apply { isAccessible = true }
+                    ?.get(element)
+                dexFile?.javaClass?.getMethod("getName")?.invoke(dexFile) as? String
+            }.getOrNull()
+        }
+    }.getOrDefault(emptyList())
 
     private fun findAppComponentFactory(
         spec: ContainerLaunchSpec,
