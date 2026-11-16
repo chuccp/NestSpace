@@ -62,6 +62,8 @@ class PluginChatServiceTest {
         assertEquals("answer", streamed.text)
         assertEquals(listOf("ans", "wer"), deltas)
 
+        assertEquals("answer", LlmProbe.test(config))
+
         val nonStreamingDeltas = mutableListOf<String>()
         val nonStreaming = ChatServices.create(
             config.copy(streamingEnabled = false)

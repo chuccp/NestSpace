@@ -139,7 +139,13 @@ internal suspend fun llmConfig(context: Context, args: JSONObject): ToolResult {
             }
             val contextTokens = if (args.has("context_tokens")) {
                 args.optInt("context_tokens")
-                    .coerceAtLeast(LlmConfig.MIN_CONTEXT_TOKENS)
+                    .coerceAtLeast(
+                        if (pluginProvider) {
+                            LlmConfig.MIN_PLUGIN_CONTEXT_TOKENS
+                        } else {
+                            LlmConfig.MIN_CONTEXT_TOKENS
+                        }
+                    )
             } else {
                 existing?.contextTokens ?: LlmConfig.DEFAULT_CONTEXT_TOKENS
             }

@@ -541,7 +541,9 @@ internal class AndroidPluginTasks(
     }
 
     fun closeAll() {
-        active.values.toList().forEach { it.cancel() }
+        // Task completion removes handles concurrently; iterating directly
+        // avoids relying on a size snapshot that can change before iteration.
+        active.values.forEach { it.cancel() }
         active.clear()
         executor.shutdownNow()
     }

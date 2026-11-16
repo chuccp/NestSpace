@@ -2,12 +2,12 @@
   "items": [
     {
       "provider_id": "com.example.runtime.demo",
-      "name": "Runtime Demo Provider",
+      "name": "DeepSeek Demo Provider",
       "models": [
         {
-          "id": "runtime-demo",
-          "name": "Runtime Demo",
-          "context_tokens": 32000,
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash",
+          "context_tokens": 128000,
           "vision": false
         }
       ]

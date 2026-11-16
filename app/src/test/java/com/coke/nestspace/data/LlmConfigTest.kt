@@ -61,4 +61,20 @@ class LlmConfigTest {
 
         assertEquals(config, config.withNormalizedEndpoint())
     }
+
+    @Test
+    fun `plugin models use their declared context floor`() {
+        val config = LlmConfig(
+            baseUrl = "plugin://test.provider",
+            model = "small-context",
+            contextTokens = 32_000
+        )
+
+        assertEquals(32_000, config.contextTokens)
+        assertEquals(
+            LlmConfig.MIN_PLUGIN_CONTEXT_TOKENS,
+            config.minimumContextTokens()
+        )
+        assertEquals(config, config.withNormalizedEndpoint())
+    }
 }

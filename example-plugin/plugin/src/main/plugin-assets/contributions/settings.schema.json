@@ -38,6 +38,32 @@
       "default": "30",
       "min": 1,
       "max": 300
+    },
+    {
+      "id": "deepseek_base_url",
+      "title": "DeepSeek Base URL",
+      "description": "Anthropic-compatible endpoint used by the demo LLM provider.",
+      "type": "text",
+      "format": "url",
+      "default": "https://api.deepseek.com/anthropic",
+      "max_length": 2048
+    },
+    {
+      "id": "deepseek_model",
+      "title": "DeepSeek model",
+      "description": "Model passed to the Anthropic-compatible endpoint.",
+      "type": "text",
+      "default": "deepseek-v4-flash",
+      "max_length": 160
+    },
+    {
+      "id": "deepseek_api_key",
+      "title": "DeepSeek API Key",
+      "description": "Stored in plugin-scoped Android Keystore-backed secret storage.",
+      "type": "secret",
+      "required": true,
+      "min_length": 8,
+      "max_length": 512
     }
   ]
 }

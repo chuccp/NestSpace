@@ -128,6 +128,12 @@ data class LlmConfig(
             .takeIf { it.matches(Regex("[A-Za-z0-9_.-]{1,128}")) }
     }
 
+    /** Plugin models declare their own context window, which can be below the
+     * 100k floor used by configurable HTTP endpoints. */
+    fun minimumContextTokens(): Int =
+        if (pluginProviderId() != null) MIN_PLUGIN_CONTEXT_TOKENS
+        else MIN_CONTEXT_TOKENS
+
     companion object {
         private val VERSIONED_MESSAGES_PATH =
             Regex("/v\\d+[a-z0-9._-]*/messages/?$", RegexOption.IGNORE_CASE)
@@ -135,6 +141,7 @@ data class LlmConfig(
         const val DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
         const val DEFAULT_CONTEXT_TOKENS = 800_000
         const val MIN_CONTEXT_TOKENS = 100_000
+        const val MIN_PLUGIN_CONTEXT_TOKENS = 1_000
         const val CONTEXT_TOKEN_STEP = 100_000
         const val DEFAULT_MAX_TOOL_ROUNDS = 128
         const val MIN_TOOL_ROUNDS = 1

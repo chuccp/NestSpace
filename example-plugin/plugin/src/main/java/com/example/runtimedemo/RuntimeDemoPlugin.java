@@ -36,6 +36,7 @@ import com.coke.nestspace.plugin.PluginFileExportRequest;
 import com.coke.nestspace.plugin.PluginFilePickerRequest;
 import com.coke.nestspace.plugin.PluginHttpMethod;
 import com.coke.nestspace.plugin.PluginHttpRequest;
+import com.coke.nestspace.plugin.PluginHttpResponse;
 import com.coke.nestspace.plugin.PluginLifecycle;
 import com.coke.nestspace.plugin.PluginLlmModel;
 import com.coke.nestspace.plugin.PluginLlmProvider;
@@ -73,11 +74,14 @@ import com.coke.nestspace.runtime.plugin.RuntimeProfile;
 import com.coke.nestspace.runtime.plugin.RuntimeProfileProvider;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -103,6 +107,10 @@ public final class RuntimeDemoPlugin implements
         AgentToolPlugins.qualify(PLUGIN_ID, TOOL_ID);
     private static final String DEMO_PACKAGE_NAME = "com.example.target";
     private static final String DEMO_VERSION_GLOB = "1*";
+    private static final String DEEPSEEK_BASE_URL =
+        "https://api.deepseek.com/anthropic";
+    private static final String DEEPSEEK_MODEL = "deepseek-v4-flash";
+    private static final String DEEPSEEK_API_KEY_SETTING = "deepseek_api_key";
 
     private volatile PluginContext context;
     private volatile PluginSubscription eventSubscription;
@@ -610,13 +618,18 @@ public final class RuntimeDemoPlugin implements
 
     @Override
     public String getDisplayName() {
-        return "Runtime Demo Provider";
+        return "DeepSeek Demo Provider";
     }
 
     @Override
     public List<PluginLlmModel> getModels() {
         return Collections.singletonList(
-            new PluginLlmModel("runtime-demo", "Runtime Demo", 32_000, false)
+            new PluginLlmModel(
+                DEEPSEEK_MODEL,
+                "DeepSeek V4 Flash",
+                128_000,
+                false
+            )
         );
     }
 
@@ -625,23 +638,298 @@ public final class RuntimeDemoPlugin implements
         PluginLlmRequest request,
         Consumer<String> onTextDelta
     ) {
-        return CompletableFuture.supplyAsync(() -> {
-            if (request.isStreamEnabled()) {
-                onTextDelta.accept("Runtime ");
-                onTextDelta.accept("Demo");
-            }
-            return demoResponse(request);
-        });
+        PluginContext host = context;
+        if (host == null) {
+            return failedLlm("plugin is not attached", "PLUGIN_DETACHED");
+        }
+        return host.settings()
+            .getString("deepseek_base_url", DEEPSEEK_BASE_URL)
+            .thenCompose(baseUrl -> host.settings()
+                .getString("deepseek_model", DEEPSEEK_MODEL)
+                .thenCompose(model -> host.settings()
+                    .getString("timeout", "30")
+                    .thenCompose(timeoutValue -> host.secrets()
+                        .get(DEEPSEEK_API_KEY_SETTING, "")
+                        .thenCompose(apiKey -> {
+                            if (apiKey.trim().isEmpty()) {
+                                return failedLlm(
+                                    "DeepSeek API key is not configured",
+                                    "LLM_API_KEY_MISSING"
+                                );
+                            }
+                            int timeoutSeconds = parseTimeout(timeoutValue);
+                            String selectedModel = model.trim().isEmpty()
+                                ? request.getModelId()
+                                : model.trim();
+                            JSONObject body;
+                            try {
+                                body = buildDeepSeekBody(
+                                    request,
+                                    selectedModel
+                                );
+                            } catch (Throwable error) {
+                                return failedLlm(
+                                    error.getMessage() == null
+                                        ? "Could not encode the DeepSeek request"
+                                        : error.getMessage(),
+                                    "LLM_REQUEST_ERROR"
+                                );
+                            }
+                            Map<String, String> headers = new LinkedHashMap<>();
+                            headers.put("x-api-key", apiKey.trim());
+                            headers.put("anthropic-version", "2023-06-01");
+                            headers.put("content-type", "application/json");
+                            headers.put("accept", "application/json");
+                            PluginHttpRequest httpRequest =
+                                new PluginHttpRequest(
+                                    PluginHttpMethod.POST,
+                                    deepSeekMessagesUrl(baseUrl),
+                                    headers,
+                                    body.toString(),
+                                    Math.min(timeoutSeconds * 1_000, 30_000)
+                                );
+                            return host.network()
+                                .execute(httpRequest)
+                                .thenApply(response -> parseDeepSeekResponse(
+                                    response,
+                                    request,
+                                    onTextDelta
+                                ));
+                        })
+                    )
+                )
+            );
     }
 
-    private PluginLlmResponse demoResponse(PluginLlmRequest request) {
-        return new PluginLlmResponse(
-            "Runtime Demo provider received model=" + request.getModelId(),
-            "[]",
-            "stop",
-            0,
-            0
+    private static JSONObject buildDeepSeekBody(
+        PluginLlmRequest request,
+        String model
+    ) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("model", model);
+        body.put(
+            "max_tokens",
+            Math.min(65_536, Math.max(16, request.getMaxTokens()) + 8_192)
         );
+        body.put(
+            "temperature",
+            Math.max(0.0, Math.min(1.0, request.getTemperature()))
+        );
+        body.put("stream", false);
+        if (!request.getSystemPrompt().trim().isEmpty()) {
+            body.put("system", request.getSystemPrompt());
+        }
+        body.put("messages", deepSeekMessages(request.getMessagesJson()));
+        JSONArray tools = new JSONArray(request.getToolsJson());
+        if (tools.length() > 0) {
+            body.put("tools", tools);
+        }
+        return body;
+    }
+
+    private static JSONArray deepSeekMessages(String rawMessages)
+        throws Exception {
+        JSONArray source = new JSONArray(
+            rawMessages == null || rawMessages.trim().isEmpty()
+                ? "[]"
+                : rawMessages
+        );
+        JSONArray result = new JSONArray();
+        for (int i = 0; i < source.length(); i++) {
+            JSONObject message = source.optJSONObject(i);
+            if (message == null) continue;
+            JSONArray blocks = message.optJSONArray("blocks");
+            if (blocks == null || blocks.length() == 0) continue;
+            JSONArray content = new JSONArray();
+            for (int j = 0; j < blocks.length(); j++) {
+                JSONObject block = blocks.optJSONObject(j);
+                if (block == null) continue;
+                String type = block.optString("type");
+                if ("text".equals(type)) {
+                    content.put(new JSONObject()
+                        .put("type", "text")
+                        .put("text", block.optString("text")));
+                } else if ("tool_use".equals(type)) {
+                    content.put(new JSONObject()
+                        .put("type", "tool_use")
+                        .put("id", block.optString("id"))
+                        .put("name", block.optString("name"))
+                        .put(
+                            "input",
+                            block.optJSONObject("arguments") == null
+                                ? new JSONObject()
+                                : block.optJSONObject("arguments")
+                        ));
+                } else if ("tool_result".equals(type)) {
+                    content.put(new JSONObject()
+                        .put("type", "tool_result")
+                        .put(
+                            "tool_use_id",
+                            block.optString("tool_use_id")
+                        )
+                        .put("content", block.optString("content"))
+                        .put("is_error", block.optBoolean("is_error")));
+                } else if ("image".equals(type)) {
+                    content.put(new JSONObject()
+                        .put("type", "image")
+                        .put(
+                            "source",
+                            new JSONObject()
+                                .put("type", "base64")
+                                .put(
+                                    "media_type",
+                                    block.optString("mime_type")
+                                )
+                                .put("data", block.optString("data"))
+                        ));
+                }
+            }
+            if (content.length() == 0) continue;
+            result.put(new JSONObject()
+                .put("role", message.optString("role", "user"))
+                .put("content", content));
+        }
+        return result;
+    }
+
+    private static PluginLlmResponse parseDeepSeekResponse(
+        PluginHttpResponse response,
+        PluginLlmRequest request,
+        Consumer<String> onTextDelta
+    ) {
+        try {
+            return parseDeepSeekResponseInternal(
+                response,
+                request,
+                onTextDelta
+            );
+        } catch (IllegalStateException error) {
+            throw error;
+        } catch (Throwable error) {
+            throw new IllegalStateException(
+                error.getMessage() == null
+                    ? "Could not parse the DeepSeek response"
+                    : error.getMessage(),
+                error
+            );
+        }
+    }
+
+    private static PluginLlmResponse parseDeepSeekResponseInternal(
+        PluginHttpResponse response,
+        PluginLlmRequest request,
+        Consumer<String> onTextDelta
+    ) throws Exception {
+        if (response.getStatusCode() < 200 ||
+            response.getStatusCode() > 299
+        ) {
+            throw new IllegalStateException(
+                "DeepSeek HTTP " + response.getStatusCode() + ": " +
+                    apiErrorMessage(response.getBody())
+            );
+        }
+        JSONObject root = new JSONObject(response.getBody());
+        JSONArray content = root.optJSONArray("content");
+        if (content == null) {
+            throw new IllegalStateException(
+                "DeepSeek response is missing content"
+            );
+        }
+        StringBuilder text = new StringBuilder();
+        JSONArray toolCalls = new JSONArray();
+        for (int i = 0; i < content.length(); i++) {
+            JSONObject block = content.optJSONObject(i);
+            if (block == null) continue;
+            String type = block.optString("type");
+            if ("text".equals(type)) {
+                text.append(block.optString("text"));
+            } else if ("tool_use".equals(type)) {
+                toolCalls.put(new JSONObject()
+                    .put(
+                        "id",
+                        block.optString("id").isEmpty()
+                            ? "plugin-tool-" + i
+                            : block.optString("id")
+                    )
+                    .put("name", block.optString("name"))
+                    .put(
+                        "arguments",
+                        block.optJSONObject("input") == null
+                            ? new JSONObject()
+                            : block.optJSONObject("input")
+                    ));
+            }
+        }
+        if (text.length() == 0 && toolCalls.length() == 0) {
+            throw new IllegalStateException(
+                "DeepSeek returned no visible content"
+            );
+        }
+        if (request.isStreamEnabled() && onTextDelta != null) {
+            String value = text.toString();
+            for (int offset = 0; offset < value.length(); offset += 80) {
+                onTextDelta.accept(
+                    value.substring(
+                        offset,
+                        Math.min(value.length(), offset + 80)
+                    )
+                );
+            }
+        }
+        JSONObject usage = root.optJSONObject("usage");
+        int inputTokens = usage == null ? 0 : usage.optInt("input_tokens", 0);
+        int cachedTokens = usage == null
+            ? 0
+            : usage.optInt("cache_read_input_tokens", 0);
+        int outputTokens = usage == null ? 0 : usage.optInt("output_tokens", 0);
+        return new PluginLlmResponse(
+            text.toString(),
+            toolCalls.toString(),
+            root.optString("stop_reason"),
+            inputTokens + cachedTokens,
+            outputTokens
+        );
+    }
+
+    private static String apiErrorMessage(String body) {
+        try {
+            String message = new JSONObject(body)
+                .optJSONObject("error")
+                .optString("message");
+            if (!message.isEmpty()) return message;
+        } catch (Throwable ignored) {
+        }
+        String compact = body == null ? "" : body.trim();
+        return compact.length() <= 500 ? compact : compact.substring(0, 500);
+    }
+
+    private static String deepSeekMessagesUrl(String rawBaseUrl) {
+        String value = rawBaseUrl == null ? "" : rawBaseUrl.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        if (value.endsWith("/v1/messages")) return value;
+        if (value.endsWith("/v1")) return value + "/messages";
+        return value + "/v1/messages";
+    }
+
+    private static int parseTimeout(String value) {
+        try {
+            return Math.max(1, Math.min(300, Integer.parseInt(value.trim())));
+        } catch (Throwable ignored) {
+            return 30;
+        }
+    }
+
+    private static CompletableFuture<PluginLlmResponse> failedLlm(
+        String message,
+        String errorCode
+    ) {
+        CompletableFuture<PluginLlmResponse> future = new CompletableFuture<>();
+        future.completeExceptionally(
+            new IllegalStateException(errorCode + ": " + message)
+        );
+        return future;
     }
 
     private static PluginToolResult success(JSONObject value) {

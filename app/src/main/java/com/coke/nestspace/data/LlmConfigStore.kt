@@ -137,17 +137,25 @@ class LlmConfigStore(context: Context) {
                 needsSave = true
                 true
             }
+            val baseUrl = json.optString("baseUrl", defaults.baseUrl)
+            val minimumContextTokens = if (
+                baseUrl.trim().startsWith("plugin://", ignoreCase = true)
+            ) {
+                LlmConfig.MIN_PLUGIN_CONTEXT_TOKENS
+            } else {
+                LlmConfig.MIN_CONTEXT_TOKENS
+            }
             val config = LlmConfig(
                 id = json.optString("id").ifBlank { UUID.randomUUID().toString() },
                 name = json.optString("name"),
                 protocol = protocol,
-                baseUrl = json.optString("baseUrl", defaults.baseUrl),
+                baseUrl = baseUrl,
                 apiKey = ApiKeyCipher.decrypt(storedKey),
                 model = json.optString("model", defaults.model),
                 contextTokens = json.optInt(
                     "contextTokens",
                     LlmConfig.DEFAULT_CONTEXT_TOKENS
-                ).coerceAtLeast(LlmConfig.MIN_CONTEXT_TOKENS),
+                ).coerceAtLeast(minimumContextTokens),
                 maxToolRounds = json.optInt(
                     "maxToolRounds",
                     LlmConfig.DEFAULT_MAX_TOOL_ROUNDS

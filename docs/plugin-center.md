@@ -1066,13 +1066,18 @@ Manifest 的 `contributes.pages` 和 `contributes.result_renderers` 注册声明
 
 ### 8.13 LLM Provider
 
-`PluginLlmProvider` 可注册自定义模型协议。用户把模型 Base URL 配置为：
+`PluginLlmProvider` 可注册自定义模型协议。`getModels()` 返回的模型会自动出现在
+「空间设置 → 模型设置 → 插件模型」中。用户点击模型即可添加并切换到它，不需要
+填写 Base URL、模型 ID 或 API Key。插件停用或卸载后，入口会立即从模型设置中移除。
+
+宿主内部仍把这类模型保存为：
 
 ```text
 plugin://example-provider
 ```
 
-宿主将内部 ChatProtocol 转换为 JSON messages/tools，并通过唯一的
+并记录插件声明的模型 ID。宿主将内部 ChatProtocol 转换为 JSON messages/tools，
+并通过唯一的
 `executeAsync(request, onTextDelta)` 调用 Provider。模型配置的「流式输出」开关决定
 `request.isStreamEnabled()`；开启时插件可以通过 `Consumer<String>` 发送文本增量，
 关闭时不发送增量。两种模式都返回同一个 `CompletableFuture<PluginLlmResponse>`，

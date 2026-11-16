@@ -1,5 +1,6 @@
 package com.coke.nestspace.plugin
 
+import com.coke.nestspace.data.AppSettingsEvents
 import com.coke.nestspace.speech.SpeechGateway
 import com.coke.nestspace.plugin.PluginMetadataRegistry
 import com.coke.nestspace.runtime.plugin.RuntimeProfileProvider
@@ -47,6 +48,7 @@ internal object PluginRuntimeManager {
             }
             if (plugin is PluginLlmProvider) {
                 PluginLlmProviders.install(plugin)
+                AppSettingsEvents.notifyChanged()
             }
             if (plugin is PluginSpeechProvider) {
                 PluginSpeechProviders.install(plugin)
@@ -78,6 +80,7 @@ internal object PluginRuntimeManager {
         PluginUiPlugins.uninstall(id)
         if (plugin is PluginLlmProvider) {
             PluginLlmProviders.uninstallProvider(plugin.providerId)
+            AppSettingsEvents.notifyChanged()
         }
         if (plugin is PluginSpeechProvider) {
             PluginSpeechProviders.uninstall(plugin.providerId)

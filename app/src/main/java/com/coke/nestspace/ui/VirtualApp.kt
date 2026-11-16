@@ -160,6 +160,7 @@ import com.coke.nestspace.ui.plugins.PluginCenterActivity
 import com.coke.nestspace.ui.settings.SettingsHomeScreen
 import com.coke.nestspace.ui.settings.SettingsCategory
 import com.coke.nestspace.location.MockLocationSettings
+import com.coke.nestspace.plugin.PluginLlmCatalog
 import com.coke.nestspace.proxy.AppProxySettings
 import com.coke.nestspace.update.AppUpdateManager
 
@@ -290,6 +291,9 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
         mutableStateOf(ToolPermissionSettings.customCategories(context))
     }
     val settingsRevision by AppSettingsEvents.revision.collectAsState()
+    val pluginModels = remember(settingsRevision) {
+        PluginLlmCatalog.snapshot()
+    }
     LaunchedEffect(settingsRevision) {
         slotMode = ContainerProcessPool.slotLimitMode(context)
         slotLimit = ContainerProcessPool.slotLimit(context)
@@ -778,10 +782,12 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                     SpacesPage.MODEL -> ModelDetailScreen(
                         configs = llmConfigs,
                         activeId = activeLlmId,
+                        pluginModels = pluginModels,
                         onAddLlm = {
                             editingLlm = LlmConfig.defaultsFor(LlmProtocol.ANTHROPIC)
                             spacesPage = SpacesPage.MODEL_EDIT
                         },
+                        onAddPluginModel = viewModel::usePluginLlmModel,
                         onEditLlm = {
                             editingLlm = it
                             spacesPage = SpacesPage.MODEL_EDIT

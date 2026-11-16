@@ -13,14 +13,19 @@ object LlmProbe {
     suspend fun test(config: LlmConfig, context: Context? = null): String =
         withContext(Dispatchers.IO) {
             val config = config.withNormalizedEndpoint()
-            if (config.baseUrl.isBlank() || config.model.isBlank() ||
-                config.apiKey.isBlank()
-            ) {
+            if (!config.isConfigured) {
                 throw IllegalArgumentException(
-                    AppLanguage.tr(
-                        "Base URL、模型和 API Key 不能为空",
-                        "Base URL, model and API key must not be empty"
-                    )
+                    if (config.pluginProviderId() != null) {
+                        AppLanguage.tr(
+                            "插件模型不能为空",
+                            "The plugin model must not be empty"
+                        )
+                    } else {
+                        AppLanguage.tr(
+                            "Base URL、模型和 API Key 不能为空",
+                            "Base URL, model and API key must not be empty"
+                        )
+                    }
                 )
             }
             val sink = context?.let { app ->

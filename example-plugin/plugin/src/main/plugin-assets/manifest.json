@@ -22,6 +22,7 @@
     "device"
   ],
   "host_permissions": [
+    "https://api.deepseek.com/*",
     "https://example.com/*",
     "wss://echo.websocket.events/*"
   ],

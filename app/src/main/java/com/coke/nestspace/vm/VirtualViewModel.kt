@@ -32,6 +32,7 @@ import com.coke.nestspace.container.ContainerProcessPool
 import com.coke.nestspace.container.HeadlessMirrorWindow
 import com.coke.nestspace.control.ContainerUiClient
 import com.coke.nestspace.llm.LlmProbe
+import com.coke.nestspace.plugin.PluginLlmModelOption
 import com.coke.nestspace.service.McpForegroundService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -477,6 +478,18 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
                     normalized.model.ifBlank { "no model" } + ")"
             )
         )
+    }
+
+    fun usePluginLlmModel(option: PluginLlmModelOption) {
+        val existing = llmConfigs.value.firstOrNull {
+            it.pluginProviderId() == option.providerId &&
+                it.model == option.modelId
+        }
+        if (existing != null) {
+            selectLlmConfig(existing.id)
+        } else {
+            saveLlmConfig(option.toLlmConfig())
+        }
     }
 
     fun deleteLlmConfig(id: String) {

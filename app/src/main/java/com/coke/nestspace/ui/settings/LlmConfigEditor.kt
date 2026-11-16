@@ -19,6 +19,8 @@ import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,14 +75,15 @@ fun LlmConfigEditor(
         mutableStateOf(config.streamingEnabled)
     }
     var showPresets by remember(config) { mutableStateOf(false) }
+    val pluginProviderId = remember(config) { config.pluginProviderId() }
 
     fun contextValue(): Int = (contextTokens.toIntOrNull() ?: config.contextTokens)
-        .coerceAtLeast(LlmConfig.MIN_CONTEXT_TOKENS)
+        .coerceAtLeast(config.minimumContextTokens())
 
     fun stepContext(delta: Int) {
         val next = (contextValue().toLong() + delta)
             .coerceIn(
-                LlmConfig.MIN_CONTEXT_TOKENS.toLong(),
+                config.minimumContextTokens().toLong(),
                 Int.MAX_VALUE.toLong()
             )
         contextTokens = next.toString()
@@ -143,94 +146,141 @@ fun LlmConfigEditor(
             singleLine = true
         )
 
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            LlmProtocol.entries.forEach { item ->
-                FilterChip(
-                    selected = protocol == item,
-                    onClick = {
-                        if (protocol != item) {
-                            val previousDefaults = LlmConfig.defaultsFor(protocol)
-                            protocol = item
-                            val defaults = LlmConfig.defaultsFor(item)
-                            if (name.isBlank() || name == previousDefaults.name) {
-                                name = defaults.name
+        if (pluginProviderId == null) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                LlmProtocol.entries.forEach { item ->
+                    FilterChip(
+                        selected = protocol == item,
+                        onClick = {
+                            if (protocol != item) {
+                                val previousDefaults = LlmConfig.defaultsFor(protocol)
+                                protocol = item
+                                val defaults = LlmConfig.defaultsFor(item)
+                                if (name.isBlank() || name == previousDefaults.name) {
+                                    name = defaults.name
+                                }
+                                baseUrl = defaults.baseUrl
+                                model = defaults.model
                             }
-                            baseUrl = defaults.baseUrl
-                            model = defaults.model
-                        }
-                    },
-                    label = { Text(item.label) }
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = baseUrl,
-                onValueChange = { baseUrl = it },
-                modifier = Modifier.weight(1f),
-                label = { Text("Base URL") },
-                placeholder = {
-                    Text(
-                        when (protocol) {
-                            LlmProtocol.ANTHROPIC -> LlmConfig.DEFAULT_ANTHROPIC_BASE
-                            LlmProtocol.OPENAI -> LlmConfig.DEFAULT_OPENAI_BASE
-                        }
+                        },
+                        label = { Text(item.label) }
                     )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Base URL") },
+                    placeholder = {
+                        Text(
+                            when (protocol) {
+                                LlmProtocol.ANTHROPIC -> LlmConfig.DEFAULT_ANTHROPIC_BASE
+                                LlmProtocol.OPENAI -> LlmConfig.DEFAULT_OPENAI_BASE
+                            }
+                        )
+                    },
+                    singleLine = true
+                )
+                OutlinedButton(
+                    onClick = { showPresets = true },
+                    modifier = Modifier.height(56.dp)
+                ) {
+                    Text(AppLanguage.tr("预设", "Presets"))
+                }
+            }
+
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = { apiKey = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("API Key") },
+                visualTransformation = if (showApiKey) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    IconButton(onClick = { showApiKey = !showApiKey }) {
+                        Icon(
+                            imageVector = if (showApiKey) {
+                                Icons.Rounded.VisibilityOff
+                            } else {
+                                Icons.Rounded.Visibility
+                            },
+                            contentDescription = if (showApiKey) {
+                                AppLanguage.tr("隐藏 API Key", "Hide API key")
+                            } else {
+                                AppLanguage.tr("显示 API Key", "Show API key")
+                            }
+                        )
+                    }
                 },
                 singleLine = true
             )
-            OutlinedButton(
-                onClick = { showPresets = true },
-                modifier = Modifier.height(56.dp)
+        } else {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
             ) {
-                Text(AppLanguage.tr("预设", "Presets"))
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        AppLanguage.tr("插件模型", "Plugin model"),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        AppLanguage.tr(
+                            "模型和凭据由插件提供，无需填写 Base URL 或 API Key。",
+                            "The plugin provides this model and its credentials; " +
+                                "no Base URL or API key is required."
+                        ),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        pluginProviderId,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
         OutlinedTextField(
-            value = apiKey,
-            onValueChange = { apiKey = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("API Key") },
-            visualTransformation = if (showApiKey) {
-                VisualTransformation.None
-            } else {
-                PasswordVisualTransformation()
-            },
-            trailingIcon = {
-                IconButton(onClick = { showApiKey = !showApiKey }) {
-                    Icon(
-                        imageVector = if (showApiKey) {
-                            Icons.Rounded.VisibilityOff
-                        } else {
-                            Icons.Rounded.Visibility
-                        },
-                        contentDescription = if (showApiKey) {
-                            AppLanguage.tr("隐藏 API Key", "Hide API key")
-                        } else {
-                            AppLanguage.tr("显示 API Key", "Show API key")
-                        }
-                    )
-                }
-            },
-            singleLine = true
-        )
-
-        OutlinedTextField(
             value = model,
-            onValueChange = { model = it },
+            onValueChange = {
+                if (pluginProviderId == null) model = it
+            },
             modifier = Modifier.fillMaxWidth(),
             label = { Text(AppLanguage.tr("模型", "Model")) },
             placeholder = { Text(AppLanguage.tr("例如 claude-sonnet-5-5 / gpt-6.1-sol", "e.g. claude-sonnet-5-5 / gpt-6.1-sol")) },
-            singleLine = true
+            singleLine = true,
+            readOnly = pluginProviderId != null,
+            supportingText = if (pluginProviderId != null) {
+                {
+                    Text(
+                        AppLanguage.tr(
+                            "插件注册的模型 ID",
+                            "Model ID registered by the plugin"
+                        )
+                    )
+                }
+            } else {
+                null
+            }
         )
 
         Row(
@@ -265,7 +315,7 @@ fun LlmConfigEditor(
         ) {
             OutlinedButton(
                 onClick = { stepContext(-LlmConfig.CONTEXT_TOKEN_STEP) },
-                enabled = contextValue() > LlmConfig.MIN_CONTEXT_TOKENS
+                enabled = contextValue() > config.minimumContextTokens()
             ) {
                 Text("-")
             }

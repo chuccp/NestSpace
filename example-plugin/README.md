@@ -16,6 +16,22 @@
 - LLM Provider；
 - 运行时代理测试策略。
 
+## DeepSeek 真实请求
+
+Demo 的 LLM Provider 调用 DeepSeek 的 Anthropic 兼容接口，默认值为：
+
+```text
+Base URL: https://api.deepseek.com/anthropic
+Model:    deepseek-v4-flash
+```
+
+在插件中心长按 Runtime Demo Plugin，打开“设置”，填写 DeepSeek API Key 后保存。
+API Key 使用插件作用域的 Android Keystore 加密存储，不会写入源码或普通设置。
+随后在“模型设置 → 插件模型”中添加 `DeepSeek V4 Flash` 即可测试。
+
+Provider 支持系统提示、多轮消息、图片、工具调用和 token 用量回传。网络请求只会发往
+Manifest `host_permissions` 中声明的 `https://api.deepseek.com/*`。
+
 ## 直接拉源码开发（推荐）
 
 不需要先生成 `.nest`。NestSpace 在 Debug 构建中会自动发现：
