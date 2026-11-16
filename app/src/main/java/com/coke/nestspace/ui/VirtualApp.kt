@@ -154,6 +154,7 @@ import com.coke.nestspace.ui.agent.McpTasksScreen
 import com.coke.nestspace.ui.settings.ScheduledTasksScreen
 import com.coke.nestspace.ui.settings.EvaluationReplayScreen
 import com.coke.nestspace.ui.settings.TokenUsageScreen
+import com.coke.nestspace.ui.settings.TtsSettingsScreen
 import com.coke.nestspace.ui.settings.ToolPermissionScreen
 import com.coke.nestspace.ui.settings.HostControlScreen
 import com.coke.nestspace.ui.settings.LocationSimulationScreen
@@ -180,6 +181,7 @@ private enum class SpacesPage {
     MODEL,
     MODEL_EDIT,
     TOOLS,
+    TTS,
     SYSTEM_PROMPT,
     MCP_CLIENTS,
     MCP_TASKS,
@@ -233,6 +235,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
     var permissionsFromAssistant by remember { mutableStateOf(false) }
     var editingLlm by remember { mutableStateOf<LlmConfig?>(null) }
     var toolsBackPage by remember { mutableStateOf(SpacesPage.ROOT) }
+    var ttsBackPage by remember { mutableStateOf(SpacesPage.ROOT) }
     var instanceDetailPackage by remember { mutableStateOf("") }
     var instanceDetailId by remember { mutableStateOf("") }
     var instanceDetailFromDesktop by remember { mutableStateOf(false) }
@@ -465,6 +468,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                 spacesPage = SpacesPage.MODEL
             }
             spacesPage == SpacesPage.TOOLS -> spacesPage = toolsBackPage
+            spacesPage == SpacesPage.TTS -> spacesPage = ttsBackPage
             spacesPage == SpacesPage.INSTANCE_DETAIL -> {
                 if (instanceDetailFromDesktop) {
                     spacesPage = SpacesPage.ROOT
@@ -567,6 +571,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
             SpacesPage.FLOATING_DOT -> AppLanguage.tr("悬浮球", "Floating dot")
             SpacesPage.MODEL -> AppLanguage.tr("模型设置", "Model settings")
             SpacesPage.TOOLS -> AppLanguage.tr("插件工具", "Plugin tools")
+            SpacesPage.TTS -> AppLanguage.tr("TTS 配置", "TTS settings")
             SpacesPage.MODEL_EDIT ->
                 if (editingLlm?.id.isNullOrBlank()) {
                     AppLanguage.tr("添加模型", "Add model")
@@ -716,6 +721,16 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                                 }
                                 spacesPage = SpacesPage.TOOLS
                             },
+                            onOpenTts = {
+                                ttsBackPage = if (
+                                    spacesPage == SpacesPage.SETTINGS_ASSISTANT
+                                ) {
+                                    SpacesPage.SETTINGS_ASSISTANT
+                                } else {
+                                    SpacesPage.ROOT
+                                }
+                                spacesPage = SpacesPage.TTS
+                            },
                             onOpenSystemPrompt = { spacesPage = SpacesPage.SYSTEM_PROMPT },
                             onOpenMcpClients = { spacesPage = SpacesPage.MCP_CLIENTS },
                             onOpenMemory = { spacesPage = SpacesPage.MEMORY },
@@ -823,6 +838,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                             onToggleTool = viewModel::setAgentToolEnabled
                         )
                     }
+
+                    SpacesPage.TTS -> TtsSettingsScreen()
 
                     SpacesPage.MODEL_EDIT -> {
                         val config = editingLlm

@@ -2,15 +2,16 @@ package com.coke.nestspace.tools
 
 import com.coke.nestspace.speech.SpeechException
 import com.coke.nestspace.speech.SpeechGateway
+import com.coke.nestspace.speech.TtsSettings
 import org.json.JSONArray
 import org.json.JSONObject
 
 internal fun ToolRegistry.speechToolSpecs(): List<ToolSpec> = listOf(
     ToolSpec(
         name = "speech_speak",
-        description = "Synthesize and enqueue speech through an enabled plugin speech provider. " +
-            "Returns after synthesis is queued; playback continues in the host. " +
-            "If provider_id is omitted, the highest-priority enabled provider is used.",
+        description = "Speak text through the configured TTS provider. System Android TTS " +
+            "is used by default; an enabled plugin speech provider may be selected in TTS " +
+            "settings or explicitly with provider_id.",
         inputSchema = schema(
             "text" to "string",
             "provider_id" to "string",
@@ -82,6 +83,7 @@ internal fun ToolRegistry.speechToolSpecs(): List<ToolSpec> = listOf(
         inputSchema = schema()
     ) { _, _ ->
         val status = SpeechGateway.status()
+        val configuredProviderId = TtsSettings.load(context).providerId
         val providers = JSONArray()
         status.providers.forEach { provider ->
             providers.put(
@@ -97,6 +99,7 @@ internal fun ToolRegistry.speechToolSpecs(): List<ToolSpec> = listOf(
                 .put("active_request_id", status.activeRequestId ?: JSONObject.NULL)
                 .put("active_provider_id", status.activeProviderId ?: JSONObject.NULL)
                 .put("queued", status.queued)
+                .put("configured_provider_id", configuredProviderId)
                 .put("providers", providers)
                 .toString()
         )

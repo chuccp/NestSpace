@@ -52,6 +52,7 @@ internal object PluginRuntimeManager {
             }
             if (plugin is PluginSpeechProvider) {
                 PluginSpeechProviders.install(plugin)
+                AppSettingsEvents.notifyChanged()
             }
         } catch (error: Throwable) {
             detach(plugin, descriptor, context)
@@ -85,6 +86,7 @@ internal object PluginRuntimeManager {
         if (plugin is PluginSpeechProvider) {
             PluginSpeechProviders.uninstall(plugin.providerId)
             SpeechGateway.stopProvider(plugin.providerId)
+            AppSettingsEvents.notifyChanged()
         }
         if (plugin is PluginLifecycle) {
             runCatching(plugin::onDetach)

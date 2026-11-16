@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.QueryStats
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Security
@@ -97,6 +98,7 @@ internal fun SettingsHomeScreen(
     onOpenFloatingDot: () -> Unit,
     onOpenModel: () -> Unit,
     onOpenTools: () -> Unit,
+    onOpenTts: () -> Unit,
     onOpenSystemPrompt: () -> Unit,
     onOpenMcpClients: () -> Unit,
     onOpenMemory: () -> Unit,
@@ -160,6 +162,16 @@ internal fun SettingsHomeScreen(
                                 "Manage Agent tools registered by plugins"
                             ),
                             onClick = onOpenTools
+                        )
+                        HorizontalDivider(Modifier.padding(start = 68.dp))
+                        SettingsMenuRow(
+                            icon = Icons.Default.RecordVoiceOver,
+                            title = AppLanguage.tr("TTS 配置", "TTS settings"),
+                            summary = AppLanguage.tr(
+                                "系统语音或插件语音",
+                                "System or plugin voice"
+                            ),
+                            onClick = onOpenTts
                         )
                         HorizontalDivider(Modifier.padding(start = 68.dp))
                         SettingsMenuRow(
@@ -373,6 +385,16 @@ internal fun SettingsHomeScreen(
                 }
                 item {
                     SettingsGroup(AppLanguage.tr("使用偏好", "Preferences")) {
+                        SettingsMenuRow(
+                            icon = Icons.Default.RecordVoiceOver,
+                            title = AppLanguage.tr("TTS 配置", "TTS settings"),
+                            summary = AppLanguage.tr(
+                                "系统语音或插件语音",
+                                "System or plugin voice"
+                            ),
+                            onClick = onOpenTts
+                        )
+                        HorizontalDivider(Modifier.padding(start = 68.dp))
                         SettingsMenuRow(
                             icon = Icons.Default.Security,
                             title = AppLanguage.tr("权限级别", "Permissions"),

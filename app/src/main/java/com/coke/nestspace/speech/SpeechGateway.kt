@@ -7,6 +7,8 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.coke.nestspace.plugin.PluginSpeechAudio
 import com.coke.nestspace.plugin.PluginSpeechProvider
@@ -19,6 +21,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -79,6 +85,10 @@ object SpeechGateway {
     private val queued = AtomicInteger(0)
     private val active = AtomicReference<PendingSpeech?>()
     private val inFlight = ConcurrentHashMap<String, InFlight>()
+    private val systemTts = AtomicReference<TextToSpeech?>()
+    private val systemInitLock = Mutex()
+    private val systemGroups = ConcurrentHashMap<String, AtomicInteger>()
+    private val systemActiveRequest = AtomicReference<String?>()
 
     init {
         scope.launch {
@@ -100,9 +110,30 @@ object SpeechGateway {
         pitch: Float = 1f,
         interrupt: Boolean = false
     ): SpeechEnqueueResult {
-        val provider = selectProvider(providerId)
+        val availablePluginIds = PluginSpeechProviders.snapshot()
+            .mapTo(mutableSetOf()) { it.providerId }
+        val selectedProviderId = TtsProviderSelection.resolve(
+            explicitProviderId = providerId,
+            savedProviderId = TtsSettings.load(context).providerId,
+            pluginProviders = availablePluginIds
+        )
         if (interrupt) stopAll()
         val requestId = UUID.randomUUID().toString()
+        if (selectedProviderId == TtsSettings.SYSTEM_PROVIDER_ID) {
+            return speakSystem(
+                context = context,
+                requestId = requestId,
+                text = text,
+                locale = locale,
+                rate = rate,
+                pitch = pitch
+            )
+        }
+        val provider = PluginSpeechProviders.find(selectedProviderId)
+            ?: throw SpeechException(
+                "SPEECH_PROVIDER_NOT_FOUND",
+                "Speech provider is not available: $selectedProviderId"
+            )
         val request = PluginSpeechRequest(
             requestId,
             text,
@@ -171,9 +202,9 @@ object SpeechGateway {
     }
 
     fun stopAll(): Int {
+        var stopped = stopSystem()
         inFlight.values.forEach { it.future.cancel(true) }
         inFlight.clear()
-        var stopped = 0
         active.getAndSet(null)?.let {
             it.cancelled.set(true)
             it.track.get()?.let { track -> runCatching { track.pause() } }
@@ -189,6 +220,9 @@ object SpeechGateway {
     }
 
     fun stopProvider(providerId: String): Int {
+        if (providerId == TtsSettings.SYSTEM_PROVIDER_ID) {
+            return stopSystem()
+        }
         inFlight.entries
             .filter { it.value.providerId == providerId }
             .forEach {
@@ -221,37 +255,170 @@ object SpeechGateway {
 
     fun status(): SpeechGatewayStatus {
         val current = active.get()
+        val activeSystem = systemActiveRequest.get()
+        val queuedSystem = (
+            systemGroups.size - if (activeSystem != null) 1 else 0
+        ).coerceAtLeast(0)
         return SpeechGatewayStatus(
-            activeRequestId = current?.requestId,
-            activeProviderId = current?.providerId,
-            queued = queued.get().coerceAtLeast(0),
-            providers = PluginSpeechProviders.snapshot()
-        )
-    }
-
-    private fun selectProvider(providerId: String?): PluginSpeechProvider {
-        val id = providerId.orEmpty().trim()
-        val provider = if (id.isEmpty()) {
-            PluginSpeechProviders.snapshot().firstOrNull()
-        } else {
-            PluginSpeechProviders.find(id)
-        }
-        return provider ?: throw SpeechException(
-            if (id.isEmpty()) {
-                "SPEECH_PROVIDER_UNAVAILABLE"
+            activeRequestId = activeSystem ?: current?.requestId,
+            activeProviderId = if (activeSystem != null) {
+                TtsSettings.SYSTEM_PROVIDER_ID
             } else {
-                "SPEECH_PROVIDER_NOT_FOUND"
+                current?.providerId
             },
-            if (id.isEmpty()) {
-                "No speech provider plugin is enabled"
-            } else {
-                "Speech provider is not available: $id"
-            }
+            queued = queued.get().coerceAtLeast(0) + queuedSystem,
+            providers = PluginSpeechProviders.snapshot()
         )
     }
 
     private fun selectProviderOrNull(providerId: String): PluginSpeechProvider? =
         PluginSpeechProviders.find(providerId)
+
+    private suspend fun speakSystem(
+        context: Context,
+        requestId: String,
+        text: String,
+        locale: String,
+        rate: Float,
+        pitch: Float
+    ): SpeechEnqueueResult {
+        val engine = ensureSystemTts(context)
+        val requestedLocale = parseLocale(locale)
+        val availability = engine.isLanguageAvailable(requestedLocale)
+        if (availability < TextToSpeech.LANG_AVAILABLE ||
+            engine.setLanguage(requestedLocale) < TextToSpeech.LANG_AVAILABLE
+        ) {
+            throw SpeechException(
+                "TTS_LANGUAGE_UNAVAILABLE",
+                "System TTS does not have voice data for " +
+                    requestedLocale.toLanguageTag()
+            )
+        }
+        engine.setSpeechRate(rate.coerceIn(0.1f, 3f))
+        engine.setPitch(pitch.coerceIn(0.25f, 2f))
+        val maxChars = TextToSpeech.getMaxSpeechInputLength()
+            .coerceAtLeast(1)
+            .let { it - 64 }
+        val chunks = text.chunked(maxChars.coerceAtLeast(1))
+        val remaining = AtomicInteger(chunks.size)
+        systemGroups[requestId] = remaining
+        chunks.forEachIndexed { index, chunk ->
+            val result = engine.speak(
+                chunk,
+                TextToSpeech.QUEUE_ADD,
+                null,
+                "$requestId#$index"
+            )
+            if (result == TextToSpeech.ERROR) {
+                systemGroups.remove(requestId)
+                systemActiveRequest.compareAndSet(requestId, null)
+                throw SpeechException(
+                    "SYSTEM_TTS_ERROR",
+                    "Android system TTS rejected the utterance"
+                )
+            }
+        }
+        return SpeechEnqueueResult(
+            requestId = requestId,
+            providerId = TtsSettings.SYSTEM_PROVIDER_ID,
+            providerName = TtsSettings.SYSTEM_PROVIDER_NAME,
+            voiceId = requestedLocale.toLanguageTag(),
+            durationMs = 0L
+        )
+    }
+
+    private suspend fun ensureSystemTts(context: Context): TextToSpeech {
+        systemTts.get()?.let { return it }
+        return withTimeoutOrNull(20_000L) {
+            systemInitLock.withLock {
+                systemTts.get()?.let { return@withLock it }
+                suspendCancellableCoroutine { continuation ->
+                    val holder = AtomicReference<TextToSpeech?>()
+                    val engine = TextToSpeech(context.applicationContext) { status ->
+                        val created = holder.get()
+                        if (status == TextToSpeech.SUCCESS && created != null) {
+                            created.setOnUtteranceProgressListener(
+                                systemUtteranceListener()
+                            )
+                            systemTts.set(created)
+                            if (continuation.isActive) continuation.resume(created)
+                        } else {
+                            created?.shutdown()
+                            systemTts.compareAndSet(created, null)
+                            if (continuation.isActive) {
+                                continuation.resumeWithException(
+                                    SpeechException(
+                                        "SYSTEM_TTS_UNAVAILABLE",
+                                        "Android system TTS could not be initialized"
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    holder.set(engine)
+                    continuation.invokeOnCancellation {
+                        engine.shutdown()
+                        systemTts.compareAndSet(engine, null)
+                    }
+                }
+            }
+        } ?: throw SpeechException(
+            "SYSTEM_TTS_TIMEOUT",
+            "Android system TTS did not initialize within 20 seconds"
+        )
+    }
+
+    private fun systemUtteranceListener(): UtteranceProgressListener =
+        object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                utteranceId
+                    ?.substringBefore('#')
+                    ?.let(systemActiveRequest::set)
+            }
+
+            override fun onDone(utteranceId: String?) {
+                finishSystemUtterance(utteranceId)
+            }
+
+            @Deprecated("Deprecated in Android")
+            override fun onError(utteranceId: String?) {
+                finishSystemUtterance(utteranceId)
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                finishSystemUtterance(utteranceId)
+            }
+        }
+
+    private fun finishSystemUtterance(utteranceId: String?) {
+        val requestId = utteranceId?.substringBefore('#') ?: return
+        val remaining = systemGroups[requestId] ?: return
+        if (remaining.decrementAndGet() <= 0) {
+            systemGroups.remove(requestId)
+            systemActiveRequest.compareAndSet(requestId, null)
+        }
+    }
+
+    private fun stopSystem(): Int {
+        val stopped = systemGroups.size
+        systemGroups.clear()
+        systemActiveRequest.set(null)
+        systemTts.get()?.let { engine ->
+            if (engine.stop() == TextToSpeech.ERROR) {
+                Log.w(TAG, "system TTS stop failed")
+            }
+        }
+        return stopped
+    }
+
+    private fun parseLocale(raw: String): Locale {
+        val value = raw.trim()
+        return if (value.isEmpty()) {
+            Locale.getDefault()
+        } else {
+            Locale.forLanguageTag(value.replace('_', '-'))
+        }
+    }
 
     private suspend fun play(item: PendingSpeech) {
         if (item.cancelled.get()) return

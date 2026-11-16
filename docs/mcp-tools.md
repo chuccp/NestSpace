@@ -191,7 +191,7 @@ MCP 调用未指定时默认 `background`，调用方可按任务自行选择。
 
 | 工具 | 说明 |
 | --- | --- |
-| `speech_speak` | 通过插件合成文字并由宿主播放，可指定 `provider_id`、`voice_id`、`locale`、`rate`、`pitch` 和 `interrupt` |
+| `speech_speak` | 使用系统或插件 TTS 朗读文字，可指定 `provider_id`、`voice_id`、`locale`、`rate`、`pitch` 和 `interrupt` |
 | `speech_stop` | 停止当前和排队中的播报 |
 | `speech_status` | 查看当前 Provider、播放状态和队列长度 |
 

@@ -1089,7 +1089,8 @@ plugin://example-provider
 ### 8.14 Speech Provider
 
 `PluginSpeechProvider` 负责插件自己的 TTS 实现，包括音色、语言、文本规整和 PCM
-合成。宿主不内置 TTS，也不在缺少插件时自动回退。
+合成。宿主默认使用 Android 系统 TTS；用户也可以选择插件 Provider，所选插件不可用时
+运行时自动回退到系统 TTS。
 
 Provider 返回 `PluginSpeechAudio`，其中只允许 PCM16LE 音频数据。宿主统一负责
 AudioFocus、播放队列、停止、缓存和扬声器输出，并通过 `speech_speak`、
