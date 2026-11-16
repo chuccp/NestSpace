@@ -251,5 +251,6 @@ internal fun ModelDetailScreen(
                 }
             }
         }
+
     }
 }

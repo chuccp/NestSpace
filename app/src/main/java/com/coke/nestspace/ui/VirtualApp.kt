@@ -139,6 +139,7 @@ import com.coke.nestspace.ui.settings.AppUpdateDetailScreen
 import com.coke.nestspace.ui.settings.AppearanceDetailScreen
 import com.coke.nestspace.ui.settings.ChildRunsScreen
 import com.coke.nestspace.ui.settings.FloatingDotDetailScreen
+import com.coke.nestspace.ui.settings.AgentToolsScreen
 import com.coke.nestspace.ui.settings.ModelDetailScreen
 import com.coke.nestspace.ui.settings.ServicesDetailScreen
 import com.coke.nestspace.ui.settings.LanguageDetailScreen
@@ -178,6 +179,7 @@ private enum class SpacesPage {
     FLOATING_DOT,
     MODEL,
     MODEL_EDIT,
+    TOOLS,
     SYSTEM_PROMPT,
     MCP_CLIENTS,
     MCP_TASKS,
@@ -211,6 +213,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
     val llmConfig by viewModel.llmConfig.collectAsState()
     val llmConfigs by viewModel.llmConfigs.collectAsState()
     val activeLlmId by viewModel.activeLlmId.collectAsState()
+    val agentTools by viewModel.agentTools.collectAsState()
+    val agentToolsLoading by viewModel.agentToolsLoading.collectAsState()
     val llmTesting by viewModel.llmTesting.collectAsState()
     val agentBusy by viewModel.agentBusy.collectAsState()
     val mcpStatus by viewModel.mcpStatus.collectAsState()
@@ -228,6 +232,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
     var assistantSettingsFromAssistant by remember { mutableStateOf(false) }
     var permissionsFromAssistant by remember { mutableStateOf(false) }
     var editingLlm by remember { mutableStateOf<LlmConfig?>(null) }
+    var toolsBackPage by remember { mutableStateOf(SpacesPage.ROOT) }
     var instanceDetailPackage by remember { mutableStateOf("") }
     var instanceDetailId by remember { mutableStateOf("") }
     var instanceDetailFromDesktop by remember { mutableStateOf(false) }
@@ -459,6 +464,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                 editingLlm = null
                 spacesPage = SpacesPage.MODEL
             }
+            spacesPage == SpacesPage.TOOLS -> spacesPage = toolsBackPage
             spacesPage == SpacesPage.INSTANCE_DETAIL -> {
                 if (instanceDetailFromDesktop) {
                     spacesPage = SpacesPage.ROOT
@@ -560,6 +566,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
             SpacesPage.APPEARANCE -> AppLanguage.tr("外观", "Appearance")
             SpacesPage.FLOATING_DOT -> AppLanguage.tr("悬浮球", "Floating dot")
             SpacesPage.MODEL -> AppLanguage.tr("模型设置", "Model settings")
+            SpacesPage.TOOLS -> AppLanguage.tr("插件工具", "Plugin tools")
             SpacesPage.MODEL_EDIT ->
                 if (editingLlm?.id.isNullOrBlank()) {
                     AppLanguage.tr("添加模型", "Add model")
@@ -699,6 +706,16 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                             onOpenAppearance = { spacesPage = SpacesPage.APPEARANCE },
                             onOpenFloatingDot = { spacesPage = SpacesPage.FLOATING_DOT },
                             onOpenModel = { spacesPage = SpacesPage.MODEL },
+                            onOpenTools = {
+                                toolsBackPage = if (
+                                    spacesPage == SpacesPage.SETTINGS_ASSISTANT
+                                ) {
+                                    SpacesPage.SETTINGS_ASSISTANT
+                                } else {
+                                    SpacesPage.ROOT
+                                }
+                                spacesPage = SpacesPage.TOOLS
+                            },
                             onOpenSystemPrompt = { spacesPage = SpacesPage.SYSTEM_PROMPT },
                             onOpenMcpClients = { spacesPage = SpacesPage.MCP_CLIENTS },
                             onOpenMemory = { spacesPage = SpacesPage.MEMORY },
@@ -795,6 +812,17 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                         onDeleteLlm = viewModel::deleteLlmConfig,
                         onSelectLlm = viewModel::selectLlmConfig
                     )
+
+                    SpacesPage.TOOLS -> {
+                        LaunchedEffect(Unit) {
+                            viewModel.refreshAgentTools()
+                        }
+                        AgentToolsScreen(
+                            tools = agentTools,
+                            loading = agentToolsLoading,
+                            onToggleTool = viewModel::setAgentToolEnabled
+                        )
+                    }
 
                     SpacesPage.MODEL_EDIT -> {
                         val config = editingLlm

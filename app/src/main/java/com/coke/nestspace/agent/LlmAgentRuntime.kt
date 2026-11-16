@@ -22,7 +22,6 @@ import com.coke.nestspace.tools.ToolResult
 import com.coke.nestspace.tools.ToolSpec
 import com.coke.nestspace.plugin.AgentPluginSupport
 import com.coke.nestspace.plugin.AgentModelHookOutcome
-import com.coke.nestspace.plugin.PluginCenterStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -47,29 +46,19 @@ class LlmAgentRuntime(
     private val allowedToolNames: Set<String>? = null
 ) {
 
+    private val disabledToolNames = AgentToolSettings.disabledTools(registry.context)
+    private val availableToolSpecs = AgentToolSettings.availableToolSpecs(registry)
     private val externalToolSpecs: List<ToolSpec> =
-        if (PluginCenterStore.isEnabled(
-                registry.context,
-                PluginCenterStore.MCP_TOOL_BRIDGE
-            )
-        ) {
-            com.coke.nestspace.mcp.McpClientManager.toolSpecs()
-        } else {
-            emptyList()
-        }
+        availableToolSpecs.filter { it.description.startsWith("[MCP:", ignoreCase = true) }
 
-    private val toolSpecs: List<ToolSpec> = (registry.list() + externalToolSpecs).filterNot {
-        it.name in setOf(
-            "session_acquire",
-            "session_release",
-            "session_status",
-            "approval_request",
-            "approval_wait",
-            "assistant_type",
-            "assistant_send",
-            "assistant_status"
-        ) || (!allowSubAgents && it.name == "spawn_agent")
-    }.filter { allowedToolNames == null || it.name in allowedToolNames }
+    private val toolSpecs: List<ToolSpec> = AgentToolSettings.enabledToolSpecs(
+        availableToolSpecs,
+        disabledToolNames
+    )
+        .filterNot {
+            !allowSubAgents && it.name == "spawn_agent"
+        }
+        .filter { allowedToolNames == null || it.name in allowedToolNames }
 
     private val chatTools: List<ChatTool> = toolSpecs.map {
         ChatTool(it.name, it.description, it.inputSchema)

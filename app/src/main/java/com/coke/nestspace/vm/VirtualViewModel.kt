@@ -11,6 +11,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.coke.nestspace.AppGraph
+import com.coke.nestspace.agent.AgentToolInfo
+import com.coke.nestspace.agent.AgentToolSettings
 import com.coke.nestspace.agent.AssistantConversation
 import com.coke.nestspace.data.AgentMessage
 import com.coke.nestspace.data.AppInfo
@@ -61,6 +63,8 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
     val llmToast: SharedFlow<String> = _llmToast.asSharedFlow()
     val llmTesting = MutableStateFlow(false)
     val agentBusy: StateFlow<Boolean> = AssistantConversation.busy
+    val agentTools = MutableStateFlow<List<AgentToolInfo>>(emptyList())
+    val agentToolsLoading = MutableStateFlow(false)
 
     val apps = MutableStateFlow<List<AppInfo>>(emptyList())
     val loading = MutableStateFlow(false)
@@ -95,6 +99,7 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
         }
         refreshVirtualApps()
         refreshApps()
+        refreshAgentTools()
         sanitizeDesktopSystemApps()
         viewModelScope.launch {
             // MCP settings changes happen outside these StateFlows.
@@ -105,7 +110,41 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
                 llmConfig.value = activeConfig(state)
                 desktopSystemPackages.value = DesktopAppsStore.load(getApplication())
                 wallpaper.value = withContext(Dispatchers.IO) { wallpaperStore.load() }
+                refreshAgentTools()
             }
+        }
+    }
+
+    fun refreshAgentTools() {
+        if (agentToolsLoading.value) return
+        agentToolsLoading.value = true
+        viewModelScope.launch {
+            try {
+                agentTools.value = withContext(Dispatchers.IO) {
+                    AgentToolSettings.catalog(
+                        AppGraph.registry(getApplication())
+                    )
+                }
+            } finally {
+                agentToolsLoading.value = false
+            }
+        }
+    }
+
+    fun setAgentToolEnabled(name: String, enabled: Boolean) {
+        runCatching {
+            AgentToolSettings.setEnabled(getApplication(), name, enabled)
+        }.onSuccess {
+            agentTools.value = agentTools.value.map {
+                if (it.name == name) it.copy(enabled = enabled) else it
+            }
+        }.onFailure {
+            _llmToast.tryEmit(
+                AppLanguage.tr(
+                    "工具设置保存失败：${it.message ?: "未知错误"}",
+                    "Could not save tool setting: ${it.message ?: "unknown error"}"
+                )
+            )
         }
     }
 

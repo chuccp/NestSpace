@@ -96,6 +96,7 @@ internal fun SettingsHomeScreen(
     onOpenAppearance: () -> Unit,
     onOpenFloatingDot: () -> Unit,
     onOpenModel: () -> Unit,
+    onOpenTools: () -> Unit,
     onOpenSystemPrompt: () -> Unit,
     onOpenMcpClients: () -> Unit,
     onOpenMemory: () -> Unit,
@@ -149,6 +150,16 @@ internal fun SettingsHomeScreen(
                                 AppLanguage.tr("未配置模型", "No model configured")
                             },
                             onClick = onOpenModel
+                        )
+                        HorizontalDivider(Modifier.padding(start = 68.dp))
+                        SettingsMenuRow(
+                            icon = Icons.Default.Extension,
+                            title = AppLanguage.tr("插件工具", "Plugin tools"),
+                            summary = AppLanguage.tr(
+                                "管理插件动态注册的 Agent 工具",
+                                "Manage Agent tools registered by plugins"
+                            ),
+                            onClick = onOpenTools
                         )
                         HorizontalDivider(Modifier.padding(start = 68.dp))
                         SettingsMenuRow(
@@ -337,6 +348,16 @@ internal fun SettingsHomeScreen(
                                 AppLanguage.tr("规则模式", "Rule mode")
                             },
                             onClick = onOpenModel
+                        )
+                        HorizontalDivider(Modifier.padding(start = 68.dp))
+                        SettingsMenuRow(
+                            icon = Icons.Default.Extension,
+                            title = AppLanguage.tr("插件工具", "Plugin tools"),
+                            summary = AppLanguage.tr(
+                                "管理插件动态注册的 Agent 工具",
+                                "Manage Agent tools registered by plugins"
+                            ),
+                            onClick = onOpenTools
                         )
                         HorizontalDivider(Modifier.padding(start = 68.dp))
                         SettingsMenuRow(
