@@ -47,7 +47,9 @@ internal class AppProxyRelay(
         serverSocket = null
         acceptThread?.interrupt()
         acceptThread = null
-        clients.toList().forEach(::closeQuietly)
+        // Relay threads remove closed clients concurrently; a size-snapshot
+        // iteration can otherwise fail when a client disappears mid-copy.
+        clients.forEach(::closeQuietly)
         clients.clear()
     }
 
