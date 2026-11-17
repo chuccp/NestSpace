@@ -76,7 +76,7 @@ internal fun LastRunCard(
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        AppLanguage.tr("本次运行", "This run"),
+                        AppLanguage.tr("刚刚完成", "Just finished"),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -93,13 +93,17 @@ internal fun LastRunCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Text(
-                    runMetricsLine(run),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                run.summary.trim()
+                    .takeIf(String::isNotBlank)
+                    ?.let { summary ->
+                        Text(
+                            summary,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
             }
             IconButton(onClick = onDismiss, modifier = Modifier.size(26.dp)) {
                 Icon(
@@ -112,7 +116,6 @@ internal fun LastRunCard(
         }
     }
 }
-
 @Composable
 internal fun RunHistoryScreen(
     context: Context,
@@ -319,41 +322,4 @@ private fun formatRunDuration(ms: Long): String {
         ms < 60_000 -> String.format(Locale.US, "%.1fs", ms / 1_000.0)
         else -> "${ms / 60_000}m ${(ms % 60_000) / 1_000}s"
     }
-}
-
-private fun formatMetricTokens(value: Long): String = when {
-    value >= 1_000_000 -> String.format(Locale.US, "%.1fM", value / 1_000_000.0)
-    value >= 10_000 -> String.format(Locale.US, "%.0fk", value / 1_000.0)
-    value >= 1_000 -> String.format(Locale.US, "%.1fk", value / 1_000.0)
-    else -> value.toString()
-}
-
-private fun runMetricsLine(run: RunSummary): String {
-    if (!run.hasMetrics) return ""
-    val parts = mutableListOf<String>()
-    parts += AppLanguage.tr(
-        "模型 ${run.modelRequests} 轮",
-        "${run.modelRequests} model rounds"
-    )
-    parts += AppLanguage.tr(
-        "工具 ${run.toolCalls} 次",
-        "${run.toolCalls} tool calls"
-    )
-    parts += AppLanguage.tr(
-        "输入 ${formatMetricTokens(run.inputTokens)} · 输出 ${formatMetricTokens(run.outputTokens)}",
-        "in ${formatMetricTokens(run.inputTokens)} · out ${formatMetricTokens(run.outputTokens)}"
-    )
-    if (run.reasoningTokens > 0) {
-        parts += AppLanguage.tr(
-            "思考 ${formatMetricTokens(run.reasoningTokens)}",
-            "thinking ${formatMetricTokens(run.reasoningTokens)}"
-        )
-    }
-    if (run.firstFeedbackMs > 0) {
-        parts += AppLanguage.tr(
-            "首响 ${formatRunDuration(run.firstFeedbackMs)}",
-            "first ${formatRunDuration(run.firstFeedbackMs)}"
-        )
-    }
-    return parts.joinToString(" · ")
 }

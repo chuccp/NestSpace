@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.Card
@@ -22,7 +22,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,33 +32,33 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.coke.nestspace.AppGraph
+import com.coke.nestspace.agent.AssistantTaskCoordinator
+import com.coke.nestspace.agent.AssistantTaskPrimaryAction
+import com.coke.nestspace.agent.AssistantTaskUiState
+import com.coke.nestspace.agent.assistantTaskGoalForDisplay
 import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.container.ContainerProcessPool
-import com.coke.nestspace.container.HeadlessMirrorWindow
-import com.coke.nestspace.task.McpTaskClassifier
 import com.coke.nestspace.task.OperationTaskRegistry
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Task center for work submitted through the external MCP control plane. */
+/** Unified task center for user-created and externally requested work. */
 @Composable
-internal fun McpTasksScreen() {
-    val tasks by OperationTaskRegistry.tasksFlow.collectAsState()
-    val roots = remember(tasks) { McpTaskClassifier.roots(tasks) }
-    var expandedId by remember { mutableStateOf<String?>(null) }
+internal fun McpTasksScreen(initialTaskId: String? = null) {
+    val operationTasks by OperationTaskRegistry.tasksFlow.collectAsState()
+    val tasks = remember(operationTasks) { AssistantTaskCoordinator.list() }
+    val active = tasks.filter {
+        it.uiState == AssistantTaskUiState.RUNNING ||
+            it.uiState == AssistantTaskUiState.PAUSED ||
+            it.uiState == AssistantTaskUiState.NEEDS_ATTENTION ||
+            it.uiState == AssistantTaskUiState.CANCELLING
+    }
+    val waiting = tasks.filter { it.uiState == AssistantTaskUiState.WAITING }
+        .sortedBy { it.queuePosition }
+    val finished = tasks.filter { it.uiState == AssistantTaskUiState.FINISHED }
+        .sortedByDescending { it.updatedAt }
     val context = LocalContext.current
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val mirrorSlot = remember(tasks) {
-        HeadlessMirrorWindow.activeSlot().takeIf { it >= 0 }
-            ?: ContainerProcessPool.lastSlot()
-    }
-    DisposableEffect(Unit) {
-        HeadlessMirrorWindow.setAssistantVisible(true)
-        onDispose { HeadlessMirrorWindow.setAssistantVisible(false) }
-    }
-
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -68,191 +67,181 @@ internal fun McpTasksScreen() {
         item {
             Text(
                 AppLanguage.tr(
-                    "这里单独显示 MCP 客户端创建的任务，不占用 AI 对话流。",
-                    "Tasks created by MCP clients appear here instead of in the AI conversation."
+                    "有什么需要做的，交给 AI 助手就行。任务会按顺序完成，你也可以暂停或取消。",
+                    "Tell the assistant what you need. Tasks finish one at a time, and you can " +
+                        "pause or cancel them."
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        if (roots.isEmpty()) {
+        taskSection("正在处理", "In progress", active, initialTaskId)
+        taskSection("排队中", "Waiting", waiting, initialTaskId)
+        taskSection("最近完成", "Recently finished", finished, initialTaskId)
+        if (tasks.isEmpty()) {
             item {
                 Card(Modifier.fillMaxWidth()) {
-                    Column(
+                    Text(
+                        AppLanguage.tr("还没有任务", "No tasks yet"),
                         modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            AppLanguage.tr("还没有 MCP 任务", "No MCP tasks yet"),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            AppLanguage.tr(
-                                "通过 MCP 启动助手任务或调用工具后，任务会显示在这里。",
-                                "Assistant tasks and tool calls started through MCP will appear here."
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
-        } else {
-            items(roots, key = { it.id }) { root ->
-                val children = McpTaskClassifier.children(root, tasks)
-                val activeChildren = children.count { !it.terminal }
-                val expanded = expandedId == root.id
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            expandedId = if (expanded) null else root.id
-                        }
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Rounded.Dns,
-                                contentDescription = null,
-                                tint = stateColor(root.state)
-                            )
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    root.title,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = if (expanded) 6 else 2,
-                                    overflow = TextOverflow.Ellipsis
+        }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.taskSection(
+    zh: String,
+    en: String,
+    tasks: List<AssistantTaskCoordinator.TaskView>,
+    initiallyExpandedTaskId: String?
+) {
+    if (tasks.isEmpty()) return
+    item(key = "section:$zh") {
+        Text(
+            AppLanguage.tr(zh, en),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+    items(tasks, key = { "${zh}:${it.id}" }) { task ->
+        AssistantTaskCard(
+            task = task,
+            initiallyExpanded = task.id == initiallyExpandedTaskId
+        )
+    }
+}
+
+@Composable
+private fun AssistantTaskCard(
+    task: AssistantTaskCoordinator.TaskView,
+    initiallyExpanded: Boolean
+) {
+    val context = LocalContext.current
+    var expanded by remember(task.id, initiallyExpanded) {
+        mutableStateOf(initiallyExpanded)
+    }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Rounded.AccountTree,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        assistantTaskGoalForDisplay(task.goal),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = if (expanded) 8 else 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        listOfNotNull(
+                            if (task.source == "mcp") {
+                                AppLanguage.tr("外部任务", "External task")
+                            } else {
+                                AppLanguage.tr("AI 助手", "AI assistant")
+                            },
+                            uiStateLabel(task.uiState),
+                            if (task.queuePosition > 0) {
+                                AppLanguage.tr(
+                                    "前面还有 ${(task.queuePosition - 1).coerceAtLeast(0)} 个任务",
+                                    "${(task.queuePosition - 1).coerceAtLeast(0)} ahead"
                                 )
-                                Text(
-                                    listOfNotNull(
-                                        taskStateLabel(root.state),
-                                        if (children.isNotEmpty()) {
-                                            AppLanguage.tr(
-                                                "${children.size} 个子任务",
-                                                "${children.size} child tasks"
-                                            )
-                                        } else {
-                                            null
-                                        },
-                                        formatTaskTime(root.createdAt)
-                                    ).joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                null
+                            },
+                            formatTaskTime(task.createdAt)
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            val detail = when {
+                task.result?.isNotBlank() == true -> task.result
+                task.error?.isNotBlank() == true -> task.error
+                else -> task.progress
+            }
+            if (!detail.isNullOrBlank()) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (expanded) {
+                        if (task.uiState == AssistantTaskUiState.FINISHED) 60 else 20
+                    } else {
+                        3
+                    },
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (task.uiState == AssistantTaskUiState.CANCELLING) {
+                Text(
+                    AppLanguage.tr(
+                        "正在取消，等待资源清理…",
+                        "Cancelling; waiting for cleanup…"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (task.primaryAction != AssistantTaskPrimaryAction.NONE || task.canCancel) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when (task.primaryAction) {
+                        AssistantTaskPrimaryAction.PAUSE -> TextButton(
+                            onClick = { AssistantTaskCoordinator.pause(task.id) }
+                        ) {
+                            Text(AppLanguage.tr("暂停", "Pause"))
+                        }
+                        AssistantTaskPrimaryAction.RESUME -> TextButton(
+                            onClick = {
+                                AssistantTaskCoordinator.resume(
+                                    context,
+                                    AppGraph.registry(context),
+                                    task.id
                                 )
                             }
-                            Icon(
-                                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        root.progressPercent?.let { percent ->
-                            Text(
-                                "$percent%",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        val detail = root.error?.takeIf { it.isNotBlank() }
-                            ?: root.message.takeIf { it.isNotBlank() }
-                        if (!detail.isNullOrBlank()) {
-                            Text(
-                                detail,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = if (expanded) Int.MAX_VALUE else 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        if (expanded) {
-                            children.forEach { child ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        child.title,
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        taskStateLabel(child.state),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = stateColor(child.state)
-                                    )
-                                }
-                            }
-                        }
-                        if (root.id == roots.firstOrNull()?.id &&
-                            mirrorSlot != null
                         ) {
-                            TextButton(
-                                onClick = {
-                                    scope.launch {
-                                        HeadlessMirrorWindow.promoteToPanel(
-                                            context,
-                                            mirrorSlot
-                                        )
-                                    }
-                                }
-                            ) {
-                                Text(AppLanguage.tr("打开小窗", "Open window"))
-                            }
+                            Text(AppLanguage.tr("继续", "Resume"))
                         }
-                        if (root.terminal) {
-                            TextButton(
-                                onClick = {
-                                    OperationTaskRegistry.dismiss(root.id)
-                                }
-                            ) {
-                                Text(AppLanguage.tr("删除任务", "Delete task"))
-                            }
+                        AssistantTaskPrimaryAction.HANDLE -> TextButton(
+                            onClick = { expanded = true }
+                        ) {
+                            Text(AppLanguage.tr("处理", "Handle"))
                         }
-                        if (!root.terminal) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        OperationTaskRegistry.requestCancel(
-                                            root.id,
-                                            "user cancelled"
-                                        )
-                                    }
-                                ) {
-                                    Text(AppLanguage.tr("取消任务", "Cancel task"))
-                                }
-                                if (activeChildren > 0) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            children.filterNot { it.terminal }
-                                                .forEach { child ->
-                                                    OperationTaskRegistry.requestCancel(
-                                                        child.id,
-                                                        "user cancelled child task"
-                                                    )
-                                                }
-                                        }
-                                    ) {
-                                        Text(
-                                            AppLanguage.tr(
-                                                "取消子任务",
-                                                "Cancel child tasks"
-                                            )
-                                        )
-                                    }
-                                }
-                            }
+                        AssistantTaskPrimaryAction.VIEW_RESULT -> TextButton(
+                            onClick = { expanded = true }
+                        ) {
+                            Text(AppLanguage.tr("查看结果", "View result"))
+                        }
+                        AssistantTaskPrimaryAction.RETRY_CLEANUP,
+                        AssistantTaskPrimaryAction.NONE -> Unit
+                    }
+                    if (task.canCancel) {
+                        OutlinedButton(
+                            onClick = { AssistantTaskCoordinator.cancel(task.id) }
+                        ) {
+                            Text(AppLanguage.tr("取消", "Cancel"))
                         }
                     }
                 }
@@ -261,26 +250,13 @@ internal fun McpTasksScreen() {
     }
 }
 
-@Composable
-private fun stateColor(state: OperationTaskRegistry.State) = when {
-    state == OperationTaskRegistry.State.FAILED ||
-        state == OperationTaskRegistry.State.CANCELLED ->
-        MaterialTheme.colorScheme.error
-    state.terminal -> MaterialTheme.colorScheme.primary
-    else -> MaterialTheme.colorScheme.tertiary
-}
-
-private fun taskStateLabel(state: OperationTaskRegistry.State): String = when (state) {
-    OperationTaskRegistry.State.QUEUED -> AppLanguage.tr("排队中", "Queued")
-    OperationTaskRegistry.State.PREPARING -> AppLanguage.tr("准备中", "Preparing")
-    OperationTaskRegistry.State.RUNNING -> AppLanguage.tr("运行中", "Running")
-    OperationTaskRegistry.State.WAITING_USER -> AppLanguage.tr("等待用户", "Waiting for user")
-    OperationTaskRegistry.State.PAUSED -> AppLanguage.tr("已暂停", "Paused")
-    OperationTaskRegistry.State.CANCELLING -> AppLanguage.tr("正在取消", "Cancelling")
-    OperationTaskRegistry.State.FINALIZING -> AppLanguage.tr("正在完成", "Finalizing")
-    OperationTaskRegistry.State.SUCCEEDED -> AppLanguage.tr("已完成", "Done")
-    OperationTaskRegistry.State.FAILED -> AppLanguage.tr("失败", "Failed")
-    OperationTaskRegistry.State.CANCELLED -> AppLanguage.tr("已取消", "Cancelled")
+private fun uiStateLabel(state: AssistantTaskUiState): String = when (state) {
+    AssistantTaskUiState.WAITING -> AppLanguage.tr("等待中", "Waiting")
+    AssistantTaskUiState.RUNNING -> AppLanguage.tr("执行中", "Running")
+    AssistantTaskUiState.PAUSED -> AppLanguage.tr("已暂停", "Paused")
+    AssistantTaskUiState.NEEDS_ATTENTION -> AppLanguage.tr("需要处理", "Needs attention")
+    AssistantTaskUiState.CANCELLING -> AppLanguage.tr("取消中", "Cancelling")
+    AssistantTaskUiState.FINISHED -> AppLanguage.tr("已结束", "Finished")
 }
 
 private fun formatTaskTime(time: Long): String =

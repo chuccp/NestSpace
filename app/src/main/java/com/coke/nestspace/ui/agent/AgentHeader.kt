@@ -43,15 +43,18 @@ internal fun AgentHeader(
     externalTaskBusy: Boolean,
     onClear: () -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenMcpTasks: () -> Unit,
-    activeMcpTaskCount: Int,
+    runningTaskCount: Int,
+    waitingTaskCount: Int,
+    onOpenTasks: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     val status = when {
         !llmConfig.isConfigured -> AppLanguage.tr("欢迎使用", "Welcome")
-        externalTaskBusy -> AppLanguage.tr("MCP 任务运行中…", "MCP task running…")
+        externalTaskBusy -> AppLanguage.tr("正在处理其他任务…", "Working on another task…")
         busy -> AppLanguage.tr("正在处理，请稍候…", "Working on it…")
-        else -> AppLanguage.tr("在线 · 随时可以开始", "Online · ready to help")
+        runningTaskCount > 0 || waitingTaskCount > 0 ->
+            AppLanguage.tr("有任务在后台处理", "Tasks running in background")
+        else -> AppLanguage.tr("在线 · 有什么可以帮你？", "Online · ready to help")
     }
     val dotColor = when {
         !llmConfig.isConfigured -> Color(0xFFFF9F0A)
@@ -115,17 +118,24 @@ internal fun AgentHeader(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        IconButton(onClick = onOpenMcpTasks) {
+        IconButton(onClick = onOpenTasks) {
             BadgedBox(
                 badge = {
-                    if (activeMcpTaskCount > 0) {
-                        Badge { Text(activeMcpTaskCount.toString()) }
+                    if (waitingTaskCount > 0) {
+                        Badge { Text(waitingTaskCount.toString()) }
                     }
                 }
             ) {
                 Icon(
                     Icons.AutoMirrored.Rounded.ListAlt,
-                    contentDescription = AppLanguage.tr("MCP 任务", "MCP tasks"),
+                    contentDescription = if (waitingTaskCount > 0) {
+                        AppLanguage.tr(
+                            "后台任务，$waitingTaskCount 个待执行",
+                            "Background tasks, $waitingTaskCount waiting"
+                        )
+                    } else {
+                        AppLanguage.tr("后台任务", "Background tasks")
+                    },
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }

@@ -169,12 +169,12 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
                 .onSuccess { list ->
                     apps.value = list
                 }
-                .onFailure { addError(
-                            AppLanguage.tr(
-                                "读取应用列表失败：${it.message}",
-                                "Failed to load the app list: ${it.message}"
-                            )
-                        ) }
+                .onFailure {
+                    notice.value = AppLanguage.tr(
+                        "读取应用列表失败：${it.message}",
+                        "Failed to load the app list: ${it.message}"
+                    )
+                }
             loading.value = false
         }
     }
@@ -182,7 +182,7 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshVirtualApps() {
         viewModelScope.launch {
             when (val result = engine.listInstalled(SPACE_ID)) {
-                is EngineResult.Error -> addError(
+                is EngineResult.Error -> fail(
                     AppLanguage.tr(
                         "读取虚拟应用失败：${result.code}: ${result.message}",
                         "Failed to load virtual apps: ${result.code}: ${result.message}"
@@ -195,7 +195,7 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
 
     fun launchApp(packageName: String) {
         if (!repository.launch(packageName)) {
-            addError(AppLanguage.tr("无法启动 $packageName", "Could not launch $packageName"))
+            fail(AppLanguage.tr("无法启动 $packageName", "Could not launch $packageName"))
         }
     }
 
@@ -675,11 +675,6 @@ class VirtualViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun fail(text: String) {
         notice.value = text
-        addError(text)
-    }
-
-    private fun addError(text: String) {
-        AssistantConversation.append(AgentMessage(AgentMessage.Role.ERROR, text))
     }
 
     private fun addAgent(text: String) {

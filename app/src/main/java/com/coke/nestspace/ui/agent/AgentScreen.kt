@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -27,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -42,9 +44,16 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.coke.nestspace.agent.AssistantBridge
 import com.coke.nestspace.agent.AssistantConversation
+import com.coke.nestspace.agent.AssistantTaskCoordinator
+import com.coke.nestspace.agent.AssistantTaskPrimaryAction
+import com.coke.nestspace.agent.AssistantTaskUiState
+import com.coke.nestspace.agent.assistantTaskGoalForDisplay
 import com.coke.nestspace.agent.ChildRunRegistry
 import com.coke.nestspace.container.ContainerProcessPool
 import com.coke.nestspace.container.HeadlessMirrorWindow
@@ -61,6 +70,7 @@ import com.coke.nestspace.data.ReasoningEffort
 import com.coke.nestspace.memory.MemoryStore
 import com.coke.nestspace.memory.SkillStore
 import com.coke.nestspace.plugin.AgentPluginSupport
+import com.coke.nestspace.AppGraph
 import com.coke.nestspace.task.McpTaskClassifier
 import com.coke.nestspace.task.OperationTaskRegistry
 import androidx.lifecycle.Lifecycle
@@ -86,6 +96,49 @@ private fun taskIdFromToolMessage(message: AgentMessage): String? {
     val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
     if (!json.optBoolean("started") && !json.optBoolean("attached")) return null
     return json.optString("task_id").takeIf(String::isNotBlank)
+}
+
+private val taskUuid = Regex(
+    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-" +
+        "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+private val assistantTaskControlTools = setOf(
+    "spawn_agent",
+    "agent_task_list",
+    "agent_task_status",
+    "agent_task_supplement",
+    "agent_task_pause",
+    "agent_task_resume",
+    "agent_task_cancel",
+    "agent_task_cancel_queued"
+)
+
+private fun isAssistantTaskControlMessage(message: AgentMessage): Boolean {
+    if (message.role != AgentMessage.Role.TOOL) return false
+    val name = message.text.substringBefore(" -> ")
+        .substringBefore('\n')
+        .trim()
+    return name in assistantTaskControlTools
+}
+
+private fun userFacingAssistantText(text: String): String {
+    val lower = text.lowercase()
+    val hasTaskDetails = lower.contains("task id") ||
+        lower.contains("task_id") ||
+        text.contains("任务 ID", ignoreCase = true)
+    if (!hasTaskDetails) return text
+    return text.lineSequence()
+        .filterNot { line ->
+            val value = line.trim()
+            val normalized = value.removePrefix("**").removeSuffix("**").trim()
+            val idHeader = normalized.startsWith("Task ID", ignoreCase = true) ||
+                normalized.startsWith("任务 ID", ignoreCase = true)
+            idHeader || taskUuid.matches(normalized)
+        }
+        .joinToString("\n")
+        .replace(Regex("\\n{3,}"), "\n\n")
+        .trim()
 }
 
 /**
@@ -135,6 +188,7 @@ internal fun AgentScreen(
             ?: ContainerProcessPool.lastSlot()
     }
     var showLivePreview by remember { mutableStateOf(false) }
+    var showTaskOverlay by remember { mutableStateOf(false) }
 
     LaunchedEffect(injectedText) {
         val text = injectedText ?: return@LaunchedEffect
@@ -230,9 +284,12 @@ internal fun AgentScreen(
         activeRunOrigin == AgentMessage.Origin.MCP
     val conversationBusy = busy && !externalTaskBusy
     val displayMessages = remember(messages) {
-        messages.filterNot {
-            it.welcome || it.origin == AgentMessage.Origin.MCP
+        val visible = messages.filterNot {
+            it.welcome ||
+                it.origin == AgentMessage.Origin.MCP ||
+                isAssistantTaskControlMessage(it)
         }
+        visible.dropWhile { it.role == AgentMessage.Role.ERROR }
     }
     val inlineTaskIds = remember(displayMessages) {
         displayMessages.mapNotNull(::taskIdFromToolMessage).toSet()
@@ -242,10 +299,25 @@ internal fun AgentScreen(
             .filter { McpTaskClassifier.isMcpTask(it, operationTasks) }
             .mapTo(HashSet()) { it.id }
     }
-    val activeMcpTaskCount = remember(operationTasks) {
-        McpTaskClassifier.roots(operationTasks).count { !it.terminal }
+    val assistantTasks = remember(operationTasks) {
+        AssistantTaskCoordinator.list(source = "assistant")
     }
-    val showWelcome = displayMessages.isEmpty() && !conversationBusy
+    val runningTaskCount = assistantTasks.count {
+        it.uiState == AssistantTaskUiState.RUNNING
+    }
+    val waitingTaskCount = assistantTasks.count {
+        it.uiState == AssistantTaskUiState.WAITING
+    }
+    val visibleAssistantTasks = remember(operationTasks) {
+        assistantTasks
+            .filter { it.uiState != AssistantTaskUiState.FINISHED }
+    }
+    val hasConversationContent = displayMessages.any {
+        it.role == AgentMessage.Role.USER ||
+            it.role == AgentMessage.Role.AGENT ||
+            it.role == AgentMessage.Role.TOOL
+    }
+    val showWelcome = !hasConversationContent && !conversationBusy
     val visibleDownloads = downloads.filter {
         it.taskId == null ||
             (it.taskId !in inlineTaskIds && it.taskId !in mcpTaskIds)
@@ -260,6 +332,8 @@ internal fun AgentScreen(
             .filterNot { task ->
                 task.id in mcpTaskIds ||
                     task.id in inlineTaskIds ||
+                    task.kind == "assistant_worker" ||
+                    task.kind == "tool_call" ||
                     downloads.any { it.taskId == task.id }
             }
             .filter { task ->
@@ -267,8 +341,6 @@ internal fun AgentScreen(
                     "browser_download" ->
                         task.state == OperationTaskRegistry.State.FAILED &&
                             task.message == "interrupted"
-                    "tool_call" ->
-                        !task.terminal || task.message == "interrupted"
                     else -> true
                 }
             }
@@ -323,10 +395,17 @@ internal fun AgentScreen(
             externalTaskBusy = externalTaskBusy,
             onClear = clearConversation,
             onOpenHistory = onOpenHistory,
-            onOpenMcpTasks = onOpenMcpTasks,
-            activeMcpTaskCount = activeMcpTaskCount,
+            runningTaskCount = runningTaskCount,
+            waitingTaskCount = waitingTaskCount,
+            onOpenTasks = { showTaskOverlay = true },
             onOpenSettings = onOpenSettings
         )
+        if (visibleAssistantTasks.isNotEmpty()) {
+            AssistantTaskSummary(
+                tasks = visibleAssistantTasks,
+                onOpenTasks = { showTaskOverlay = true }
+            )
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
         Box(
@@ -417,7 +496,8 @@ internal fun AgentScreen(
                             } else {
                                 when (message.role) {
                                     AgentMessage.Role.USER -> UserMessage(message.text)
-                                    AgentMessage.Role.AGENT -> AssistantMessage(message.text)
+                                    AgentMessage.Role.AGENT ->
+                                        AssistantMessage(userFacingAssistantText(message.text))
                                     AgentMessage.Role.TOOL -> ToolActivityCard(message.text)
                                     AgentMessage.Role.ERROR -> ErrorMessage(message.text)
                                 }
@@ -425,6 +505,11 @@ internal fun AgentScreen(
                             taskIdFromToolMessage(message)?.let { taskId ->
                                 val operationTask = operationTasks.firstOrNull {
                                     it.id == taskId
+                                }
+                                if (operationTask?.kind == "assistant_worker" ||
+                                    operationTask?.kind == "tool_call"
+                                ) {
+                                    return@let
                                 }
                                 if (operationTask != null &&
                                     McpTaskClassifier.isMcpTask(
@@ -489,7 +574,10 @@ internal fun AgentScreen(
                     }
                     if (!externalTaskBusy && streamingText.isNotBlank()) {
                         item {
-                            AssistantMessage(streamingText.trimEnd() + " ▍")
+                            AssistantMessage(
+                                streamingText.trimEnd() + " ▍",
+                                showSpeechButton = false
+                            )
                         }
                     } else if (conversationBusy) {
                         item { ThinkingRow(displayMessages.lastOrNull()) }
@@ -637,4 +725,272 @@ internal fun AgentScreen(
         )
     }
 
+    if (showTaskOverlay) {
+        AssistantTaskDialog(
+            tasks = visibleAssistantTasks,
+            onDismiss = { showTaskOverlay = false },
+            onOpenHistory = {
+                showTaskOverlay = false
+                onOpenMcpTasks()
+            }
+        )
+    }
+
+}
+
+@Composable
+private fun AssistantTaskDialog(
+    tasks: List<AssistantTaskCoordinator.TaskView>,
+    onDismiss: () -> Unit,
+    onOpenHistory: () -> Unit
+) {
+    val context = LocalContext.current
+    val activeTasks = tasks.filter { it.uiState != AssistantTaskUiState.WAITING }
+    val waitingTasks = tasks.filter { it.uiState == AssistantTaskUiState.WAITING }
+        .sortedBy { it.queuePosition }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 12.dp
+        ) {
+        Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Rounded.AccountTree,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    AppLanguage.tr("AI 任务", "AI tasks"),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TextButton(onClick = onDismiss) {
+                    Text(AppLanguage.tr("关闭", "Close"))
+                }
+            }
+            if (tasks.isEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ) {
+                    Text(
+                        AppLanguage.tr(
+                            "现在没有后台任务。交给我一件事后，可以在这里看进度。",
+                            "No background tasks right now. Ask me to do something and " +
+                                "you can follow its progress here."
+                        ),
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    if (activeTasks.isNotEmpty()) {
+                        item(key = "active-title") {
+                            TaskSectionTitle(
+                                AppLanguage.tr("正在处理", "In progress")
+                            )
+                        }
+                        items(activeTasks, key = { it.id }) { task ->
+                            AssistantTaskPopupCard(task, onOpenHistory)
+                        }
+                    }
+                    if (waitingTasks.isNotEmpty()) {
+                        item(key = "waiting-title") {
+                            TaskSectionTitle(
+                                AppLanguage.tr("排队中", "Waiting")
+                            )
+                        }
+                        items(waitingTasks, key = { it.id }) { task ->
+                            AssistantTaskPopupCard(task, onOpenHistory)
+                        }
+                    }
+                }
+            }
+            TextButton(
+                onClick = onOpenHistory,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(AppLanguage.tr("查看全部任务", "View all tasks"))
+            }
+        }
+    }
+}
+}
+
+@Composable
+private fun AssistantTaskSummary(
+    tasks: List<AssistantTaskCoordinator.TaskView>,
+    onOpenTasks: () -> Unit
+) {
+    val current = tasks.firstOrNull {
+        it.uiState == AssistantTaskUiState.RUNNING
+    } ?: tasks.firstOrNull()
+        ?: return
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.045f)
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    if (AppLanguage.isChinese()) {
+                        "正在处理 · 共 ${tasks.size} 个任务"
+                    } else {
+                        "Working · ${tasks.size} " +
+                            if (tasks.size == 1) "task" else "tasks"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    assistantTaskGoalForDisplay(current.goal),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(onClick = onOpenTasks) {
+                Text(AppLanguage.tr("查看全部", "View all"))
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskSectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun AssistantTaskPopupCard(
+    task: AssistantTaskCoordinator.TaskView,
+    onOpenHistory: () -> Unit
+) {
+    val context = LocalContext.current
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)
+    ) {
+        Column(
+            modifier = Modifier.padding(13.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        assistantTaskUiLabel(task.uiState),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (task.uiState == AssistantTaskUiState.CANCELLING) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        }
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        assistantTaskGoalForDisplay(task.goal),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (task.queuePosition > 0) {
+                    Text(
+                        AppLanguage.tr(
+                            "第 ${task.queuePosition} 个",
+                            "#${task.queuePosition}"
+                        ),
+                        modifier = Modifier.padding(start = 10.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (task.primaryAction != AssistantTaskPrimaryAction.NONE || task.canCancel) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    when (task.primaryAction) {
+                        AssistantTaskPrimaryAction.PAUSE -> TextButton(
+                            onClick = { AssistantTaskCoordinator.pause(task.id) }
+                        ) {
+                            Text(AppLanguage.tr("暂停", "Pause"))
+                        }
+                        AssistantTaskPrimaryAction.RESUME -> TextButton(
+                            onClick = {
+                                AssistantTaskCoordinator.resume(
+                                    context,
+                                    AppGraph.registry(context),
+                                    task.id
+                                )
+                            }
+                        ) {
+                            Text(AppLanguage.tr("继续", "Resume"))
+                        }
+                        AssistantTaskPrimaryAction.HANDLE -> TextButton(
+                            onClick = onOpenHistory
+                        ) {
+                            Text(AppLanguage.tr("去处理", "Handle"))
+                        }
+                        AssistantTaskPrimaryAction.VIEW_RESULT -> Unit
+                        AssistantTaskPrimaryAction.RETRY_CLEANUP,
+                        AssistantTaskPrimaryAction.NONE -> Unit
+                    }
+                    if (task.canCancel) {
+                        TextButton(
+                            onClick = { AssistantTaskCoordinator.cancel(task.id) },
+                            enabled = task.uiState != AssistantTaskUiState.CANCELLING
+                        ) {
+                            Text(
+                                AppLanguage.tr("取消任务", "Cancel task"),
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun assistantTaskUiLabel(state: AssistantTaskUiState): String = when (state) {
+    AssistantTaskUiState.WAITING -> AppLanguage.tr("排队中", "Waiting")
+    AssistantTaskUiState.RUNNING -> AppLanguage.tr("正在处理", "Working")
+    AssistantTaskUiState.PAUSED -> AppLanguage.tr("已暂停", "Paused")
+    AssistantTaskUiState.NEEDS_ATTENTION -> AppLanguage.tr("需要你处理", "Needs you")
+    AssistantTaskUiState.CANCELLING -> AppLanguage.tr("正在取消", "Cancelling")
+    AssistantTaskUiState.FINISHED -> AppLanguage.tr("已结束", "Finished")
 }

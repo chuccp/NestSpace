@@ -189,8 +189,10 @@ internal fun Composer(
                     Box {
                         ControlChip(
                             icon = Icons.Rounded.SmartToy,
-                            label = config.model.ifBlank {
-                                config.name.ifBlank { AppLanguage.tr(AppLanguage.tr("选择模型", "Choose model"), "Choose model") }
+                            label = config.name.ifBlank {
+                                config.model.ifBlank {
+                                    AppLanguage.tr("选择助手", "Choose assistant")
+                                }
                             },
                             onClick = { modelMenu = true }
                         )
@@ -212,10 +214,7 @@ internal fun Composer(
                     Box {
                         ControlChip(
                             icon = Icons.Rounded.Psychology,
-                            label = AppLanguage.tr(
-                                "思考 · ${config.reasoningEffort.label}",
-                                "Reasoning · ${config.reasoningEffort.label}"
-                            ),
+                            label = config.reasoningEffort.label,
                             onClick = { effortMenu = true }
                         )
                         ReasoningMenu(
@@ -231,10 +230,7 @@ internal fun Composer(
                     Box {
                         ControlChip(
                             icon = Icons.Rounded.Security,
-                            label = AppLanguage.tr(
-                                "确认 · ${permissionLevel.label}",
-                                "Confirm · ${permissionLevel.label}"
-                            ),
+                            label = permissionLevel.label,
                             onClick = { permissionMenu = true }
                         )
                         PermissionMenu(

@@ -1,5 +1,9 @@
 package com.coke.nestspace.mcp
 
+import com.coke.nestspace.agent.AssistantTaskCoordinator
+import com.coke.nestspace.task.OperationTaskRegistry
+import com.coke.nestspace.tools.ContainerDisplayMode
+import com.coke.nestspace.tools.ToolRegistry
 import com.coke.nestspace.tools.ToolResult
 import com.coke.nestspace.tools.ToolSpec
 import com.coke.nestspace.tools.toolSchema
@@ -7,22 +11,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * MCP-facing async task tools. They are not part of the assistant's own tool
- * list: a remote client starts a task, polls/waits for its state, and can
- * cancel it without holding a synchronous tools/call open.
+ * MCP compatibility adapter over the shared assistant Worker coordinator.
  */
 object McpTaskTools {
 
-    fun specs(manager: McpTaskManager): List<ToolSpec> = listOf(
+    fun specs(registry: ToolRegistry): List<ToolSpec> = listOf(
         ToolSpec(
             name = "nestspace_run_task",
-            description = "Start an assistant task asynchronously and return a task_id " +
-                "immediately. Use nestspace_task_status or nestspace_wait_task to follow it. " +
-                "Statuses: queued, running, waiting_for_user, done, failed, cancelled. " +
-                "Pass a request_id to make retries idempotent. Tasks live while the app " +
-                "process lives; after a restart retry with a request_id. display_mode is " +
-                "background (no app window), mirror (small headless window), or visible " +
-                "(open the app normally). The default is background.",
+            description = "Start a shared assistant Worker task asynchronously and return a " +
+                "task_id immediately. Use nestspace_task_status or nestspace_wait_task to " +
+                "follow it. Pass request_id to make retries idempotent. display_mode is " +
+                "background, mirror or visible.",
             inputSchema = toolSchema(
                 "goal" to "string",
                 "request_id" to "string",
@@ -43,30 +42,32 @@ object McpTaskTools {
                     errorCode = "INVALID_ARGUMENT"
                 )
             }
-            val requestId = args.optString("request_id")
-                .trim()
-                .takeIf { it.isNotBlank() }
-            val displayMode = com.coke.nestspace.tools.ContainerDisplayMode.parse(
-                args.optString("display_mode"),
-                com.coke.nestspace.tools.ContainerDisplayMode.BACKGROUND
-            )
-            when (val started = manager.start(
-                goal,
-                requestId,
-                ctx.ownerId,
-                displayMode
-            )) {
-                is McpTaskManager.StartResult.Started ->
-                    ToolResult(true, taskJson(started.task).toString())
-                is McpTaskManager.StartResult.Error ->
-                    ToolResult(false, started.message, errorCode = started.code)
+            when (
+                val result = AssistantTaskCoordinator.enqueue(
+                    context = registry.context,
+                    registry = registry,
+                    ownerId = ctx.ownerId,
+                    goal = goal,
+                    extraContext = "",
+                    displayMode = ContainerDisplayMode.parse(
+                        args.optString("display_mode"),
+                        ContainerDisplayMode.BACKGROUND
+                    ),
+                    requestId = args.optString("request_id")
+                        .trim()
+                        .takeIf(String::isNotBlank),
+                    source = "mcp"
+                )
+            ) {
+                is AssistantTaskCoordinator.EnqueueResult.Queued ->
+                    ToolResult(true, taskJson(result.task).toString())
+                is AssistantTaskCoordinator.EnqueueResult.Error ->
+                    ToolResult(false, result.message, errorCode = result.code)
             }
         },
         ToolSpec(
             name = "nestspace_steer_task",
-            description = "Add an instruction to the currently running task. The task keeps " +
-                "its id and context; the text is injected before the next model step. Returns " +
-                "TASK_NOT_RUNNING when the task is queued or finished.",
+            description = "Append a follow-up instruction to a running or paused shared Worker task.",
             inputSchema = toolSchema(
                 "task_id" to "string",
                 "text" to "string",
@@ -82,30 +83,28 @@ object McpTaskTools {
                     errorCode = "INVALID_ARGUMENT"
                 )
             }
-            val task = manager.steer(id, text, ctx.ownerId)
-                ?: return@ToolSpec ToolResult(
+            if (!AssistantTaskCoordinator.supplement(id, text, ctx.ownerId)) {
+                return@ToolSpec ToolResult(
                     false,
-                    "task is not running: $id",
+                    "task is not available for follow-up: $id",
                     errorCode = "TASK_NOT_RUNNING"
                 )
-            ToolResult(
-                true,
-                taskJson(task)
-                    .put("steered", true)
-                    .put(
-                        "queued_steering",
-                        com.coke.nestspace.agent.AssistantConversation.queuedSteering.value
-                    )
-                    .toString()
-            )
+            }
+            val task = AssistantTaskCoordinator.get(id, ctx.ownerId)
+                ?: return@ToolSpec ToolResult(
+                    false,
+                    "task not found: $id",
+                    errorCode = "TASK_NOT_FOUND"
+                )
+            ToolResult(true, taskJson(task).put("steered", true).toString())
         },
         ToolSpec(
             name = "nestspace_task_status",
-            description = "Return one asynchronous assistant task's state, progress and answer.",
+            description = "Return one shared Worker task's state, progress and answer.",
             inputSchema = toolSchema("task_id" to "string", required = listOf("task_id"))
         ) { args, ctx ->
             val id = args.optString("task_id").trim()
-            val task = manager.status(id, ctx.ownerId)
+            val task = AssistantTaskCoordinator.get(id, ctx.ownerId)
                 ?: return@ToolSpec ToolResult(
                     false,
                     "task not found: $id",
@@ -115,8 +114,7 @@ object McpTaskTools {
         },
         ToolSpec(
             name = "nestspace_wait_task",
-            description = "Wait until a task changes to a terminal state or the timeout expires. " +
-                "Returns the current task state either way.",
+            description = "Wait for a shared Worker task lifecycle change or timeout.",
             inputSchema = toolSchema(
                 "task_id" to "string",
                 "timeout_s" to "integer",
@@ -125,7 +123,8 @@ object McpTaskTools {
         ) { args, ctx ->
             val id = args.optString("task_id").trim()
             val timeout = args.optInt("timeout_s", 30).coerceIn(1, 50)
-            val result = manager.wait(id, timeout * 1_000L, ctx.ownerId)
+            val wait = OperationTaskRegistry.wait(id, timeout * 1_000L, ctx.ownerId)
+            val task = AssistantTaskCoordinator.get(id, ctx.ownerId)
                 ?: return@ToolSpec ToolResult(
                     false,
                     "task not found: $id",
@@ -133,19 +132,19 @@ object McpTaskTools {
                 )
             ToolResult(
                 true,
-                taskJson(result.task)
-                    .put("changed", result.changed)
-                    .put("timed_out", result.timedOut)
+                taskJson(task)
+                    .put("changed", wait.changed)
+                    .put("timed_out", wait.timedOut)
                     .toString()
             )
         },
         ToolSpec(
             name = "nestspace_cancel_task",
-            description = "Cancel a queued or running assistant task.",
+            description = "Cancel one queued, paused or running shared Worker task.",
             inputSchema = toolSchema("task_id" to "string", required = listOf("task_id"))
         ) { args, ctx ->
             val id = args.optString("task_id").trim()
-            val task = manager.cancel(id, ctx.ownerId)
+            val task = AssistantTaskCoordinator.cancel(id, ctx.ownerId)
                 ?: return@ToolSpec ToolResult(
                     false,
                     "task not found: $id",
@@ -155,31 +154,47 @@ object McpTaskTools {
         },
         ToolSpec(
             name = "nestspace_list_tasks",
-            description = "List recent asynchronous assistant tasks, newest first.",
+            description = "List recent shared Worker tasks, newest first.",
             inputSchema = toolSchema("limit" to "integer")
         ) { args, ctx ->
             val limit = args.optInt("limit", 10).coerceIn(1, 50)
             val array = JSONArray()
-            manager.list(limit, ctx.ownerId).forEach { array.put(taskJson(it)) }
+            AssistantTaskCoordinator.list(ctx.ownerId)
+                .sortedByDescending { it.createdAt }
+                .take(limit)
+                .forEach { array.put(taskJson(it)) }
             ToolResult(true, JSONObject().put("tasks", array).toString())
         }
     )
 
-    private fun taskJson(task: McpTaskManager.TaskView): JSONObject = JSONObject()
+    private fun taskJson(task: AssistantTaskCoordinator.TaskView): JSONObject = JSONObject()
         .put("task_id", task.id)
-        .put("status", task.status.api)
+        .put("status", mcpStatus(task.state))
+        .put("ui_state", task.uiState.api)
+        .put("primary_action", task.primaryAction.api)
+        .put("can_cancel", task.canCancel)
         .put("goal", task.goal)
         .put("created_at", task.createdAt)
         .put("started_at", task.startedAt)
         .put("finished_at", task.finishedAt)
-        .put("answer", task.answer)
+        .put("answer", task.result.orEmpty())
         .put("error", task.error ?: "")
         .put("progress", task.progress)
         .put("queue_position", task.queuePosition)
-        .put("revision", task.revision)
-        .put(
-            "request_id",
-            task.requestId ?: JSONObject.NULL
-        )
+        .put("revision", task.updatedAt)
+        .put("request_id", task.requestId ?: JSONObject.NULL)
         .put("display_mode", task.displayMode.api)
+
+    private fun mcpStatus(state: OperationTaskRegistry.State): String = when (state) {
+        OperationTaskRegistry.State.QUEUED,
+        OperationTaskRegistry.State.PREPARING -> "queued"
+        OperationTaskRegistry.State.RUNNING,
+        OperationTaskRegistry.State.FINALIZING -> "running"
+        OperationTaskRegistry.State.WAITING_USER -> "waiting_for_user"
+        OperationTaskRegistry.State.PAUSED -> "paused"
+        OperationTaskRegistry.State.CANCELLING -> "cancelling"
+        OperationTaskRegistry.State.SUCCEEDED -> "done"
+        OperationTaskRegistry.State.FAILED -> "failed"
+        OperationTaskRegistry.State.CANCELLED -> "cancelled"
+    }
 }

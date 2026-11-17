@@ -74,9 +74,11 @@ internal fun ScheduledTasksScreen() {
         item {
             Text(
                 AppLanguage.tr(
-                    "让助手创建，例如“每天早上 9 点看看天气，下雨才告诉我”。任务到点会在原对话里执行，并发送结果通知。",
-                    "Ask the assistant to create one, e.g. \"check the weather every morning at 9\". " +
-                        "It runs in the original conversation and posts a result notification."
+                    "让助手创建，例如“每天早上 9 点看看天气”或“下午 3 点用闹钟提醒我喝水”。" +
+                        "闹钟提醒会到点响铃和震动。",
+                    "Ask the assistant to create one, for example \"check the weather every morning " +
+                        "at 9\" or \"set an alarm to remind me to drink water at 3pm\". Alarm " +
+                        "reminders ring and vibrate at the due time."
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -168,7 +170,15 @@ private fun ScheduledTaskCard(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "${repeatLabel(task)} · ${nextLabel(task)}",
+                        listOfNotNull(
+                            repeatLabel(task),
+                            nextLabel(task),
+                            if (task.alarm) {
+                                AppLanguage.tr("闹钟提醒", "Alarm")
+                            } else {
+                                null
+                            }
+                        ).joinToString(" · "),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

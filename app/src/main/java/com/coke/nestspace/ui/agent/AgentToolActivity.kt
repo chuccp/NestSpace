@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -65,6 +66,9 @@ import com.coke.nestspace.plugin.PluginUiDocument
 import com.coke.nestspace.plugin.PluginUiDocumentParser
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 @Composable
@@ -143,9 +147,9 @@ internal fun ToolActivityCard(text: String) {
                 Icon(
                     if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
                     contentDescription = if (expanded) {
-                        AppLanguage.tr("收起工具详情", "Collapse tool details")
+                        AppLanguage.tr("收起完成详情", "Hide details")
                     } else {
-                        AppLanguage.tr("展开工具详情", "Expand tool details")
+                        AppLanguage.tr("查看完成详情", "View details")
                     },
                     modifier = Modifier.size(19.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
@@ -157,9 +161,8 @@ internal fun ToolActivityCard(text: String) {
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                 )
                 Text(
-                    "${presentation.toolName} · ${presentation.statusLabel}",
+                    AppLanguage.tr("详细信息", "Details"),
                     style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.outline
                 )
                 if (presentation.viewKey.isNotBlank()) {
@@ -296,6 +299,10 @@ private fun presentTool(tool: ToolActivity): ToolPresentation {
     val ok = tool.status == "ok"
     val warning = tool.status == "TIMEOUT"
     val defaultStatusLabel = when {
+        ok && tool.name == "spawn_agent" ->
+            AppLanguage.tr("已提交", "Submitted")
+        ok && tool.name == "agent_task_supplement" ->
+            AppLanguage.tr("已补充", "Added")
         ok -> AppLanguage.tr("完成", "Done")
         warning -> AppLanguage.tr("超时", "Timed out")
         tool.status == "USER_DENIED" -> AppLanguage.tr("已拒绝", "Denied")
@@ -328,6 +335,14 @@ private fun presentTool(tool: ToolActivity): ToolPresentation {
 }
 
 private fun toolTitle(name: String): String = when (name) {
+    "spawn_agent" -> AppLanguage.tr("已交给 AI 处理", "Handed to AI")
+    "agent_task_list" -> AppLanguage.tr("查看后台任务", "View background tasks")
+    "agent_task_status" -> AppLanguage.tr("查看任务进度", "Check task progress")
+    "agent_task_supplement" -> AppLanguage.tr("补充任务要求", "Add instructions")
+    "agent_task_pause" -> AppLanguage.tr("暂停任务", "Pause task")
+    "agent_task_resume" -> AppLanguage.tr("继续任务", "Resume task")
+    "agent_task_cancel" -> AppLanguage.tr("取消任务", "Cancel task")
+    "agent_task_cancel_queued" -> AppLanguage.tr("取消排队任务", "Cancel waiting tasks")
     "space_launch", "space_multi_open" -> AppLanguage.tr("打开应用", "Open app")
     "space_stop" -> AppLanguage.tr("关闭应用", "Close app")
     "space_list_apps" -> AppLanguage.tr("查看应用", "List apps")
@@ -339,7 +354,7 @@ private fun toolTitle(name: String): String = when (name) {
     "ui_tap" -> AppLanguage.tr("点击界面", "Tap screen")
     "ui_set_text" -> AppLanguage.tr("输入文字", "Type text")
     "ui_wait_for" -> AppLanguage.tr("等待界面", "Wait for screen")
-    "poll_tool" -> AppLanguage.tr("定时复查", "Poll status")
+    "poll_tool" -> AppLanguage.tr("等待结果", "Waiting for result")
     "ui_key" -> AppLanguage.tr("返回按键", "Press key")
     "browser_open", "browser_navigate" -> AppLanguage.tr("打开网页", "Open page")
     "browser_read_text" -> AppLanguage.tr("读取网页", "Read page")
@@ -356,10 +371,24 @@ private fun toolTitle(name: String): String = when (name) {
     "hand_to_user" -> AppLanguage.tr("交给你处理", "Hand to you")
     "appfn_list", "appfn_status", "appfn_execute" ->
         AppLanguage.tr("应用功能", "App functions")
-    else -> AppLanguage.tr("执行工具", "Tool action")
+    "space_running" -> AppLanguage.tr("查看应用状态", "Check app status")
+    "schedule_task" -> AppLanguage.tr("设置提醒", "Set a reminder")
+    "speech_speak" -> AppLanguage.tr("播放语音提醒", "Speak reminder")
+    "speech_stop" -> AppLanguage.tr("停止语音", "Stop speaking")
+    "speech_status" -> AppLanguage.tr("查看语音状态", "Check speech status")
+    "memory_save", "memory_forget" -> AppLanguage.tr("整理记忆", "Update memory")
+    "skill_save", "skill_read", "skill_list" -> AppLanguage.tr("整理做法", "Update a saved routine")
+    "browser_hand_to_user" -> AppLanguage.tr("请你接管网页", "Take over the page")
+    else -> when {
+        name.startsWith("host_") -> AppLanguage.tr("操作设备", "Operate device")
+        name.startsWith("mcp_") -> AppLanguage.tr("使用外部功能", "Use external service")
+        else -> AppLanguage.tr("自动操作", "Automated action")
+    }
 }
 
 private fun toolIcon(name: String): ImageVector = when {
+    name == "spawn_agent" || name.startsWith("agent_task_") ->
+        Icons.Rounded.AccountTree
     name.startsWith("browser_") -> Icons.Rounded.Public
     name.startsWith("appfn_") -> Icons.Rounded.Build
     name == "hand_to_user" -> Icons.Rounded.SmartToy
@@ -384,10 +413,68 @@ private fun toolSummary(tool: ToolActivity, json: JSONObject?): String {
             ?: tool.status
     }
     if (json == null) {
-        return tool.body.lineSequence().firstOrNull().orEmpty().take(160)
+        val firstLine = tool.body.lineSequence()
+            .firstOrNull { it.isNotBlank() }
+            .orEmpty()
+            .trim()
+        return if (firstLine.startsWith("{") || firstLine.startsWith("[")) {
+            AppLanguage.tr("操作已完成", "Completed")
+        } else {
+            firstLine.take(160)
+        }
     }
     val body = tool.body
     return when (tool.name) {
+        "spawn_agent" -> when (json.optString("ui_state")) {
+            "waiting" -> {
+                val position = json.optInt("queue_position", 0)
+                if (position > 0) {
+                    AppLanguage.tr(
+                        "已排队，前面还有 ${position - 1} 个任务",
+                        "Queued" + if (position > 1) " after ${position - 1} tasks" else ""
+                    )
+                } else {
+                    AppLanguage.tr("已加入任务列表", "Added to the task list")
+                }
+            }
+            "running" -> AppLanguage.tr("正在后台处理", "Working in the background")
+            "paused" -> AppLanguage.tr("任务已暂停", "Task paused")
+            else -> AppLanguage.tr("已交给 AI 处理", "Handed to AI")
+        }
+        "agent_task_list" -> AppLanguage.tr(
+            "${json.optJSONArray("tasks")?.length() ?: 0} 个后台任务",
+            "${json.optJSONArray("tasks")?.length() ?: 0} background tasks"
+        )
+        "agent_task_status",
+        "agent_task_pause",
+        "agent_task_resume",
+        "agent_task_cancel" -> listOf(
+            json.optString("goal").take(80).takeIf(String::isNotBlank),
+            taskUiStateLabel(json.optString("ui_state"))
+        ).filterNotNull().joinToString(" · ")
+        "agent_task_supplement" -> AppLanguage.tr(
+            "补充要求已交给当前任务",
+            "Instructions sent to the active task"
+        )
+        "agent_task_cancel_queued" -> AppLanguage.tr(
+            "已取消 ${json.optInt("cancelled")} 个排队任务",
+            "Cancelled ${json.optInt("cancelled")} waiting tasks"
+        )
+        "schedule_task" -> when {
+            json.has("goal") -> if (json.optBoolean("alarm")) {
+                AppLanguage.tr("已设置闹钟提醒", "Alarm reminder set")
+            } else {
+                AppLanguage.tr("已设置定时任务", "Scheduled task created")
+            }
+            json.has("tasks") -> AppLanguage.tr(
+                "${json.optJSONArray("tasks")?.length() ?: 0} 个定时任务",
+                "${json.optJSONArray("tasks")?.length() ?: 0} scheduled tasks"
+            )
+            else -> AppLanguage.tr("定时任务已更新", "Scheduled task updated")
+        }
+        "speech_speak" -> AppLanguage.tr("已开始播放", "Playback started")
+        "speech_stop" -> AppLanguage.tr("已停止播放", "Playback stopped")
+        "speech_status" -> AppLanguage.tr("语音功能正常", "Speech is available")
         "space_launch", "space_multi_open" -> buildString {
             append(appLabel(json.optString("package")))
             json.optString("instance_id").takeIf { it.isNotBlank() }?.let {
@@ -441,35 +528,22 @@ private fun toolSummary(tool: ToolActivity, json: JSONObject?): String {
             val checks = json.optInt("checks")
             val complete = json.optBoolean("completed")
             AppLanguage.tr(
-                "${json.optString("tool")} · 已检查 $checks 次" +
+                "已检查 $checks 次" +
                     if (complete) " · 已完成" else " · 仍在等待",
-                "${json.optString("tool")} · checked $checks times" +
+                "Checked $checks times" +
                     if (complete) " · complete" else " · still waiting"
             )
         }
-        "task_status", "task_wait", "task_cancel" -> {
-            val progress = json.optInt("progress_percent", -1)
-                .takeIf { it >= 0 }
-                ?.let { " · $it%" }
-                .orEmpty()
-            AppLanguage.tr(
-                "${json.optString("title")} · ${json.optString("state")}$progress" +
-                    if (tool.name == "task_wait") {
-                        when {
-                            json.optBoolean("timed_out") -> " · 等待超时"
-                            json.optBoolean("changed") -> " · 状态已变化"
-                            else -> ""
-                        }
-                    } else "",
-                "${json.optString("title")} · ${json.optString("state")}$progress" +
-                    if (tool.name == "task_wait") {
-                        when {
-                            json.optBoolean("timed_out") -> " · timed out"
-                            json.optBoolean("changed") -> " · state changed"
-                            else -> ""
-                        }
-                    } else ""
-            )
+        "task_status", "task_wait", "task_cancel" -> when (tool.name) {
+            "task_cancel" -> AppLanguage.tr("已请求取消任务", "Cancellation requested")
+            "task_status" -> AppLanguage.tr("任务进度已更新", "Task progress updated")
+            else -> when {
+                json.optBoolean("timed_out") ->
+                    AppLanguage.tr("还在等待，稍后继续", "Still waiting")
+                json.optBoolean("terminal") || json.optBoolean("changed") ->
+                    AppLanguage.tr("任务状态已更新", "Task status updated")
+                else -> AppLanguage.tr("继续等待任务完成", "Waiting for the task")
+            }
         }
         "task_list" -> AppLanguage.tr(
             "${json.optJSONArray("tasks")?.length() ?: 0} 个任务",
@@ -515,7 +589,7 @@ private fun toolSummary(tool: ToolActivity, json: JSONObject?): String {
             "skipped" -> AppLanguage.tr("你跳过了这一步", "You skipped this step")
             else -> AppLanguage.tr("已把 App 交给你", "Handed the app to you")
         }
-        else -> tool.body.lineSequence().firstOrNull().orEmpty().take(160)
+        else -> AppLanguage.tr("操作已完成", "Completed")
     }
 }
 
@@ -559,8 +633,41 @@ private fun appLabel(packageName: String): String {
 }
 
 private fun toolDetail(tool: ToolActivity, json: JSONObject?): String {
-    if (tool.status != "ok" || json == null) return prettyBody(tool.body)
+    if (tool.status != "ok") return friendlyError(tool.body).message
+    if (json == null) {
+        val body = tool.body.trim()
+        return if (body.startsWith("{") || body.startsWith("[")) {
+            ""
+        } else {
+            body.take(2_000)
+        }
+    }
     return when (tool.name) {
+        "spawn_agent",
+        "agent_task_status",
+        "agent_task_pause",
+        "agent_task_resume",
+        "agent_task_cancel" -> buildString {
+            json.optString("goal")
+                .takeIf(String::isNotBlank)
+                ?.let { append(AppLanguage.tr("任务：", "Task: ")).append(it).append('\n') }
+            append(AppLanguage.tr("状态：", "Status: "))
+                .append(taskUiStateLabel(json.optString("ui_state")))
+            json.optString("progress")
+                .takeIf(String::isNotBlank)
+                ?.let {
+                    append('\n')
+                    append(AppLanguage.tr("进度：", "Progress: "))
+                    append(it)
+                }
+            json.optString("result")
+                .takeIf(String::isNotBlank)
+                ?.let {
+                    append('\n')
+                    append(AppLanguage.tr("结果：", "Result: "))
+                    append(it)
+                }
+        }
         "space_launch", "space_multi_open" -> buildString {
             append(AppLanguage.tr("应用：", "App: ")).append(appLabel(json.optString("package")))
             append('\n').append(AppLanguage.tr("包名：", "Package: ")).append(json.optString("package"))
@@ -615,24 +722,58 @@ private fun toolDetail(tool: ToolActivity, json: JSONObject?): String {
             append(AppLanguage.tr("原因：", "Reason: ")).append(json.optString("reason")).append('\n')
             append(AppLanguage.tr("结果：", "Result: ")).append(json.optString("takeover"))
         }
-        else -> prettyBody(tool.body)
+        "schedule_task" -> buildString {
+            json.optString("goal")
+                .takeIf(String::isNotBlank)
+                ?.let { append(AppLanguage.tr("提醒内容：", "Reminder: ")).append(it).append('\n') }
+            val nextAt = json.optLong("next_at")
+            if (nextAt > 0) {
+                append(AppLanguage.tr("下次时间：", "Next time: "))
+                    .append(
+                        SimpleDateFormat(
+                            "MM-dd HH:mm:ss",
+                            Locale.getDefault()
+                        ).format(Date(nextAt))
+                    )
+                    .append('\n')
+            }
+            append(AppLanguage.tr("重复：", "Repeat: "))
+                .append(scheduleRepeatLabel(json.optString("repeat"), json.optInt("interval_minutes")))
+                .append('\n')
+            append(AppLanguage.tr("方式：", "Alert: ")).append(
+                if (json.optBoolean("alarm")) {
+                    AppLanguage.tr("闹钟响铃和震动", "Alarm sound and vibration")
+                } else {
+                    AppLanguage.tr("普通通知", "Notification")
+                }
+            )
+        }
+        else -> ""
     }
+}
+
+private fun scheduleRepeatLabel(repeat: String, intervalMinutes: Int): String = when (repeat) {
+    "daily" -> AppLanguage.tr("每天", "Daily")
+    "weekly" -> AppLanguage.tr("每周", "Weekly")
+    "interval" -> AppLanguage.tr(
+        "每 $intervalMinutes 分钟",
+        "Every $intervalMinutes min"
+    )
+    else -> AppLanguage.tr("一次", "Once")
+}
+
+private fun taskUiStateLabel(state: String): String = when (state) {
+    "waiting" -> AppLanguage.tr("排队中", "Waiting")
+    "running" -> AppLanguage.tr("正在处理", "Working")
+    "paused" -> AppLanguage.tr("已暂停", "Paused")
+    "needs_attention" -> AppLanguage.tr("需要你处理", "Needs you")
+    "cancelling" -> AppLanguage.tr("正在取消", "Cancelling")
+    "finished" -> AppLanguage.tr("已完成", "Finished")
+    else -> state
 }
 
 private fun parseJsonObject(text: String): JSONObject? =
     runCatching { JSONObject(text) }.getOrNull()
-
-private fun prettyBody(text: String): String {
-    val trimmed = text.trim()
-    if (trimmed.isEmpty()) return ""
-    return runCatching {
-        when {
-            trimmed.startsWith("{") -> JSONObject(trimmed).toString(2)
-            trimmed.startsWith("[") -> org.json.JSONArray(trimmed).toString(2)
-            else -> trimmed
-        }
-    }.getOrDefault(trimmed).take(6_000)
-}
 
 @Composable
 private fun PluginDocumentView(

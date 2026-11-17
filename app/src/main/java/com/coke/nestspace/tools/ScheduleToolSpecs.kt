@@ -13,7 +13,8 @@ internal fun ToolRegistry.scheduleToolSpecs(): List<ToolSpec> = listOf(
                 "resume, delete, run_now. For create, pass goal and at (HH:mm local time or epoch ms). " +
                 "repeat is once, daily, weekly or interval; interval uses interval_minutes. " +
                 "weekdays are comma-separated 1=Mon..7=Sun. Recurring tasks run in the normal " +
-                "assistant conversation and post a result notification.",
+                "assistant conversation and post a result notification. Set alarm=true for " +
+                "reminders that should use the system alarm sound and vibration at the due time.",
             inputSchema = schema(
                 "action" to "string",
                 "id" to "string",
@@ -21,7 +22,8 @@ internal fun ToolRegistry.scheduleToolSpecs(): List<ToolSpec> = listOf(
                 "at" to "string",
                 "repeat" to "string",
                 "weekdays" to "string",
-                "interval_minutes" to "integer"
+                "interval_minutes" to "integer",
+                "alarm" to "boolean"
             )
         ) { args, _ ->
             when (args.optString("action", "list").lowercase()) {
@@ -58,7 +60,8 @@ internal fun ToolRegistry.scheduleToolSpecs(): List<ToolSpec> = listOf(
                         hour = parsed.hour,
                         minute = parsed.minute,
                         weekdays = parsed.weekdays,
-                        intervalMinutes = interval.coerceAtLeast(5)
+                        intervalMinutes = interval.coerceAtLeast(5),
+                        alarm = args.optBoolean("alarm", false)
                     ).fold(
                         onSuccess = {
                             AppSettingsEvents.notifyChanged()

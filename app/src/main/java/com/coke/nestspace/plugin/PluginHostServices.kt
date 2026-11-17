@@ -564,6 +564,7 @@ private class AndroidPluginTaskHandle(
     private val result = CompletableFuture<PluginTaskResult>()
     private val cancelled = AtomicBoolean()
     private val progress = AtomicReference<Pair<Int, String>>(0 to "")
+    private val terminalLock = Any()
 
     @Volatile
     private var done = false
@@ -588,13 +589,14 @@ private class AndroidPluginTaskHandle(
         Scheduler.schedule({
             if (!result.isDone) {
                 cancelled.set(true)
-                future.get()?.cancel(true)
-                finish(
+                val completed = finish(
                     PluginTaskResult.failure(
                         "Plugin task timed out",
                         "TIMEOUT"
                     )
                 )
+                future.get()?.cancel(true)
+                completed
             }
         }, request.timeoutMs.toLong(), TimeUnit.MILLISECONDS)
         future.set(executor.submit {
@@ -627,10 +629,15 @@ private class AndroidPluginTaskHandle(
     override fun getProgressMessage(): String = progress.get().second
 
     override fun cancel(): Boolean {
-        if (result.isDone) return false
-        cancelled.set(true)
-        future.get()?.cancel(true)
-        return finish(PluginTaskResult.cancelled("Plugin task cancelled"))
+        synchronized(terminalLock) {
+            if (result.isDone) return false
+            cancelled.set(true)
+            val completed = finish(
+                PluginTaskResult.cancelled("Plugin task cancelled")
+            )
+            future.get()?.cancel(true)
+            return completed
+        }
     }
 
     fun cancelFromHost() {
@@ -639,29 +646,33 @@ private class AndroidPluginTaskHandle(
 
     override fun getResult(): CompletableFuture<PluginTaskResult> = result
 
-    private fun finish(value: PluginTaskResult): Boolean {
-        val completed = result.complete(value)
-        if (completed) {
-            done = true
-            hostTaskId?.let { id ->
-                when {
-                    value.isSuccessful -> OperationTaskRegistry.succeed(
-                        id,
-                        value.message
-                    )
-                    value.isCancelled -> OperationTaskRegistry.markCancelled(
-                        id,
-                        value.message.ifBlank { "plugin task cancelled" }
-                    )
-                    else -> OperationTaskRegistry.fail(
-                        id,
-                        value.message.ifBlank { value.errorCode }
-                    )
+    private fun finish(value: PluginTaskResult): Boolean = synchronized(terminalLock) {
+        if (result.isDone) {
+            false
+        } else {
+            val completed = result.complete(value)
+            if (completed) {
+                done = true
+                hostTaskId?.let { id ->
+                    when {
+                        value.isSuccessful -> OperationTaskRegistry.succeed(
+                            id,
+                            value.message
+                        )
+                        value.isCancelled -> OperationTaskRegistry.markCancelled(
+                            id,
+                            value.message.ifBlank { "plugin task cancelled" }
+                        )
+                        else -> OperationTaskRegistry.fail(
+                            id,
+                            value.message.ifBlank { value.errorCode }
+                        )
+                    }
                 }
+                onFinished(taskId)
             }
-            onFinished(taskId)
+            completed
         }
-        return completed
     }
 
     private inner class TaskScope : PluginTaskContext {

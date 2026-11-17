@@ -43,6 +43,7 @@
 | [插件编写指南](plugin-authoring.md) | 从创建源码插件到 Manifest、Java API、声明式设置、Host API、运行时代理、调试和发布 |
 | [整体性能审计与修改建议](performance-audit-and-improvement-plan.md) | 容器启动、Hook、进程池、截图和 target 热路径的性能优化路线 |
 | [MCP 工具参考](mcp-tools.md) | 全部 MCP 工具和参数 |
+| [AI 助手任务与子 Agent 编排设计](assistant-task-orchestration.md) | 主代理、任务队列、暂停/取消、后台执行、主代理交接、可靠性与故障恢复设计 |
 | [App / 网站知识包](knowledge-packs.md) | 知识包的格式、匹配和新增方法 |
 | [从源码构建](building.md) | 环境要求、构建命令和 CI |
 | [发布更新日志](releases/README.md) | Release 文件格式、发布前检查和自动发布流程 |

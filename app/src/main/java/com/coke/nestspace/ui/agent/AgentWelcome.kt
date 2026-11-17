@@ -110,15 +110,15 @@ internal fun WelcomeState(
             Spacer(Modifier.height(12.dp))
             Text(
                 AppLanguage.tr(
-                    "还没有配置大模型",
-                    "No model configured"
+                    "还没有设置 AI 助手",
+                    "Your assistant isn't set up yet"
                 ),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.height(14.dp))
             Button(onClick = onConfigure) {
-                Text(AppLanguage.tr("去配置大模型", "Configure a model"))
+                Text(AppLanguage.tr("开始设置", "Set up assistant"))
             }
         }
         return

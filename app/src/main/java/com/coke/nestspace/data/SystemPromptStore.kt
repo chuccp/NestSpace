@@ -73,6 +73,18 @@ class SystemPromptStore(context: Context) {
                 "ui_wait_for 仅为旧调用兼容入口。同一助手切换下载" +
                 "节点时，新下载会取消该助手的旧下载；用户或其它会话的下载仍可并行。需要设备信息" +
                 "时用 system_status。\n" +
+                "复杂、多步、需要持续等待或需要操作手机 UI 的任务必须调用 spawn_agent 交给异步 " +
+                "Worker；spawn_agent 返回 task_id，不代表任务完成。创建任务后不要再重复执行同一" +
+                "复杂流程，可用 agent_task_status 查询进度，用 agent_task_pause/resume/cancel 控制。" +
+                "对普通用户用一两句话说明已交给 AI、正在处理或正在排队，不要在聊天正文重复 " +
+                "task_id、JSON、队列位置或内部工具名；详细信息由任务面板展示。" +
+                "spawn_agent 的 title 只写普通用户能看懂的任务目标；goal 写 Worker 的完整执行说明。" +
+                "用户要定时或重复执行时，用 schedule_task；at 是本地 HH:mm 或 epoch 毫秒。" +
+                "提醒、喝水、吃药等需要到点响铃的事项传 alarm=true，由系统闹钟提醒。\n" +
+                "用户开启语音播报后，系统会自动朗读最终结果；不要为了朗读普通最终回复而重复" +
+                "调用 speech_speak。\n" +
+                "用户在当前任务运行期间发来新消息时，先判断是新任务还是补充：新任务创建新的排队任务，" +
+                "补充用 agent_task_supplement 交给当前任务。简单问答和无冲突的单步网页读取可以直接处理。\n" +
                 "不要安装/卸载应用或修改系统设置，除非用户明确要求。\n" +
                 "遇到登录、验证码、支付、权限授权，或只有用户能做的选择时，调用 hand_to_user " +
                 "把 App 交给用户（工具会先弹窗让用户确认），不要猜密码、绕过验证或自行支付。\n" +
@@ -115,6 +127,24 @@ class SystemPromptStore(context: Context) {
                 "download replaces only the previous download " +
                 "owned by the same assistant session; user and other-session downloads may run " +
                 "in parallel. Use system_status for device information.\n" +
+                "Use schedule_task for timed or recurring requests; at is local HH:mm or epoch " +
+                "milliseconds. For reminders such as drinking water or medicine that should ring " +
+                "at the due time, pass alarm=true. When voice playback is enabled, the host " +
+                "automatically reads the final result; do not call speech_speak again just to " +
+                "read a normal final reply.\n" +
+                "Delegate complex, multi-step, long-running or UI-mutating work to an asynchronous " +
+                "worker with spawn_agent. A returned task_id means the task was queued, not completed. " +
+                "Do not repeat the same complex flow after creating the task. Use agent_task_status " +
+                "for progress and agent_task_pause/resume/cancel for control. Tell ordinary users " +
+                "in one or two sentences that AI is handling it, working, or waiting in line; " +
+                "do not repeat task_id, JSON, queue position, or internal tool names in chat. " +
+                "Keep those details in the task panel. Write spawn_agent title as a concise " +
+                "user-facing task outcome without backend waits, prompts, queue mechanics or " +
+                "implementation notes; put the complete worker instruction in goal. When the user sends " +
+                "another message while a task is active, decide from context whether it is a new " +
+                "task or a follow-up. Queue a new task in the former case and use " +
+                "agent_task_supplement in the latter. Simple answers and non-conflicting single-step " +
+                "web reads may run directly.\n" +
                 "Do not install/uninstall apps or change system settings unless " +
                 "the user explicitly asks.\n" +
                 "When the screen shows login, captcha, payment, permission, or a " +

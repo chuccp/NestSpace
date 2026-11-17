@@ -318,6 +318,7 @@ class ToolRegistry(
             appfnToolSpecs() +
             scheduleToolSpecs() +
             agentToolSpecs() +
+            assistantTaskToolSpecs() +
             replayToolSpecs() +
             memoryToolSpecs() +
             sessionToolSpecs() +
@@ -697,6 +698,7 @@ class ToolRegistry(
             .put("repeat", task.repeat.api)
             .put("next_at", task.nextAt)
             .put("enabled", task.enabled)
+            .put("alarm", task.alarm)
             .put("hour", task.hour)
             .put("minute", task.minute)
             .put("weekdays", JSONArray(task.weekdays))

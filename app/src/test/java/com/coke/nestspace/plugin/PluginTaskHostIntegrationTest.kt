@@ -43,7 +43,13 @@ class PluginTaskHostIntegrationTest {
                     context.checkCancelled()
                 }
             }
-            Thread.sleep(30)
+            val deadline = System.currentTimeMillis() + 2_000
+            while (System.currentTimeMillis() < deadline &&
+                OperationTaskRegistry.list("plugin:integration-cancel")
+                    .none { it.requestId == handle.getId() }
+            ) {
+                Thread.sleep(10)
+            }
             assertTrue(handle.cancel())
             val result = handle.getResult().get(3, TimeUnit.SECONDS)
             assertTrue(result.isCancelled)

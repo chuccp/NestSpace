@@ -143,9 +143,26 @@ MCP 调用未指定时默认 `background`，调用方可按任务自行选择。
 
 ## 子 Agent
 
-`spawn_agent` 把一个自包含的子任务交给只读子 Agent：默认 15 步、最多 40 步，只能观察容器和浏览网页，不能点击、输入、启动应用或再创建子任务。结果默认保留 4000 字、最多 8000 字，并标记为不可信数据返回主 Agent。
+`spawn_agent` 创建一个异步 Worker 任务并立即返回 `task_id`。Worker 是主要执行循环，
+继承当前模型配置的最大工具轮次（当前配置为 128 轮），不再使用单独的固定步数上限。
+复杂任务顺序排队，同一时间只运行一个交互 Worker。Worker 不能再次创建子 Agent，
+结果按不可信数据处理。
 
-子任务记录保存在「空间设置 → AI 助手 → 高级助手工具 → 子任务记录」，可查看状态、结果并停止运行中的子任务。对应的远程工具是 `nestspace_child_runs`。
+任务状态和控制统一使用：
+
+| 工具 | 行为 |
+| --- | --- |
+| `agent_task_list` | 列出活动、等待和最近结束的 Worker 任务 |
+| `agent_task_status` | 查询状态、进度、队列位置和可用操作 |
+| `agent_task_supplement` | 给运行或暂停中的任务追加补充 |
+| `agent_task_pause` | 在安全步骤暂停任务 |
+| `agent_task_resume` | 重新观察后继续暂停任务 |
+| `agent_task_cancel` | 取消指定等待或运行任务 |
+| `agent_task_cancel_queued` | 取消全部等待任务 |
+
+用户和 MCP 发起的任务统一创建为 Worker，进入同一个 FIFO 队列。AI 助手 Header
+下方的快捷列表只显示 AI 助手产生的任务；完整任务中心显示全部 Worker。
+`CANCELLING` 状态下所有变更操作禁用，只允许查询状态。
 
 ## 助手桥接（仅远程 MCP）
 

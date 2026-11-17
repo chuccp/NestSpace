@@ -15,6 +15,8 @@ import com.coke.nestspace.memory.MemoryStore
 import com.coke.nestspace.memory.SkillDrafter
 import com.coke.nestspace.memory.SkillStore
 import com.coke.nestspace.replay.ReplayManager
+import com.coke.nestspace.speech.AssistantSpeech
+import com.coke.nestspace.speech.TtsSettings
 import com.coke.nestspace.tools.ContainerDisplayMode
 import com.coke.nestspace.llm.ChatBlock
 import com.coke.nestspace.llm.ChatMessage
@@ -606,6 +608,7 @@ object AssistantConversation {
         outcome: RunOutcome,
         answer: String?
     ) {
+        speakFinalResult(app, outcome, answer)
         val next: PendingTask?
         synchronized(stateLock) {
             currentJob = null
@@ -642,6 +645,26 @@ object AssistantConversation {
             // finished. Tool completion is not task completion, and a queued
             // follow-up must be able to use the existing mirror.
             HeadlessMirrorWindow.scheduleAutoClose()
+        }
+    }
+
+    private fun speakFinalResult(
+        app: Context,
+        outcome: RunOutcome,
+        answer: String?
+    ) {
+        if (outcome != RunOutcome.COMPLETED || answer.isNullOrBlank()) return
+        val config = TtsSettings.load(app)
+        if (!config.enabled) return
+        memoryScope.launch {
+            runCatching {
+                AssistantSpeech.speak(
+                    context = app,
+                    text = answer,
+                    providerId = config.providerId,
+                    interrupt = true
+                )
+            }
         }
     }
 

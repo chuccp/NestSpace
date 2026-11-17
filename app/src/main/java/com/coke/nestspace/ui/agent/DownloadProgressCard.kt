@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.HourglassEmpty
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -175,7 +178,12 @@ internal fun OperationTaskStatusCard(
 ) {
     val secondary = MaterialTheme.colorScheme.onSurfaceVariant
     val accent = MaterialTheme.colorScheme.primary
-    val title = when {
+    val displayTitle = if (task.kind == "tool_call") {
+        friendlyOperationName(task.title)
+    } else {
+        task.title.ifBlank { AppLanguage.tr("后台任务", "Background task") }
+    }
+    val status = when {
         task.state == OperationTaskRegistry.State.FAILED &&
             task.message == "interrupted" -> AppLanguage.tr(
             "应用重启，任务已中断",
@@ -193,9 +201,16 @@ internal fun OperationTaskStatusCard(
             AppLanguage.tr("等待处理", "Waiting for user")
         task.state == OperationTaskRegistry.State.PAUSED ->
             AppLanguage.tr("任务已暂停", "Task paused")
-        else -> task.message.ifBlank {
-            AppLanguage.tr("任务进行中", "Task running")
-        }
+        task.kind == "tool_call" -> friendlyOperationStatus(task.title)
+        else -> AppLanguage.tr("任务进行中", "Task running")
+    }
+    val icon = when {
+        task.state == OperationTaskRegistry.State.SUCCEEDED -> Icons.Rounded.CheckCircle
+        task.state == OperationTaskRegistry.State.FAILED ||
+            task.state == OperationTaskRegistry.State.CANCELLED ->
+            Icons.Rounded.ErrorOutline
+        task.title == "browser_download" -> Icons.Rounded.Download
+        else -> Icons.Rounded.HourglassEmpty
     }
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -208,7 +223,7 @@ internal fun OperationTaskStatusCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Rounded.Download,
+                icon,
                 contentDescription = null,
                 tint = accent,
                 modifier = Modifier.size(24.dp)
@@ -218,7 +233,7 @@ internal fun OperationTaskStatusCard(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    task.title,
+                    displayTitle,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -226,11 +241,11 @@ internal fun OperationTaskStatusCard(
                 )
                 Text(
                     listOfNotNull(
-                        title.takeIf(String::isNotBlank),
+                        status.takeIf(String::isNotBlank),
                         task.error?.takeIf {
                             it.isNotBlank() &&
                                 it != "The app process stopped before this task finished."
-                        }
+                        }?.let { friendlyError(it).message }
                     ).joinToString(" · "),
                     color = secondary,
                     style = MaterialTheme.typography.bodySmall,
@@ -246,8 +261,29 @@ internal fun OperationTaskStatusCard(
                 }
             }
             if (onCancel != null && !task.terminal) {
-                TextButton(onClick = onCancel) {
-                    Text(AppLanguage.tr("取消", "Cancel"), color = accent)
+                TextButton(
+                    onClick = onCancel,
+                    enabled = task.state != OperationTaskRegistry.State.CANCELLING
+                ) {
+                    Text(
+                        AppLanguage.tr(
+                            if (task.state == OperationTaskRegistry.State.CANCELLING) {
+                                "正在取消"
+                            } else {
+                                "取消"
+                            },
+                            if (task.state == OperationTaskRegistry.State.CANCELLING) {
+                                "Cancelling"
+                            } else {
+                                "Cancel"
+                            }
+                        ),
+                        color = if (task.state == OperationTaskRegistry.State.CANCELLING) {
+                            secondary
+                        } else {
+                            accent
+                        }
+                    )
                 }
             } else if (onDismiss != null && task.terminal) {
                 TextButton(onClick = onDismiss) {
@@ -264,6 +300,28 @@ internal fun OperationTaskStatusCard(
             }
         }
     }
+}
+
+private fun friendlyOperationName(name: String): String = when (name) {
+    "poll_tool" -> AppLanguage.tr("等待结果", "Waiting for result")
+    "task_wait" -> AppLanguage.tr("等待任务完成", "Waiting for task")
+    "task_status", "task_list" -> AppLanguage.tr("查看任务进度", "Checking task progress")
+    "browser_download" -> AppLanguage.tr("下载文件", "Downloading")
+    "space_install_apk" -> AppLanguage.tr("安装应用", "Installing app")
+    "ui_observe" -> AppLanguage.tr("查看当前页面", "Checking the screen")
+    "browser_read_text" -> AppLanguage.tr("读取网页", "Reading page")
+    else -> AppLanguage.tr("自动操作", "Automated action")
+}
+
+private fun friendlyOperationStatus(name: String): String = when (name) {
+    "poll_tool" -> AppLanguage.tr("正在检查最新结果", "Checking for the latest result")
+    "task_wait" -> AppLanguage.tr("正在等待任务完成", "Waiting for the task to finish")
+    "task_status", "task_list" -> AppLanguage.tr("正在查看进度", "Checking progress")
+    "browser_download" -> AppLanguage.tr("正在下载", "Downloading")
+    "space_install_apk" -> AppLanguage.tr("正在安装", "Installing")
+    "ui_observe" -> AppLanguage.tr("正在查看页面", "Checking the screen")
+    "browser_read_text" -> AppLanguage.tr("正在读取内容", "Reading the page")
+    else -> AppLanguage.tr("正在处理", "Working")
 }
 
 private fun formatBytes(bytes: Long): String {

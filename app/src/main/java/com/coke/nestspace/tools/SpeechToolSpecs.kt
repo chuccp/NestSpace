@@ -11,7 +11,8 @@ internal fun ToolRegistry.speechToolSpecs(): List<ToolSpec> = listOf(
         name = "speech_speak",
         description = "Speak text through the configured TTS provider. System Android TTS " +
             "is used by default; an enabled plugin speech provider may be selected in TTS " +
-            "settings or explicitly with provider_id.",
+            "settings or explicitly with provider_id. Do not call this for a normal final " +
+            "assistant reply when host voice playback is enabled; the host speaks final results.",
         inputSchema = schema(
             "text" to "string",
             "provider_id" to "string",

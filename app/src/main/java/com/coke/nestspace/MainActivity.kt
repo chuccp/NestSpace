@@ -14,10 +14,16 @@ import com.coke.nestspace.control.ContainerUiClient
 import com.coke.nestspace.service.BackgroundOverlay
 import com.coke.nestspace.service.McpForegroundService
 import com.coke.nestspace.ui.VirtualApp
+import com.coke.nestspace.ui.DesktopNavigation
 import com.coke.nestspace.ui.theme.VirtualTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        const val EXTRA_OPEN_TASKS = "com.coke.nestspace.OPEN_TASKS"
+        const val EXTRA_TASK_ID = "com.coke.nestspace.TASK_ID"
+    }
 
     /**
      * In a headless launch the target host is moved behind this Activity, so
@@ -53,6 +59,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleTaskIntent(intent)
         HeadlessMirrorWindow.bind(this)
         onBackPressedDispatcher.addCallback(this, mirrorBack)
         HeadlessMirrorWindow.addBackEnabledListener(mirrorBackListener)
@@ -87,6 +94,22 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         HeadlessMirrorWindow.onHostPaused(this)
         super.onPause()
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleTaskIntent(intent)
+    }
+
+    private fun handleTaskIntent(intent: android.content.Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_TASKS, false) == true) {
+            DesktopNavigation.requestTaskCenter(
+                intent.getStringExtra(EXTRA_TASK_ID)
+            )
+            intent.removeExtra(EXTRA_OPEN_TASKS)
+            intent.removeExtra(EXTRA_TASK_ID)
+        }
     }
 
     override fun onDestroy() {

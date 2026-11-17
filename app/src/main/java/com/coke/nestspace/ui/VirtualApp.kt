@@ -299,6 +299,8 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
         mutableStateOf(ToolPermissionSettings.customCategories(context))
     }
     val settingsRevision by AppSettingsEvents.revision.collectAsState()
+    val taskCenterRequest by DesktopNavigation.taskCenterRequests.collectAsState()
+    var taskCenterFocusId by remember { mutableStateOf<String?>(null) }
     val pluginModels = remember(settingsRevision) {
         PluginLlmCatalog.snapshot()
     }
@@ -325,6 +327,14 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
 
     LaunchedEffect(Unit) {
         DesktopNavigation.requests.collect { tab = 0 }
+    }
+    LaunchedEffect(taskCenterRequest.requestId) {
+        if (taskCenterRequest.requestId > 0) {
+            taskCenterFocusId = taskCenterRequest.taskId
+            mcpTasksFromAssistant = true
+            spacesPage = SpacesPage.MCP_TASKS
+            tab = 1
+        }
     }
     LaunchedEffect(context) {
         updatePromptArmed = AppUpdateManager.checkOncePerDay(context).hasUnreadUpdate
@@ -580,7 +590,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                 }
             SpacesPage.SYSTEM_PROMPT -> AppLanguage.tr("系统提示词", "System prompt")
             SpacesPage.MCP_CLIENTS -> AppLanguage.tr("MCP 工具", "MCP tools")
-            SpacesPage.MCP_TASKS -> AppLanguage.tr("MCP 任务", "MCP tasks")
+            SpacesPage.MCP_TASKS -> AppLanguage.tr("助手任务", "Assistant tasks")
             SpacesPage.SLOTS -> AppLanguage.tr("容器槽位", "Container slots")
             SpacesPage.HOST_CONTROL -> AppLanguage.tr("宿主控制（Root）", "Host control (root)")
             SpacesPage.LOCATION -> AppLanguage.tr("坐标模拟", "Location simulation")
@@ -860,7 +870,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                     SpacesPage.SYSTEM_PROMPT -> SystemPromptScreen()
 
                     SpacesPage.MCP_CLIENTS -> McpClientSettingsScreen()
-                    SpacesPage.MCP_TASKS -> McpTasksScreen()
+                    SpacesPage.MCP_TASKS -> McpTasksScreen(taskCenterFocusId)
 
                     SpacesPage.HOST_CONTROL -> HostControlScreen()
                     SpacesPage.LOCATION -> LocationSimulationScreen()
@@ -970,6 +980,7 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                         tab = 1
                     },
                     onOpenMcpTasks = {
+                        taskCenterFocusId = null
                         mcpTasksFromAssistant = true
                         spacesPage = SpacesPage.MCP_TASKS
                         tab = 1

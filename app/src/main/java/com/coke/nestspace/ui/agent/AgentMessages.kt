@@ -1,5 +1,6 @@
 package com.coke.nestspace.ui.agent
 
+import android.widget.Toast
 import com.coke.nestspace.i18n.AppLanguage
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -17,9 +18,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -29,19 +32,27 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.coke.nestspace.R
+import com.coke.nestspace.data.AppSettingsEvents
+import com.coke.nestspace.speech.AssistantSpeech
+import com.coke.nestspace.speech.SpeechException
+import com.coke.nestspace.speech.TtsSettings
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
@@ -194,8 +205,20 @@ internal fun PendingMemoryCard(
 }
 
 @Composable
-internal fun AssistantMessage(text: String) {
+internal fun AssistantMessage(
+    text: String,
+    showSpeechButton: Boolean = true
+) {
+    val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    val settingsRevision by AppSettingsEvents.revision.collectAsState()
+    val ttsConfig = remember(settingsRevision) {
+        TtsSettings.load(context)
+    }
+    val speechKey = remember(text) { AssistantSpeech.key(text) }
+    val activeSpeechKey by AssistantSpeech.activeKey.collectAsState()
+    val speaking = activeSpeechKey == speechKey
     var copied by remember(text) { mutableStateOf(false) }
     LaunchedEffect(copied) {
         if (copied) {
@@ -216,15 +239,9 @@ internal fun AssistantMessage(text: String) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "NestSpace Agent",
+                    AppLanguage.tr("NestSpace 助手", "NestSpace Assistant"),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    "AI",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline
                 )
                 Spacer(Modifier.weight(1f))
                 IconButton(
@@ -250,6 +267,61 @@ internal fun AssistantMessage(text: String) {
             Spacer(Modifier.height(4.dp))
             SelectionContainer {
                 MarkdownContent(text)
+            }
+            if (showSpeechButton && ttsConfig.enabled) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    IconButton(
+                        onClick = {
+                            if (speaking) {
+                                AssistantSpeech.stop()
+                            } else {
+                                scope.launch {
+                                    runCatching {
+                                        AssistantSpeech.speak(
+                                            context = context,
+                                            text = text,
+                                            providerId = ttsConfig.providerId,
+                                            interrupt = true
+                                        )
+                                    }.onFailure { error ->
+                                        Toast.makeText(
+                                            context,
+                                            if (error is SpeechException) {
+                                                error.message ?: error.code
+                                            } else {
+                                                AppLanguage.tr(
+                                                    "语音播报失败",
+                                                    "Voice playback failed"
+                                                )
+                                            },
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            if (speaking) Icons.Rounded.GraphicEq
+                            else Icons.AutoMirrored.Rounded.VolumeUp,
+                            contentDescription = if (speaking) {
+                                AppLanguage.tr("停止播报", "Stop speaking")
+                            } else {
+                                AppLanguage.tr("播报这段回复", "Speak this reply")
+                            },
+                            modifier = Modifier.size(17.dp),
+                            tint = if (speaking) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
             }
         }
     }

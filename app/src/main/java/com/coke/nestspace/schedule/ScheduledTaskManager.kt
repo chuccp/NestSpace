@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -42,6 +44,7 @@ data class ScheduledTask(
     val weekdays: List<Int>,
     val intervalMinutes: Int,
     val enabled: Boolean,
+    val alarm: Boolean,
     val createdAt: Long,
     val lastRunAt: Long,
     val lastStatus: String,
@@ -78,7 +81,8 @@ class ScheduledTaskManager(context: Context) {
         minute: Int,
         weekdays: List<Int>,
         intervalMinutes: Int,
-        enabled: Boolean = true
+        enabled: Boolean = true,
+        alarm: Boolean = false
     ): Result<ScheduledTask> {
         val cleanGoal = goal.trim()
         if (cleanGoal.isBlank()) return Result.failure(ScheduleException("empty_goal"))
@@ -96,6 +100,7 @@ class ScheduledTaskManager(context: Context) {
             weekdays = weekdays.distinct().filter { it in 1..7 },
             intervalMinutes = intervalMinutes,
             enabled = enabled,
+            alarm = alarm,
             createdAt = System.currentTimeMillis(),
             lastRunAt = 0,
             lastStatus = "",
@@ -168,6 +173,7 @@ class ScheduledTaskManager(context: Context) {
         val task = synchronized(lock) {
             load().firstOrNull { it.id == id && it.enabled } ?: return
         }
+        if (task.alarm) notifyAlarm(task)
         execute(task, reschedule = task.recurring)
     }
 
@@ -330,11 +336,18 @@ class ScheduledTaskManager(context: Context) {
             manager.canScheduleExactAlarms()
         runCatching {
             if (canExact) {
-                manager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    task.nextAt,
-                    pending
-                )
+                if (task.alarm) {
+                    manager.setAlarmClock(
+                        AlarmManager.AlarmClockInfo(task.nextAt, pending),
+                        pending
+                    )
+                } else {
+                    manager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        task.nextAt,
+                        pending
+                    )
+                }
             } else {
                 manager.setAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
@@ -395,6 +408,57 @@ class ScheduledTaskManager(context: Context) {
         NotificationManagerCompat.from(context).notify(task.id.hashCode(), notification)
     }
 
+    private fun notifyAlarm(task: ScheduledTask) {
+        val context = appContext
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val attributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            context.getSystemService(NotificationManager::class.java)
+                ?.createNotificationChannel(
+                    NotificationChannel(
+                        ALARM_CHANNEL_ID,
+                        AppLanguage.tr("闹钟提醒", "Alarm reminders"),
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = AppLanguage.tr(
+                            "到点提醒你处理重要事项",
+                            "Alert you when a reminder is due"
+                        )
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0, 500, 250, 500)
+                        setSound(sound, attributes)
+                    }
+                )
+        }
+        val open = PendingIntent.getActivity(
+            context,
+            task.id.hashCode() + 1,
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, ALARM_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(AppLanguage.tr("提醒", "Reminder"))
+            .setContentText(task.goal.take(180))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(task.goal))
+            .setContentIntent(open)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify(
+            task.id.hashCode() + 1,
+            notification
+        )
+    }
+
     private fun load(): List<ScheduledTask> {
         val raw = SecureStore.read(appContext, FILE) ?: return mutableListOf()
         return runCatching {
@@ -413,6 +477,7 @@ class ScheduledTaskManager(context: Context) {
                     }.orEmpty(),
                     intervalMinutes = json.optInt("interval_minutes", 60),
                     enabled = json.optBoolean("enabled", true),
+                    alarm = json.optBoolean("alarm", false),
                     createdAt = json.optLong("created_at"),
                     lastRunAt = json.optLong("last_run_at"),
                     lastStatus = json.optString("last_status"),
@@ -436,6 +501,7 @@ class ScheduledTaskManager(context: Context) {
                     .put("weekdays", JSONArray(task.weekdays))
                     .put("interval_minutes", task.intervalMinutes)
                     .put("enabled", task.enabled)
+                    .put("alarm", task.alarm)
                     .put("created_at", task.createdAt)
                     .put("last_run_at", task.lastRunAt)
                     .put("last_status", task.lastStatus)
@@ -449,6 +515,7 @@ class ScheduledTaskManager(context: Context) {
         private val LOCK = Any()
         private const val FILE = "schedules.v1.enc"
         private const val CHANNEL_ID = "scheduled_tasks"
+        private const val ALARM_CHANNEL_ID = "scheduled_alarm_reminders"
         private const val DUE_GRACE_MS = 2 * 60_000L
 
         fun rescheduleAll(context: Context) {

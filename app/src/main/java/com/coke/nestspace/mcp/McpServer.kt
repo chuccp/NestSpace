@@ -91,8 +91,7 @@ class McpServer(
     private val taskOwner = "mcp:" + MessageDigest.getInstance("SHA-256")
         .digest(token.toByteArray(StandardCharsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-    private val taskManager = McpTaskManager.get(context.applicationContext)
-    private val taskSpecs = McpTaskTools.specs(taskManager)
+    private val taskSpecs = McpTaskTools.specs(registry)
     private val settingsSpecs = McpSettingsTools.specs(context.applicationContext)
 
     fun start() {

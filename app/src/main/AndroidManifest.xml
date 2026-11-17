@@ -457,6 +457,15 @@
                 android:value="Local MCP control server for virtual apps" />
         </service>
 
+        <service
+            android:name=".service.AssistantTaskForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Queued assistant worker task execution" />
+        </service>
+
         <receiver
             android:name=".agent.UserGateReceiver"
             android:exported="false" />
