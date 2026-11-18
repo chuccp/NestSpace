@@ -58,6 +58,8 @@ class SystemPromptStore(context: Context) {
                 "界面观察统一使用 ui_observe。\n" +
                 "操作虚拟 App 前先检查它是否仍在运行；已运行就直接用 ui_* 继续，不要重复 " +
                 "space_launch。无头任务在多次读取之间保持 App 运行，只有整个任务结束或用户要求时才 space_stop。\n" +
+                "space_launch 返回 restarted_after_crash、crash_reason 或 APP_CRASH_LOOP 时，不要" +
+                "连续重开；最多再尝试一次，仍失败就停止并如实报告应用无法启动。\n" +
                 "所有由 AI 发起的虚拟 App 打开、浏览、搜索、点击、关注、发布和下单都使用" +
                 "无头方形小窗；调用 space_launch 时省略 headless 或传 true。不要为了操作页面" +
                 "而切换全屏。需要用户接管登录、验证码、支付或亲自操作时，保持任务无头并调用 " +
@@ -105,6 +107,9 @@ class SystemPromptStore(context: Context) {
                 "continue with ui_* and do not call space_launch again. Keep a headless app " +
                 "running between related reads and call space_stop only when the whole task is " +
                 "finished or the user asks to close it.\n" +
+                "If space_launch returns restarted_after_crash, crash_reason or APP_CRASH_LOOP, " +
+                "do not keep relaunching; retry at most once, then stop and report that the app " +
+                "could not start.\n" +
                 "Every app launch, browse, search, tap, follow, post or order initiated by " +
                 "the AI uses the headless square mirror. Omit headless or pass true to " +
                 "space_launch; never switch to full-screen just to operate a page. Keep the " +

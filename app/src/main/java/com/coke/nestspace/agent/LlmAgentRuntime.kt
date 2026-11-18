@@ -646,6 +646,8 @@ class LlmAgentRuntime(
                 "操作虚拟 App 前先检查它是否仍在运行" +
                 "（space_running 或直接 ui_observe）；已运行就直接用 ui_*，不要重复 space_launch。" +
                 "无头任务在多次读取之间保持 App 运行，只有整个任务结束或用户要求时才 space_stop。" +
+                "space_launch 返回 restarted_after_crash、crash_reason 或 APP_CRASH_LOOP 时，不要" +
+                "连续重开；最多再尝试一次，仍失败就停止并如实报告应用无法启动。" +
                 "browser_open 默认新建标签页；可以用 browser_tabs 查看所有标签，" +
                 "并给 browser_navigate/browser_click/browser_read_text 等工具传 tab_id 同时操作多个网页。" +
                 "所有网页任务只能使用 browser_* 工具，禁止用 host_launch 启动 Chrome 或系统浏览器，" +
@@ -703,7 +705,10 @@ class LlmAgentRuntime(
                 "already running (space_running or ui_observe); if it is, continue with ui_* " +
                 "and do not call space_launch again. Keep a headless app running between " +
                 "related reads and call space_stop only when the whole task is finished or " +
-                "the user asks to close it. browser_open creates a new tab by default; use " +
+                "the user asks to close it. " +
+                "If space_launch returns restarted_after_crash, crash_reason or APP_CRASH_LOOP, " +
+                "do not keep relaunching; retry at most once, then stop and report that the app " +
+                "could not start. browser_open creates a new tab by default; use " +
                 "browser_tabs to list tabs and pass tab_id to browser_navigate/browser_click/" +
                 "browser_read_text to work with several pages. All web tasks must use " +
                 "browser_* tools. Never launch Chrome or another system browser with " +

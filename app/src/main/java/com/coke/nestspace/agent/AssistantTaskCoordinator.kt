@@ -1,6 +1,7 @@
 package com.coke.nestspace.agent
 
 import android.content.Context
+import com.coke.nestspace.container.HeadlessMirrorWindow
 import com.coke.nestspace.data.AgentMessage
 import com.coke.nestspace.data.LlmConfig
 import com.coke.nestspace.data.LlmConfigStore
@@ -340,10 +341,11 @@ object AssistantTaskCoordinator {
         lateinit var job: Job
         job = scope.launch(start = CoroutineStart.LAZY) {
             var succeeded = false
+            var terminalSnapshot: OperationTaskRegistry.Snapshot? = null
             try {
                 val result = runWorker(context, registry, task)
                 if (!task.pauseRequested && !task.cancelRequested) {
-                    OperationTaskRegistry.succeed(task.id, result)
+                    terminalSnapshot = OperationTaskRegistry.succeed(task.id, result)
                     succeeded = true
                 }
             } catch (cancelled: CancellationException) {
@@ -361,7 +363,7 @@ object AssistantTaskCoordinator {
                 } else {
                     withContext(NonCancellable) {
                         task.cancelRequested = true
-                        OperationTaskRegistry.markCancelled(
+                        terminalSnapshot = OperationTaskRegistry.markCancelled(
                             task.id,
                             task.cancelReason.ifBlank { "cancelled" }
                         )
@@ -369,15 +371,16 @@ object AssistantTaskCoordinator {
                 }
             } catch (error: Throwable) {
                 if (!task.cancelRequested) {
-                    OperationTaskRegistry.fail(
+                    terminalSnapshot = OperationTaskRegistry.fail(
                         task.id,
                         error.message ?: error.javaClass.simpleName
                     )
                 }
             } finally {
                 task.job = null
+                var closeMirror = false
                 synchronized(lock) {
-                    val current = OperationTaskRegistry.status(task.id)
+                    val current = terminalSnapshot ?: OperationTaskRegistry.status(task.id)
                     if (current?.state == OperationTaskRegistry.State.PAUSED) {
                         activeId = task.id
                     } else if (current?.state == OperationTaskRegistry.State.CANCELLING ||
@@ -399,14 +402,19 @@ object AssistantTaskCoordinator {
                         if (activeId == task.id) activeId = null
                         startNextLocked(context, registry)
                     }
+                    closeMirror = activeId == null && queue.isEmpty()
                 }
-                OperationTaskRegistry.status(task.id)?.let {
+                (terminalSnapshot ?: OperationTaskRegistry.status(task.id))?.let {
+                    publishWorkerResult(task, it)
                     AssistantTaskNotifications.notifyTerminal(context, it)
                     if (task.source == "assistant" &&
                         it.state == OperationTaskRegistry.State.SUCCEEDED
                     ) {
                         speakResult(context, it.result)
                     }
+                }
+                if (closeMirror) {
+                    HeadlessMirrorWindow.scheduleAutoClose()
                 }
             }
         }
@@ -429,6 +437,31 @@ object AssistantTaskCoordinator {
                 )
             }
         }
+    }
+
+    private fun publishWorkerResult(
+        task: WorkerTask,
+        snapshot: OperationTaskRegistry.Snapshot
+    ) {
+        if (task.source != "assistant" || !snapshot.terminal) return
+        val title = snapshot.title.take(160)
+        val message = when (snapshot.state) {
+            OperationTaskRegistry.State.SUCCEEDED -> buildString {
+                append(AppLanguage.tr("后台任务完成：", "Background task finished: "))
+                append(title)
+                snapshot.result
+                    ?.trim()
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { append("\n\n").append(it) }
+            }
+            OperationTaskRegistry.State.CANCELLED ->
+                AppLanguage.tr("后台任务已取消：$title", "Background task cancelled: $title")
+            else -> AppLanguage.tr("后台任务没有完成：$title", "Background task failed: $title")
+        }
+        AssistantConversation.reportFromWorker(
+            text = message,
+            isError = snapshot.state == OperationTaskRegistry.State.FAILED
+        )
     }
 
     private suspend fun runWorker(

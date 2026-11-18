@@ -2,6 +2,7 @@ package com.coke.nestspace.ui.agent
 
 import com.coke.nestspace.i18n.AppLanguage
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -200,6 +201,13 @@ internal fun AgentScreen(
         if (clearVersion > 0) {
             input = ""
             AssistantBridge.updateInput("")
+        }
+    }
+    LaunchedEffect(lastRun?.id) {
+        val run = lastRun ?: return@LaunchedEffect
+        delay(5_000)
+        if (AssistantConversation.lastRun.value?.id == run.id) {
+            AssistantConversation.dismissLastRun()
         }
     }
     DisposableEffect(Unit) {
@@ -847,8 +855,16 @@ private fun AssistantTaskSummary(
     } ?: tasks.firstOrNull()
         ?: return
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.045f)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+        ),
+        shadowElevation = 6.dp
     ) {
         Row(
             modifier = Modifier.padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),

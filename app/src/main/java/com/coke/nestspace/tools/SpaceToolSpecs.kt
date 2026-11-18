@@ -2,6 +2,7 @@ package com.coke.nestspace.tools
 
 import com.coke.nestspace.i18n.AppLanguage
 import com.coke.nestspace.agent.ToolConfirmationCategory
+import com.coke.nestspace.container.ContainerCrashStore
 import com.coke.nestspace.container.ContainerProcessPool
 import com.coke.nestspace.container.HeadlessMirrorWindow
 import com.coke.nestspace.container.vpm.ContainerPermissionStore
@@ -12,6 +13,9 @@ import com.coke.nestspace.engine.EngineResult
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.ArrayDeque
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 internal fun ToolRegistry.spaceToolSpecs(): List<ToolSpec> = listOf(
         ToolSpec(
@@ -134,6 +138,16 @@ internal fun ToolRegistry.spaceToolSpecs(): List<ToolSpec> = listOf(
             )
             if (spaceId != "system") {
                 val instanceId = args.optString("instance_id").takeIf { it.isNotBlank() }
+                if (LaunchCrashGuard.isBlocked(pkg, instanceId)) {
+                    return@ToolSpec ToolResult(
+                        false,
+                        AppLanguage.tr(
+                            "$pkg 连续启动失败，已停止自动重试。请稍后再试或先清理该应用数据。",
+                            "$pkg crashed repeatedly; automatic relaunch has been stopped."
+                        ),
+                        errorCode = "APP_CRASH_LOOP"
+                    )
+                }
                 val requestedActivity = args.optString("activity").takeIf { it.isNotBlank() }
                 // AUTO keeps the assistant/user policy. MCP can force any of
                 // the three presentation modes through display_mode.
@@ -219,6 +233,16 @@ internal fun ToolRegistry.spaceToolSpecs(): List<ToolSpec> = listOf(
                         }
                     }
                 }
+                val crashMarker = ContainerCrashStore.peek(
+                    context,
+                    pkg,
+                    instanceId ?: "instance-1"
+                )
+                if (crashMarker?.reason?.contains("WebView", ignoreCase = true) == true &&
+                    ContainerProcessPool.findRunningSlot(pkg, instanceId) == null
+                ) {
+                    clearStaleWebViewLocks(context, pkg, instanceId)
+                }
                 when (val result = engine.launch(
                     spaceId,
                     pkg,
@@ -234,6 +258,23 @@ internal fun ToolRegistry.spaceToolSpecs(): List<ToolSpec> = listOf(
                         val launched = result.value
                         val slot = launched.slot
                             ?: ContainerProcessPool.slotFor(pkg, launched.instanceId)
+                        if (launched.restartedAfterCrash &&
+                            LaunchCrashGuard.recordCrash(pkg, instanceId) >= 2
+                        ) {
+                            slot?.let { ContainerProcessPool.closeSlot(context, it) }
+                            HeadlessMirrorWindow.hide()
+                            return@ToolSpec ToolResult(
+                                false,
+                                AppLanguage.tr(
+                                    "$pkg 连续崩溃两次，已停止自动重开。",
+                                    "$pkg crashed twice; automatic relaunch has been stopped."
+                                ),
+                                errorCode = "APP_CRASH_LOOP"
+                            )
+                        }
+                        if (!launched.restartedAfterCrash) {
+                            LaunchCrashGuard.clear(pkg, instanceId)
+                        }
                         if (!awaitContainerReady(slot)) {
                             return@ToolSpec launchBlockedResult()
                         }
@@ -533,3 +574,59 @@ internal fun ToolRegistry.spaceToolSpecs(): List<ToolSpec> = listOf(
             }
         },
     )
+
+private object LaunchCrashGuard {
+    private const val WINDOW_MS = 2 * 60_000L
+    private val crashes = ConcurrentHashMap<String, ArrayDeque<Long>>()
+
+    fun recordCrash(packageName: String, instanceId: String?): Int {
+        val now = System.currentTimeMillis()
+        val queue = crashes.getOrPut(key(packageName, instanceId)) { ArrayDeque() }
+        synchronized(queue) {
+            while (queue.isNotEmpty() && now - queue.first > WINDOW_MS) {
+                queue.removeFirst()
+            }
+            queue.addLast(now)
+            return queue.size
+        }
+    }
+
+    fun isBlocked(packageName: String, instanceId: String?): Boolean {
+        val queue = crashes[key(packageName, instanceId)] ?: return false
+        val now = System.currentTimeMillis()
+        synchronized(queue) {
+            while (queue.isNotEmpty() && now - queue.first > WINDOW_MS) {
+                queue.removeFirst()
+            }
+            val blocked = queue.size >= 2
+            if (queue.isEmpty()) {
+                crashes.remove(key(packageName, instanceId), queue)
+            }
+            return blocked
+        }
+    }
+
+    fun clear(packageName: String, instanceId: String?) {
+        crashes.remove(key(packageName, instanceId))
+    }
+
+    private fun key(packageName: String, instanceId: String?): String =
+        packageName + "\u0000" + instanceId.orEmpty()
+}
+
+private fun clearStaleWebViewLocks(
+    context: android.content.Context,
+    packageName: String,
+    instanceId: String?
+) {
+    val root = File(
+        context.filesDir,
+        "vspace/data/$packageName/${instanceId ?: "instance-1"}"
+    )
+    if (!root.isDirectory) return
+    root.walkTopDown()
+        .filter { it.isFile && it.name == "webview_data.lock" }
+        .forEach { lock ->
+            runCatching { lock.delete() }
+        }
+}

@@ -708,6 +708,44 @@ object AssistantConversation {
     }
 
     /**
+     * Deliver a terminal Worker report to both the visible conversation and
+     * the main Agent's history. The synthetic acknowledgement keeps the
+     * provider message history alternating after the out-of-band report.
+     */
+    fun reportFromWorker(text: String, isError: Boolean = false) {
+        val report = text.trim()
+        if (report.isBlank()) return
+        _messages.update {
+            it + AgentMessage(
+                role = if (isError) AgentMessage.Role.ERROR else AgentMessage.Role.AGENT,
+                text = report
+            )
+        }
+        synchronized(stateLock) {
+            history += ChatMessage(
+                ChatRole.USER,
+                listOf(
+                    ChatBlock.Text(
+                        AppLanguage.tr(
+                            "宿主转交的子 Agent 汇报（不是用户输入）：\n$report",
+                            "Worker report delivered by the host (not a user message):\n$report"
+                        )
+                    )
+                )
+            )
+            history += ChatMessage(
+                ChatRole.ASSISTANT,
+                listOf(
+                    ChatBlock.Text(
+                        AppLanguage.tr("已收到子 Agent 汇报。", "Worker report received.")
+                    )
+                )
+            )
+            while (history.size > MAX_HISTORY_MESSAGES) history.removeAt(0)
+        }
+    }
+
+    /**
      * Tell the user that runs from the previous process could not finish.
      * This is display-only: the old conversation turn is not replayed to the
      * model, so "continue" still needs the user to restate the goal.

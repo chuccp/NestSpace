@@ -271,7 +271,7 @@ internal fun AssistantMessage(
             if (showSpeechButton && ttsConfig.enabled) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
+                    horizontalArrangement = Arrangement.Start
                 ) {
                     IconButton(
                         onClick = {

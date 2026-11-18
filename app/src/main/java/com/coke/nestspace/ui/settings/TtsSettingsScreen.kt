@@ -150,9 +150,9 @@ internal fun TtsSettingsScreen() {
                         Spacer(Modifier.height(3.dp))
                         Text(
                             AppLanguage.tr(
-                                "开启后，AI 完成最终结果会自动播报，对话文字右下角显示语音按钮。",
+                                "开启后，AI 完成最终结果会自动播报，对话文字左下角显示语音按钮。",
                                 "When enabled, completed results are read aloud and a voice " +
-                                    "button appears below assistant text."
+                                    "button appears at the lower-left of assistant text."
                             ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

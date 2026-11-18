@@ -34,17 +34,17 @@ internal object AssistantTaskNotifications {
             manager.createNotificationChannel(
                 NotificationChannel(
                     CHANNEL_ID,
-                    AppLanguage.tr("助手任务结果", "Assistant task results"),
+                    AppLanguage.tr("任务完成提醒", "Task completion alerts"),
                     NotificationManager.IMPORTANCE_DEFAULT
                 )
             )
         }
-        val state = when (task.state) {
+        val title = when (task.state) {
             OperationTaskRegistry.State.SUCCEEDED ->
-                AppLanguage.tr("已完成", "Completed")
+                AppLanguage.tr("有任务完成", "Task completed")
             OperationTaskRegistry.State.CANCELLED ->
-                AppLanguage.tr("已取消", "Cancelled")
-            else -> AppLanguage.tr("执行失败", "Failed")
+                AppLanguage.tr("任务已取消", "Task cancelled")
+            else -> AppLanguage.tr("任务没有完成", "Task did not finish")
         }
         val content = task.result?.take(180)
             ?: task.error?.take(180)
@@ -62,7 +62,7 @@ internal object AssistantTaskNotifications {
         )
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("${AppLanguage.tr("助手任务", "Assistant task")} · $state")
+            .setContentTitle(title)
             .setContentText(content)
             .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setContentIntent(pending)
