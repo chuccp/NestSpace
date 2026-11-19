@@ -11,7 +11,9 @@ class AppProxySettingsTest {
     fun acceptsHttpAndHttpsProxyProtocols() {
         assertEquals("http", AppProxySettings.parseType(" HTTP "))
         assertEquals("https", AppProxySettings.parseType("https"))
-        assertNull(AppProxySettings.parseType("socks"))
+        assertEquals("socks", AppProxySettings.parseType("socks"))
+        assertEquals("socks", AppProxySettings.parseType("SOCKS5"))
+        assertNull(AppProxySettings.parseType("ftp"))
     }
 
     @Test
@@ -92,12 +94,71 @@ class AppProxySettingsTest {
         val https = http.copy(type = AppProxySettings.TYPE_HTTPS)
 
         assertEquals(
-            "on|http|proxy.example.com|8080|localhost",
+            "on|http|proxy.example.com|8080|localhost|auth:off||",
             AppProxySettings.signature(http)
         )
         assertEquals(
-            "on|https|proxy.example.com|8080|localhost",
+            "on|https|proxy.example.com|8080|localhost|auth:off||",
             AppProxySettings.signature(https)
+        )
+    }
+
+    @Test
+    fun requiresUsernameWhenAuthenticationIsEnabled() {
+        val config = AppProxySettings.Config(
+            enabled = true,
+            host = "proxy.example.com",
+            port = 8080,
+            authenticationEnabled = true
+        )
+
+        assertEquals(
+            AppProxySettings.ValidationError.USERNAME_REQUIRED,
+            AppProxySettings.validate(config)
+        )
+        assertNull(AppProxySettings.validate(config.copy(username = "nestspace")))
+    }
+
+    @Test
+    fun signatureChangesWhenAuthenticationChanges() {
+        val config = AppProxySettings.Config(
+            enabled = true,
+            host = "proxy.example.com",
+            port = 8080,
+            bypass = "localhost"
+        )
+
+        assertTrue(
+            AppProxySettings.signature(config) !=
+                AppProxySettings.signature(config.copy(authenticationEnabled = true))
+        )
+        assertTrue(
+            AppProxySettings.signature(
+                config.copy(authenticationEnabled = true, username = "user", password = "one")
+            ) != AppProxySettings.signature(
+                config.copy(authenticationEnabled = true, username = "user", password = "two")
+            )
+        )
+    }
+
+    @Test
+    fun acceptsAuthenticationForSocks() {
+        val config = AppProxySettings.Config(
+            enabled = true,
+            type = AppProxySettings.TYPE_SOCKS,
+            host = "proxy.example.com",
+            port = 1080
+        )
+
+        assertNull(AppProxySettings.validate(config))
+        assertNull(
+            AppProxySettings.validate(
+                config.copy(
+                    authenticationEnabled = true,
+                    username = "nestspace",
+                    password = "secret"
+                )
+            )
         )
     }
 }

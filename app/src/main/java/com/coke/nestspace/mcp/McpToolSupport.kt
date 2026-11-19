@@ -291,6 +291,7 @@ internal fun settingsJson(context: Context): JSONObject {
         .put("slots", slotsJson(context))
         .put("location", locationSimulationJson(context))
         .put("floating_dot", floatingDotJson(context))
+        .put("app_proxy", appProxyJson(context))
         .put("browser_proxy", browserProxyJson(context))
         .put(
             "desktop",
@@ -480,7 +481,9 @@ internal suspend fun applyBrowserProxy(
     } ?: BrowserProxyManager.status.value
 
 internal fun browserProxyJson(context: Context): JSONObject {
-    val config = BrowserProxySettings.load(context)
+    val followsAppProxy =
+        com.coke.nestspace.proxy.AppProxySettings.load(context).enabled
+    val config = BrowserProxySettings.effective(context)
     val status = BrowserProxyManager.status.value
     return JSONObject()
         .put("enabled", config.enabled)
@@ -488,6 +491,7 @@ internal fun browserProxyJson(context: Context): JSONObject {
         .put("host", config.host)
         .put("port", config.port)
         .put("bypass", config.bypass)
+        .put("source", if (followsAppProxy) "app" else "browser")
         .put("supported", status.supported)
         .put("applied", status.applied)
         .put("message", status.message)
@@ -497,13 +501,44 @@ internal fun browserProxyError(
     error: BrowserProxySettings.ValidationError
 ): String = when (error) {
     BrowserProxySettings.ValidationError.INVALID_TYPE ->
-        "type must be http or socks"
+        "type must be http, https or socks"
     BrowserProxySettings.ValidationError.HOST_REQUIRED ->
         "host is required when the proxy is enabled"
     BrowserProxySettings.ValidationError.INVALID_HOST ->
         "host must not contain a scheme, port, slash or spaces"
     BrowserProxySettings.ValidationError.INVALID_PORT ->
         "port must be between 1 and 65535"
+}
+
+internal fun appProxyJson(context: Context): JSONObject {
+    val config = com.coke.nestspace.proxy.AppProxySettings.load(context)
+    val status = com.coke.nestspace.proxy.AppProxyManager.status.value
+    return JSONObject()
+        .put("enabled", config.enabled)
+        .put("type", config.type)
+        .put("host", config.host)
+        .put("port", config.port)
+        .put("bypass", config.bypass)
+        .put("authentication_enabled", config.authenticationEnabled)
+        .put("username", config.username)
+        .put("password_set", config.password.isNotEmpty())
+        .put("applied", status.applied)
+        .put("message", status.message)
+}
+
+internal fun appProxyError(
+    error: com.coke.nestspace.proxy.AppProxySettings.ValidationError
+): String = when (error) {
+    com.coke.nestspace.proxy.AppProxySettings.ValidationError.INVALID_TYPE ->
+        "type must be http or https"
+    com.coke.nestspace.proxy.AppProxySettings.ValidationError.HOST_REQUIRED ->
+        "host is required when the proxy is enabled"
+    com.coke.nestspace.proxy.AppProxySettings.ValidationError.INVALID_HOST ->
+        "host must not contain a scheme, port, slash or spaces"
+    com.coke.nestspace.proxy.AppProxySettings.ValidationError.INVALID_PORT ->
+        "port must be between 1 and 65535"
+    com.coke.nestspace.proxy.AppProxySettings.ValidationError.USERNAME_REQUIRED ->
+        "username is required when authentication_enabled is true"
 }
 
 internal fun memoryJson(

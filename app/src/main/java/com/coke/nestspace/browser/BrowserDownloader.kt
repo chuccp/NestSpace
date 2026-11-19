@@ -82,15 +82,15 @@ object BrowserDownloader {
                 "Unsupported URL scheme: ${parsed.scheme}"
             }
             val proxy = BrowserProxySettings.connectionProxy(
-                BrowserProxySettings.load(context),
+                BrowserProxySettings.effective(context),
                 currentUrl
             )
             val remote = URL(currentUrl)
             val connection = (if (proxy != null) {
                 remote.openConnection(proxy)
             } else {
-                // Browser traffic follows the browser's own proxy setting; the
-                // app-wide proxy must not leak into WebView downloads.
+                // A bypassed URL or the disabled fallback setting uses a direct
+                // connection. An enabled app-level proxy is inherited above.
                 remote.openConnection(Proxy.NO_PROXY)
             } as HttpURLConnection).apply {
                 // Follow redirects manually so a cookie for one site is never

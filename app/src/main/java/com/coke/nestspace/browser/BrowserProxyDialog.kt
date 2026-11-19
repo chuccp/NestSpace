@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.proxy.AppProxySettings
 
 /**
  * Browser-wide proxy configuration. WebView only supports one proxy override
@@ -41,6 +42,13 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     val status by BrowserProxyManager.status.collectAsState()
     val supported = remember { BrowserProxyManager.isSupported() }
+    val appProxy = remember { AppProxySettings.load(context) }
+    val followsAppProxy = appProxy.enabled
+    val displayedConfig = if (followsAppProxy) {
+        BrowserProxySettings.effective(context)
+    } else {
+        config
+    }
 
     fun validationText(value: BrowserProxySettings.ValidationError): String = when (value) {
         BrowserProxySettings.ValidationError.INVALID_TYPE ->
@@ -64,6 +72,17 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (followsAppProxy) {
+                    Text(
+                        AppLanguage.tr(
+                            "浏览器正在跟随应用总代理：${BrowserProxySettings.proxyRule(displayedConfig)}",
+                            "The browser is following the app proxy: " +
+                                BrowserProxySettings.proxyRule(displayedConfig)
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -83,7 +102,8 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
                         )
                     }
                     Switch(
-                        checked = config.enabled,
+                        checked = displayedConfig.enabled,
+                        enabled = !followsAppProxy,
                         onCheckedChange = {
                             error = null
                             config = config.copy(enabled = it)
@@ -93,19 +113,27 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = config.type == BrowserProxySettings.TYPE_HTTP,
+                        selected = displayedConfig.type == BrowserProxySettings.TYPE_HTTP,
+                        enabled = !followsAppProxy,
                         onClick = { config = config.copy(type = BrowserProxySettings.TYPE_HTTP) },
                         label = { Text("HTTP") }
                     )
                     FilterChip(
-                        selected = config.type == BrowserProxySettings.TYPE_SOCKS,
+                        selected = displayedConfig.type == BrowserProxySettings.TYPE_HTTPS,
+                        enabled = !followsAppProxy,
+                        onClick = { config = config.copy(type = BrowserProxySettings.TYPE_HTTPS) },
+                        label = { Text("HTTPS") }
+                    )
+                    FilterChip(
+                        selected = displayedConfig.type == BrowserProxySettings.TYPE_SOCKS,
+                        enabled = !followsAppProxy,
                         onClick = { config = config.copy(type = BrowserProxySettings.TYPE_SOCKS) },
-                        label = { Text("SOCKS") }
+                        label = { Text("SOCKS5") }
                     )
                 }
 
                 OutlinedTextField(
-                    value = config.host,
+                    value = displayedConfig.host,
                     onValueChange = {
                         error = null
                         config = config.copy(host = it)
@@ -113,13 +141,14 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text(AppLanguage.tr("代理服务器", "Proxy host")) },
                     placeholder = { Text("127.0.0.1") },
-                    singleLine = true
+                    singleLine = true,
+                    enabled = !followsAppProxy
                 )
                 OutlinedTextField(
-                    value = if (config.port == BrowserProxySettings.NO_PORT) {
+                    value = if (displayedConfig.port == BrowserProxySettings.NO_PORT) {
                         ""
                     } else {
-                        config.port.toString()
+                        displayedConfig.port.toString()
                     },
                     onValueChange = { value ->
                         error = null
@@ -132,22 +161,25 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
                     label = { Text(AppLanguage.tr("端口", "Port")) },
                     placeholder = { Text("8080") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !followsAppProxy
                 )
                 OutlinedTextField(
-                    value = config.bypass,
+                    value = displayedConfig.bypass,
                     onValueChange = { config = config.copy(bypass = it) },
                     modifier = Modifier.fillMaxWidth(),
                     label = {
                         Text(AppLanguage.tr("绕过代理（可选）", "Bypass (optional)"))
                     },
                     placeholder = { Text("localhost, 127.0.0.1, *.example.com") },
-                    maxLines = 2
+                    maxLines = 2,
+                    enabled = !followsAppProxy
                 )
                 Text(
                     AppLanguage.tr(
-                        "WebView 代理暂不支持用户名/密码认证，请使用无需认证的代理。",
-                        "WebView proxy overrides do not support username/password authentication; use a proxy without auth."
+                        "跟随应用总代理时会由应用代理处理认证；浏览器单独设置不支持用户名和密码。",
+                        "The app proxy handles authentication when inherited. Browser-only " +
+                            "settings do not support username/password authentication."
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -170,14 +202,14 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
                         color = MaterialTheme.colorScheme.error
                     )
                 }
-                if (supported && config.enabled && status.message.isNotBlank()) {
+                if (supported && displayedConfig.enabled && status.message.isNotBlank()) {
                     Text(
                         status.message,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
                 }
-                if (supported && config.enabled && status.applied) {
+                if (supported && displayedConfig.enabled && status.applied) {
                     Text(
                         AppLanguage.tr("代理已生效", "Proxy is active"),
                         style = MaterialTheme.typography.bodySmall,
@@ -190,6 +222,10 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
         confirmButton = {
             TextButton(
                 onClick = {
+                    if (followsAppProxy) {
+                        onDismiss()
+                        return@TextButton
+                    }
                     val validation = BrowserProxySettings.validate(config)
                     if (validation != null) {
                         error = validationText(validation)
@@ -220,7 +256,13 @@ fun BrowserProxyDialog(onDismiss: () -> Unit) {
                     }
                 }
             ) {
-                Text(AppLanguage.tr("保存", "Save"))
+                Text(
+                    if (followsAppProxy) {
+                        AppLanguage.tr("知道了", "Done")
+                    } else {
+                        AppLanguage.tr("保存", "Save")
+                    }
+                )
             }
         },
         dismissButton = {

@@ -11,6 +11,14 @@ import org.junit.Test
 
 class AppProxyRelayTest {
     @Test
+    fun buildsHttpBasicAuthorizationHeader() {
+        assertEquals(
+            "Basic dXNlcjpwYXNz",
+            AppProxyRelay.basicAuthorizationHeader("user", "pass")
+        )
+    }
+
+    @Test
     fun forwardsHttpRequestsToConfiguredProxy() {
         val upstream = ServerSocket(0, 10, InetAddress.getLoopbackAddress())
         val upstreamThread = Thread {
@@ -29,6 +37,57 @@ class AppProxyRelayTest {
                 enabled = true,
                 host = "127.0.0.1",
                 port = upstream.localPort
+            ),
+            AppProxySettings.TYPE_HTTP
+        )
+        try {
+            val relayPort = relay.start()
+            Socket(InetAddress.getLoopbackAddress(), relayPort).use { client ->
+                client.soTimeout = 5_000
+                client.getOutputStream().write(
+                    (
+                        "GET http://example.test/ HTTP/1.1\r\n" +
+                            "Host: example.test\r\nConnection: close\r\n\r\n"
+                        ).toByteArray(StandardCharsets.US_ASCII)
+                )
+                client.getOutputStream().flush()
+                val response = client.getInputStream()
+                    .readBytes()
+                    .toString(StandardCharsets.US_ASCII)
+                assertTrue(response.startsWith("HTTP/1.1 200 OK"))
+                assertTrue(response.endsWith("ok"))
+            }
+        } finally {
+            relay.close()
+            upstream.close()
+            upstreamThread.join(5_000)
+        }
+    }
+
+    @Test
+    fun forwardsProxyAuthenticationToUpstream() {
+        val upstream = ServerSocket(0, 10, InetAddress.getLoopbackAddress())
+        val upstreamThread = Thread {
+            upstream.accept().use { socket ->
+                socket.soTimeout = 5_000
+                val headers = readHeaders(socket)
+                assertTrue(headers.contains("GET http://example.test/"))
+                assertTrue(headers.contains("Proxy-Authorization: Basic dXNlcjpwYXNz"))
+                socket.getOutputStream().write(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+                        .toByteArray(StandardCharsets.US_ASCII)
+                )
+                socket.getOutputStream().flush()
+            }
+        }.apply { start() }
+        val relay = AppProxyRelay(
+            AppProxySettings.Config(
+                enabled = true,
+                host = "127.0.0.1",
+                port = upstream.localPort,
+                authenticationEnabled = true,
+                username = "user",
+                password = "pass"
             ),
             AppProxySettings.TYPE_HTTP
         )

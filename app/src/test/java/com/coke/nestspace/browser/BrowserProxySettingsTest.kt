@@ -1,5 +1,6 @@
 package com.coke.nestspace.browser
 
+import com.coke.nestspace.proxy.AppProxySettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -11,6 +12,7 @@ class BrowserProxySettingsTest {
     @Test
     fun parseTypeAcceptsHttpAndSocksAliases() {
         assertEquals(BrowserProxySettings.TYPE_HTTP, BrowserProxySettings.parseType(" HTTP "))
+        assertEquals(BrowserProxySettings.TYPE_HTTPS, BrowserProxySettings.parseType("https"))
         assertEquals(BrowserProxySettings.TYPE_SOCKS, BrowserProxySettings.parseType("socks"))
         assertEquals(BrowserProxySettings.TYPE_SOCKS, BrowserProxySettings.parseType("SOCKS5"))
         assertNull(BrowserProxySettings.parseType("ftp"))
@@ -149,5 +151,23 @@ class BrowserProxySettingsTest {
             "on|http|proxy.example.com|8081|localhost",
             BrowserProxySettings.signature(second)
         )
+    }
+
+    @Test
+    fun inheritsEnabledAppProxyAndItsBypassRules() {
+        val inherited = BrowserProxySettings.inherited(
+            AppProxySettings.Config(
+                enabled = true,
+                type = AppProxySettings.TYPE_SOCKS,
+                host = " 192.168.10.115 ",
+                port = 10808,
+                bypass = "localhost, 10.*"
+            )
+        )
+
+        assertEquals(BrowserProxySettings.TYPE_SOCKS, inherited.type)
+        assertEquals("192.168.10.115", inherited.host)
+        assertEquals(10808, inherited.port)
+        assertEquals("localhost, 10.*", inherited.bypass)
     }
 }

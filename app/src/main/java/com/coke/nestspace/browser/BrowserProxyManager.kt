@@ -75,7 +75,7 @@ object BrowserProxyManager {
             )
             return
         }
-        val config = BrowserProxySettings.load(context)
+        val config = BrowserProxySettings.effective(context)
         val validation = BrowserProxySettings.validate(config)
         if (validation != null) {
             clear(context, "invalid config: ${validation.name.lowercase()}", onSettled)

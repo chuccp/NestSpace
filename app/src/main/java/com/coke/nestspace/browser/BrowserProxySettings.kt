@@ -1,6 +1,8 @@
 package com.coke.nestspace.browser
 
 import android.content.Context
+import com.coke.nestspace.proxy.AppProxyManager
+import com.coke.nestspace.proxy.AppProxySettings
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.URI
@@ -14,6 +16,7 @@ import java.net.URI
 object BrowserProxySettings {
 
     const val TYPE_HTTP = "http"
+    const val TYPE_HTTPS = "https"
     const val TYPE_SOCKS = "socks"
     const val NO_PORT = 0
 
@@ -44,6 +47,41 @@ object BrowserProxySettings {
         )
     }
 
+    /**
+     * The enabled app-level proxy is the global network policy, so WebView and
+     * browser downloads inherit it. The browser-only setting remains the
+     * fallback when the app proxy is disabled.
+     */
+    fun effective(context: Context): Config {
+        val appProxy = AppProxySettings.load(context)
+        if (!appProxy.enabled) return load(context)
+        val endpoint = AppProxyManager.activeEndpoint()
+        return if (endpoint != null) {
+            Config(
+                enabled = true,
+                type = endpoint.type,
+                host = endpoint.host,
+                port = endpoint.port,
+                bypass = endpoint.bypass
+            )
+        } else {
+            inherited(appProxy)
+        }
+    }
+
+    internal fun inherited(appProxy: AppProxySettings.Config): Config =
+        Config(
+            enabled = true,
+            type = when (AppProxySettings.parseType(appProxy.type)) {
+                AppProxySettings.TYPE_SOCKS -> TYPE_SOCKS
+                AppProxySettings.TYPE_HTTPS -> TYPE_HTTPS
+                else -> TYPE_HTTP
+            },
+            host = appProxy.host.trim(),
+            port = appProxy.port,
+            bypass = appProxy.bypass
+        )
+
     fun save(context: Context, config: Config) {
         context.applicationContext
             .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -58,6 +96,7 @@ object BrowserProxySettings {
 
     fun parseType(value: String?): String? = when (value?.trim()?.lowercase()) {
         TYPE_HTTP -> TYPE_HTTP
+        TYPE_HTTPS -> TYPE_HTTPS
         TYPE_SOCKS, "socks5", "socks4" -> TYPE_SOCKS
         else -> null
     }

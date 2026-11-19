@@ -1,10 +1,12 @@
 package com.coke.nestspace.proxy
 
 import android.content.Context
+import com.coke.nestspace.data.ApiKeyCipher
 
 object AppProxySettings {
     const val TYPE_HTTP = "http"
     const val TYPE_HTTPS = "https"
+    const val TYPE_SOCKS = "socks"
     const val NO_PORT = 0
 
     data class Config(
@@ -12,14 +14,18 @@ object AppProxySettings {
         val type: String = TYPE_HTTP,
         val host: String = "",
         val port: Int = NO_PORT,
-        val bypass: String = DEFAULT_BYPASS
+        val bypass: String = DEFAULT_BYPASS,
+        val authenticationEnabled: Boolean = false,
+        val username: String = "",
+        val password: String = ""
     )
 
     enum class ValidationError {
         INVALID_TYPE,
         HOST_REQUIRED,
         INVALID_HOST,
-        INVALID_PORT
+        INVALID_PORT,
+        USERNAME_REQUIRED
     }
 
     private const val PREFERENCES_NAME = "app_proxy"
@@ -28,6 +34,9 @@ object AppProxySettings {
     private const val KEY_HOST = "host"
     private const val KEY_PORT = "port"
     private const val KEY_BYPASS = "bypass"
+    private const val KEY_AUTHENTICATION_ENABLED = "authentication_enabled"
+    private const val KEY_USERNAME = "username"
+    private const val KEY_PASSWORD = "password"
     private const val DEFAULT_BYPASS = "<local>, localhost, 127.0.0.1, ::1"
 
     fun load(context: Context): Config {
@@ -40,7 +49,15 @@ object AppProxySettings {
             type = parseType(preferences.getString(KEY_TYPE, TYPE_HTTP)) ?: TYPE_HTTP,
             host = preferences.getString(KEY_HOST, "").orEmpty(),
             port = preferences.getInt(KEY_PORT, NO_PORT).coerceIn(NO_PORT, 65535),
-            bypass = preferences.getString(KEY_BYPASS, DEFAULT_BYPASS).orEmpty()
+            bypass = preferences.getString(KEY_BYPASS, DEFAULT_BYPASS).orEmpty(),
+            authenticationEnabled = preferences.getBoolean(
+                KEY_AUTHENTICATION_ENABLED,
+                false
+            ),
+            username = preferences.getString(KEY_USERNAME, "").orEmpty(),
+            password = ApiKeyCipher.decrypt(
+                preferences.getString(KEY_PASSWORD, "").orEmpty()
+            )
         )
     }
 
@@ -54,12 +71,16 @@ object AppProxySettings {
             .putString(KEY_HOST, config.host.trim())
             .putInt(KEY_PORT, config.port.coerceIn(NO_PORT, 65535))
             .putString(KEY_BYPASS, config.bypass.trim())
+            .putBoolean(KEY_AUTHENTICATION_ENABLED, config.authenticationEnabled)
+            .putString(KEY_USERNAME, config.username.trim())
+            .putString(KEY_PASSWORD, ApiKeyCipher.encrypt(config.password))
             .apply()
     }
 
     fun parseType(value: String?): String? = when (value?.trim()?.lowercase()) {
         TYPE_HTTP -> TYPE_HTTP
         TYPE_HTTPS -> TYPE_HTTPS
+        TYPE_SOCKS, "socks5", "socks4" -> TYPE_SOCKS
         else -> null
     }
 
@@ -72,6 +93,9 @@ object AppProxySettings {
             return ValidationError.INVALID_HOST
         }
         if (config.port !in 1..65535) return ValidationError.INVALID_PORT
+        if (config.authenticationEnabled && config.username.isBlank()) {
+            return ValidationError.USERNAME_REQUIRED
+        }
         return null
     }
 
@@ -92,7 +116,10 @@ object AppProxySettings {
             parseType(config.type) ?: TYPE_HTTP,
             config.host.trim().lowercase(),
             config.port.toString(),
-            bypassRules(config).joinToString(",")
+            bypassRules(config).joinToString(","),
+            if (config.authenticationEnabled) "auth:on" else "auth:off",
+            if (config.authenticationEnabled) config.username.trim() else "",
+            if (config.authenticationEnabled) config.password else ""
         ).joinToString("|")
     }
 
