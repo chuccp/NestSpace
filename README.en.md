@@ -13,6 +13,8 @@ Online docs: [简体中文](https://chuccp.github.io/NestSpace/zh/) · [English]
 
 > ⚠️ NestSpace is an experimental project focused on validating AI capabilities. It does not guarantee the compatibility or security of installed apps.
 
+I originally wanted to build an ART-like virtual machine https://github.com/chuccp/android-vm to completely solve the problems of packed/hardened apps and resource usage. I spent two weeks on it, which held this project back — and it still didn't work: not a single commercial app from the market could run. Maybe my AI just isn't good enough. It cost a lot of money, yet all it could reach was the launch screen; the first real screen never opened.
+
 NestSpace installs third-party APKs inside its own application, creates isolated instances, and exposes them through an in-app desktop. Its runtime, desktop, AI assistant, MCP control service, and Java plugin platform work together in one host application.
 
 ## Highlights

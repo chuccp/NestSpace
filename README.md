@@ -15,6 +15,9 @@ NestSpace 可以把第三方 APK 安装到应用内部，创建多个相互隔�
 
 > ⚠️ NestSpace 是实验性项目，主要用于验证 AI 能力，不保证所安装 App 的兼容性和安全性。
 
+本想搞一个类似 ART 的虚拟机 https://github.com/chuccp/android-vm ，彻底解决加固和资源占用问题，结果做了 2 个星期，反倒把这边耽误，但还是依然没有成功：一个市面上的商业 App 都没法运行，可能是我的 AI 不行吧，消耗不少钱，也就进个启动画面，后面的第一屏都打不开。
+
+
 ## 交流群
 
 - Telegram：[https://t.me/+JClG9_DojaM0ZGE1](https://t.me/+JClG9_DojaM0ZGE1)
