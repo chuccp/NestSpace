@@ -70,8 +70,10 @@ import com.coke.nestspace.plugin.RuntimeLaunchPolicy;
 import com.coke.nestspace.plugin.RuntimeProxyPlugin;
 import com.coke.nestspace.plugin.RuntimeVersionMatcher;
 import com.coke.nestspace.runtime.plugin.RuntimeLaunchSpec;
+import com.coke.nestspace.runtime.plugin.RuntimePhase;
 import com.coke.nestspace.runtime.plugin.RuntimeProfile;
 import com.coke.nestspace.runtime.plugin.RuntimeProfileProvider;
+import com.coke.nestspace.runtime.plugin.RuntimeProgram;
 
 import org.json.JSONObject;
 import org.json.JSONArray;
@@ -139,7 +141,37 @@ public final class RuntimeDemoPlugin implements
         ) {
             return null;
         }
-        return new DemoRuntimeProfile();
+        return RuntimeProgram.builder("runtime-demo-profile")
+            .add(
+                RuntimePhase.BEFORE_APPLICATION_ATTACH,
+                execution -> logHook("beforeApplicationAttach", execution.getSpec())
+            )
+            .add(
+                RuntimePhase.AFTER_APPLICATION_CREATED,
+                execution -> logHook("afterApplicationCreated", execution.getSpec())
+            )
+            .add(
+                RuntimePhase.AFTER_EMBEDDED_APPLICATION_CREATED,
+                execution -> logHook(
+                    "afterEmbeddedApplicationCreated",
+                    execution.getSpec()
+                )
+            )
+            .add(
+                RuntimePhase.BEFORE_TARGET_ACTIVITY,
+                execution -> logHook("beforeTargetActivity", execution.getSpec())
+            )
+            .add(
+                RuntimePhase.FIRST_ACTIVITY,
+                execution -> {
+                    logHook("installFirstActivityHooks", execution.getSpec());
+                    return (AutoCloseable) () -> logHook(
+                        "closeFirstActivityHooks",
+                        execution.getSpec()
+                    );
+                }
+            )
+            .build();
     }
 
     @Override
@@ -1027,75 +1059,15 @@ public final class RuntimeDemoPlugin implements
         }
     }
 
-    /**
-     * Generic teaching profile. A real profile should load and validate only
-     * the target classes it needs before installing version-specific hooks.
-     */
-    private static final class DemoRuntimeProfile implements RuntimeProfile {
-        @Override
-        public String getId() {
-            return "runtime-demo-profile";
-        }
-
-        @Override
-        public void beforeApplicationAttach(
-            RuntimeLaunchSpec spec,
-            ClassLoader loader,
-            Context context
-        ) {
-            logHook("beforeApplicationAttach", spec);
-        }
-
-        @Override
-        public void afterApplicationCreated(
-            RuntimeLaunchSpec spec,
-            ClassLoader loader,
-            Context context,
-            Application application
-        ) {
-            logHook("afterApplicationCreated", spec);
-        }
-
-        @Override
-        public void afterEmbeddedApplicationCreated(
-            RuntimeLaunchSpec spec,
-            ClassLoader loader,
-            Context context,
-            Application application
-        ) {
-            logHook("afterEmbeddedApplicationCreated", spec);
-        }
-
-        @Override
-        public void beforeTargetActivity(
-            RuntimeLaunchSpec spec,
-            ClassLoader loader,
-            Context context,
-            Class<? extends Activity> activityClass
-        ) {
-            logHook("beforeTargetActivity", spec);
-        }
-
-        @Override
-        public AutoCloseable installFirstActivityHooks(
-            RuntimeLaunchSpec spec,
-            ClassLoader loader,
-            Context context
-        ) {
-            logHook("installFirstActivityHooks", spec);
-            return () -> {
-            };
-        }
-
-        private static void logHook(
-            String hook,
-            RuntimeLaunchSpec spec
-        ) {
-            android.util.Log.d(
-                "RuntimeDemoPlugin",
-                hook + " target=" + spec.getPackageName() +
-                    "@" + spec.getVersionCode()
-            );
-        }
+    private static Void logHook(
+        String hook,
+        RuntimeLaunchSpec spec
+    ) {
+        android.util.Log.d(
+            "RuntimeDemoPlugin",
+            hook + " target=" + spec.getPackageName() +
+                "@" + spec.getVersionCode()
+        );
+        return null;
     }
 }

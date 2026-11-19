@@ -89,6 +89,11 @@ build/plugin-packages/runtime-demo-plugin.nest
 运行时代理只依赖稳定的 `plugin-api`，也可以按需要提供目标相关的兼容策略。
 源码模式下该模块由宿主直接提供，插件开发者无需额外打包 SDK。
 
+生命周期兼容优先使用 `RuntimeProgram` 声明，而不是继承 `RuntimeProfile`
+后重复编写 `runCatching` 和日志。`RuntimeProgram` 统一负责阶段调度、目标
+ClassLoader、错误隔离和逆序清理，并提供静态字段初始化、对象创建、静态方法
+调用等通用反射操作。只有无法表达的语义才需要添加自定义 `RuntimeOperation`。
+
 ## 源码插件分享
 
 Debug 构建会自动把源码插件编译成一份仅供分享/导出的 `.nest` 资源，

@@ -7,7 +7,7 @@ import android.content.Context;
 /**
  * Version-bound hooks contributed by a runtime profile plugin.
  */
-public interface RuntimeProfile {
+public interface RuntimeProfile extends AutoCloseable {
 
     String getId();
 
@@ -48,5 +48,9 @@ public interface RuntimeProfile {
         Context context
     ) {
         return null;
+    }
+
+    @Override
+    default void close() {
     }
 }
