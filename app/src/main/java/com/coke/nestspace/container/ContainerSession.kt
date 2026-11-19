@@ -1715,7 +1715,7 @@ class ContainerSession private constructor(
                 targetRequestedPermissions = spec.packageInfo.requestedPermissions,
                 baseApkPath = installLayout.virtualBaseApkPath,
                 resourceApkPath = spec.baseApkPath,
-                splitApkPaths = installLayout.virtualSplitApkPaths
+                splitApkPaths = spec.splitApkPaths
             )
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                 val suffix = VirtualWebViewDataDirectory.suffix(

@@ -228,6 +228,7 @@ class ContainerProviderManager(
         attachingSet.addAll(authorities)
         try {
             val provider = createProvider(info)
+            Log.d(TAG, "provider attaching lazily: ${info.name}")
             provider.attachInfo(session.context, info)
             resolved = provider
             Log.d(TAG, "provider attached lazily: ${info.name}")

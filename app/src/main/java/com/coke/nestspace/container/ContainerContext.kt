@@ -22,6 +22,7 @@ import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.content.res.Resources
 import android.os.Build
@@ -574,13 +575,9 @@ class ContainerContext(
         newBase: Context,
         deviceProtected: Boolean = this.deviceProtected
     ): ContainerContext {
-        val adjusted = bindTargetClassLoader(
-            Resources(
-                targetResources.assets,
-                newBase.resources.displayMetrics,
-                newBase.resources.configuration
-            ),
-            targetClassLoader
+        val adjusted = createDerivedResources(
+            newBase.resources.displayMetrics,
+            newBase.resources.configuration
         )
         val wrapped = ContainerContext(
             base = newBase,
@@ -606,6 +603,26 @@ class ContainerContext(
         wrapped.jobScheduler = jobScheduler
         wrapped.virtualRegistry = virtualRegistry
         return wrapped
+    }
+
+    private fun createDerivedResources(
+        metrics: android.util.DisplayMetrics,
+        configuration: Configuration
+    ): Resources {
+        val assetManager = AssetManager::class.java
+            .getDeclaredConstructor()
+            .newInstance()
+        val addAssetPath = AssetManager::class.java
+            .getMethod("addAssetPath", String::class.java)
+        (listOf(resourceApkPath) + splitApkPaths).forEach { path ->
+            check(addAssetPath.invoke(assetManager, path) as Int != 0) {
+                "AssetManager.addAssetPath failed: $path"
+            }
+        }
+        return bindTargetClassLoader(
+            Resources(assetManager, metrics, configuration),
+            targetClassLoader
+        )
     }
 
     private fun bindTargetClassLoader(
