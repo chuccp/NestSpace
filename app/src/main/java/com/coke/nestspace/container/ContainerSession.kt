@@ -1612,8 +1612,17 @@ class ContainerSession private constructor(
                 actualNativeLibraryDir = nativeLibs?.absolutePath,
                 nativeAbi = nativeAbi
             )
+            val runtimeNativeLibs = installLayout.virtualNativeLibraryDir
+                ?.let(::File)
+                ?.takeIf { dir ->
+                    dir.isDirectory &&
+                        dir.listFiles()?.any {
+                            it.isFile && it.name.endsWith(".so") && it.canRead()
+                        } == true
+                }
+                ?: nativeLibs
 
-            val nativeSearchPath = (listOfNotNull(nativeLibs?.absolutePath) +
+            val nativeSearchPath = (listOfNotNull(runtimeNativeLibs?.absolutePath) +
                 pluginMount.nativeLibraryDirs)
                 .distinct()
                 .joinToString(File.pathSeparator)
@@ -1628,8 +1637,8 @@ class ContainerSession private constructor(
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_CODE)
             val appInfo = spec.applicationInfo
             appInfo.dataDir = dataRoot.absolutePath
-            appInfo.sourceDir = spec.baseApkPath
-            appInfo.publicSourceDir = spec.baseApkPath
+            appInfo.sourceDir = installLayout.virtualBaseApkPath
+            appInfo.publicSourceDir = installLayout.virtualBaseApkPath
             appInfo.uid = android.os.Process.myUid()
             // Slot activities opt out of predictive back in the host manifest.
             // If the target ApplicationInfo keeps enableOnBackInvokedCallback
@@ -1663,8 +1672,8 @@ class ContainerSession private constructor(
                     field.set(appInfo, nativeAbi)
                 }
             }
-            if (nativeLibs != null) {
-                appInfo.nativeLibraryDir = nativeLibs.absolutePath
+            if (runtimeNativeLibs != null) {
+                appInfo.nativeLibraryDir = runtimeNativeLibs.absolutePath
             }
             runCatching {
                 appInfo.javaClass
@@ -1794,7 +1803,7 @@ class ContainerSession private constructor(
             )
             val virtualEnvironment = VirtualEnvironmentFactory.create(
                 spec = spec,
-                nativeLibraryDir = nativeLibs?.absolutePath,
+                nativeLibraryDir = runtimeNativeLibs?.absolutePath,
                 runtimeCapabilities = capabilityReport,
                 installLayout = installLayout
             )
@@ -1805,7 +1814,6 @@ class ContainerSession private constructor(
                 VirtualEnvironmentRegistry.identitySnapshot(),
                 HostIdentity.packageName
             )
-            NativeEnvironmentBridge.installCrashTrace(virtualEnvironment.dataRoot)
             NativeEnvironmentBridge.snapshot()?.let { native ->
                 Log.d(
                     TAG,
@@ -1876,11 +1884,9 @@ class ContainerSession private constructor(
             // imported files. From this point on, expose the stable installed-
             // app path to the target so packers cannot observe a half-virtual
             // package whose code path and PackageManager metadata disagree.
-            appInfo.sourceDir = installLayout.virtualBaseApkPath
-            appInfo.publicSourceDir = installLayout.virtualBaseApkPath
-            installLayout.virtualNativeLibraryDir?.let { virtualDir ->
-                appInfo.nativeLibraryDir = virtualDir
-            }
+            appInfo.sourceDir = spec.baseApkPath
+            appInfo.publicSourceDir = spec.baseApkPath
+            appInfo.nativeLibraryDir = runtimeNativeLibs?.absolutePath
             runCatching {
                 appInfo.javaClass
                     .getField("splitSourceDirs")
@@ -1924,6 +1930,7 @@ class ContainerSession private constructor(
                 detail = "application=${application.javaClass.simpleName}"
             )
             Log.d(TAG, "application attached: ${application.javaClass.name}")
+            NativeEnvironmentBridge.installKillGuard()
             val deviceProtectedContext = context.createDeviceProtectedStorageContext()
             val environmentValidation = VirtualEnvironmentValidator.validate(
                 virtualEnvironment,
@@ -2200,29 +2207,12 @@ class ContainerSession private constructor(
                 host.resources.displayMetrics,
                 host.resources.configuration
             )
-            return runCatching {
-                // Resources(AssetManager, ...) binds the system ClassLoader.
-                // Instantiate the target-bound Resources first, then swap in
-                // the APK-backed ResourcesImpl. DrawableInflater will therefore
-                // resolve custom Drawables bundled in the target APK.
-                val constructor = Resources::class.java
-                    .getDeclaredConstructor(ClassLoader::class.java)
-                    .apply { isAccessible = true }
-                val resources = constructor.newInstance(classLoader)
-                val impl = Resources::class.java
-                    .getDeclaredField("mResourcesImpl")
-                    .apply { isAccessible = true }
-                impl.set(resources, impl.get(base))
-                resources
-            }.getOrElse {
-                Log.w(
-                    TAG,
-                    "target Resources classloader binding failed; patching fields",
-                    it
-                )
-                bindResourcesClassLoader(base, classLoader)
-                base
-            }
+            // Construct the resource table through the public constructor and
+            // only patch its ClassLoader fields. Swapping a ResourcesImpl into
+            // a separately constructed Resources leaves AssetManager2 package
+            // groups inconsistent on recent Android releases.
+            bindResourcesClassLoader(base, classLoader)
+            return base
         }
 
         private fun bindResourcesClassLoader(

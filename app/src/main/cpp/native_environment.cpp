@@ -13,6 +13,7 @@
 #include <utility>
 
 extern "C" void install_native_crash_trace(const char* path);
+extern "C" bool install_native_kill_guard();
 
 namespace {
 
@@ -416,6 +417,14 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstallC
 ) {
     const std::string content = to_string(env, path);
     install_native_crash_trace(content.c_str());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstallKillGuard(
+    JNIEnv*,
+    jobject
+) {
+    return install_native_kill_guard() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL

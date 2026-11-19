@@ -207,6 +207,17 @@ internal class LaunchLoadingView(
         thread?.interrupt()
     }
 
+    fun stopAndAwait(timeoutMs: Long = 1_000L) {
+        val thread = synchronized(renderLock) {
+            rendering = false
+            renderThread.also { renderThread = null }
+        } ?: return
+        thread.interrupt()
+        if (Thread.currentThread() !== thread) {
+            runCatching { thread.join(timeoutMs) }
+        }
+    }
+
     override fun run() {
         while (rendering) {
             val started = SystemClock.uptimeMillis()

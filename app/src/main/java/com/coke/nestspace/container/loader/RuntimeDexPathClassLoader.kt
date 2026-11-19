@@ -6,6 +6,7 @@ import dalvik.system.InMemoryDexClassLoader
 import dalvik.system.PathClassLoader
 import android.os.Build
 import java.io.File
+import java.lang.reflect.Array as ReflectionArray
 import java.nio.ByteBuffer
 
 /**
@@ -22,8 +23,8 @@ class RuntimeDexPathClassLoader(
 ) : PathClassLoader(dexPath, librarySearchPath, parent) {
     private val lock = Any()
     private val resolvingFallback = ThreadLocal<Boolean>()
-    private var generatedDexLoader: ClassLoader? = null
-    private var generatedDexSignature: String? = null
+    private var mergedDexSignature: String? = null
+    private var fallbackDexLoader: ClassLoader? = null
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
         if (resolvingFallback.get() == true) {
@@ -32,11 +33,12 @@ class RuntimeDexPathClassLoader(
         return try {
             super.loadClass(name, resolve)
         } catch (missing: ClassNotFoundException) {
-            val fallback = generatedDexLoader()
+            val fallback = installGeneratedDex()
                 ?: throw missing
             try {
                 resolvingFallback.set(true)
-                fallback.loadClass(name)
+                runCatching { super.loadClass(name, resolve) }
+                    .getOrElse { fallback.loadClass(name) }
             } catch (fallbackMissing: ClassNotFoundException) {
                 fallbackMissing.addSuppressed(missing)
                 throw fallbackMissing
@@ -46,23 +48,77 @@ class RuntimeDexPathClassLoader(
         }
     }
 
-    private fun generatedDexLoader(): ClassLoader? {
+    private fun installGeneratedDex(): ClassLoader? {
         val dexFiles = generatedDexFiles()
         if (dexFiles.isEmpty()) return null
         val signature = dexFiles.joinToString("|") { file ->
             "${file.absolutePath}:${file.length()}:${file.lastModified()}"
         }
         synchronized(lock) {
-            if (signature == generatedDexSignature) return generatedDexLoader
+            if (signature == mergedDexSignature) return fallbackDexLoader
             val loader = runCatching {
                 createGeneratedDexLoader(dexFiles)
             }.onFailure {
                 Log.w(TAG, "create runtime DEX loader failed", it)
             }.getOrNull()
-            generatedDexSignature = signature
-            generatedDexLoader = loader
+            if (loader != null) {
+                runCatching {
+                    mergeDexElements(loader)
+                }.onSuccess {
+                    Log.d(
+                        TAG,
+                        "merged ${dexFiles.size} generated DEX files into target loader"
+                    )
+                }.onFailure {
+                    Log.w(TAG, "merge runtime DEX elements failed", it)
+                }
+            }
+            mergedDexSignature = signature
+            fallbackDexLoader = loader
             return loader
         }
+    }
+
+    private fun mergeDexElements(source: ClassLoader) {
+        val targetPathList = findField(javaClass, "pathList")
+            ?.apply { isAccessible = true }
+            ?.get(this)
+            ?: error("target pathList not found")
+        val sourcePathList = findField(source.javaClass, "pathList")
+            ?.apply { isAccessible = true }
+            ?.get(source)
+            ?: error("generated pathList not found")
+        val targetField = findField(targetPathList.javaClass, "dexElements")
+            ?.apply { isAccessible = true }
+            ?: error("target dexElements not found")
+        val sourceField = findField(sourcePathList.javaClass, "dexElements")
+            ?.apply { isAccessible = true }
+            ?: error("generated dexElements not found")
+        val target = targetField.get(targetPathList) as Array<*>
+        val generated = sourceField.get(sourcePathList) as Array<*>
+        val component = target.javaClass.componentType
+        val merged = ReflectionArray.newInstance(
+            component,
+            target.size + generated.size
+        ) as Array<Any?>
+        for (index in target.indices) {
+            merged[index] = target[index]
+        }
+        for (index in generated.indices) {
+            merged[target.size + index] = generated[index]
+        }
+        targetField.set(targetPathList, merged)
+    }
+
+    private fun findField(owner: Class<*>, name: String): java.lang.reflect.Field? {
+        var current: Class<*>? = owner
+        while (current != null) {
+            runCatching { current.getDeclaredField(name) }
+                .getOrNull()
+                ?.let { return it }
+            current = current.superclass
+        }
+        return null
     }
 
     private fun createGeneratedDexLoader(dexFiles: List<File>): ClassLoader {

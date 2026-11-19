@@ -823,6 +823,7 @@ open class StageAActivity : Activity() {
             // with a blank Presentation. Start the target on the next turn.
             frame.post {
                 if (isFinishing || isDestroyed) return@post
+                stopLaunchRendering(frame)
                 handleIntent(launchIntent, savedState)
                 session?.headless = headless
             }
@@ -834,6 +835,7 @@ open class StageAActivity : Activity() {
                     frame.viewTreeObserver.removeOnPreDrawListener(this)
                     frame.post {
                         if (isFinishing || isDestroyed) return@post
+                        stopLaunchRendering(frame)
                         handleIntent(launchIntent, savedState)
                         session?.headless = headless
                     }
@@ -842,6 +844,13 @@ open class StageAActivity : Activity() {
             }
         )
         frame.requestLayout()
+    }
+
+    private fun stopLaunchRendering(frame: FrameLayout) {
+        for (index in 0 until frame.childCount) {
+            (frame.getChildAt(index) as? LaunchLoadingView)
+                ?.stopAndAwait()
+        }
     }
 
     private fun slotIndexFor(activityClass: Class<*>): Int = when (activityClass) {
@@ -2037,6 +2046,13 @@ open class StageAActivity : Activity() {
             targetRestored = false
             targetAttached = false
 
+            // A target may create its own SurfaceView in its constructor.
+            // Detach the host launch surface first so both renderers never
+            // race over the same process-wide graphics state.
+            val frame = mirrorRoot ?: root ?: return
+            stopLaunchRendering(frame)
+            frame.removeAllViews()
+            if (mirrorMode) addMirrorSnapshotBackground(frame)
             val target = session.createActivity(
                 this,
                 className,
@@ -2050,9 +2066,6 @@ open class StageAActivity : Activity() {
             targetPostCreated = false
             targetResumed = false
             targetStopped = false
-            val frame = mirrorRoot ?: root ?: return
-            frame.removeAllViews()
-            if (mirrorMode) addMirrorSnapshotBackground(frame)
             frame.addView(
                 target.window.decorView,
                 FrameLayout.LayoutParams(

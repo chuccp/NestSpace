@@ -89,6 +89,13 @@ object NativeEnvironmentBridge {
         }
     }
 
+    fun installKillGuard() {
+        if (!ensureLoaded()) return
+        runCatching { nativeInstallKillGuard() }
+            .onSuccess { Log.d(TAG, "kill guard=$it") }
+            .onFailure { Log.w(TAG, "install kill guard failed", it) }
+    }
+
     fun install(
         environment: VirtualEnvironment,
         identity: VirtualIdentitySnapshot,
@@ -298,6 +305,9 @@ object NativeEnvironmentBridge {
 
     @JvmStatic
     private external fun nativeInstallCrashTrace(path: String)
+
+    @JvmStatic
+    private external fun nativeInstallKillGuard(): Boolean
 
     @JvmStatic
     private external fun nativeRewritePath(path: String): String?

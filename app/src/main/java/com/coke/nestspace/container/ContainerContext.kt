@@ -611,23 +611,20 @@ class ContainerContext(
     private fun bindTargetClassLoader(
         base: Resources,
         classLoader: ClassLoader
-    ): Resources = runCatching {
-        val constructor = Resources::class.java
-            .getDeclaredConstructor(ClassLoader::class.java)
-            .apply { isAccessible = true }
-        val resources = constructor.newInstance(classLoader)
-        val impl = Resources::class.java
-            .getDeclaredField("mResourcesImpl")
-            .apply { isAccessible = true }
-        impl.set(resources, impl.get(base))
-        resources
-    }.getOrElse {
-        android.util.Log.w(
-            "ContainerContext",
-            "derived Resources classloader binding failed",
-            it
-        )
-        base
+    ): Resources {
+        runCatching {
+            Resources::class.java
+                .getDeclaredField("mClassLoader")
+                .apply { isAccessible = true }
+                .set(base, classLoader)
+        }.onFailure {
+            android.util.Log.w(
+                "ContainerContext",
+                "derived Resources classloader binding failed",
+                it
+            )
+        }
+        return base
     }
 
     override fun startActivity(intent: Intent) {

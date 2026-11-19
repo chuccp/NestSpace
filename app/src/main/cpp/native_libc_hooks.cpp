@@ -147,6 +147,12 @@ void initialize_real_functions() {
         g_real.dlopen = reinterpret_cast<DlopenFunction>(
             dlsym(RTLD_DEFAULT, "dlopen")
         );
+        g_real.dlIteratePhdr = reinterpret_cast<DlIteratePhdrFunction>(
+            dlsym(RTLD_DEFAULT, "dl_iterate_phdr")
+        );
+        g_real.dladdr = reinterpret_cast<DladdrFunction>(
+            dlsym(RTLD_DEFAULT, "dladdr")
+        );
         g_real.androidDlopenExt = reinterpret_cast<AndroidDlopenExtFunction>(
             dlsym(RTLD_DEFAULT, "android_dlopen_ext")
         );
@@ -677,6 +683,62 @@ uint32_t hook_property_serial(const void* property) {
     return g_real.propertySerial ? g_real.propertySerial(property) : 0;
 }
 
+struct IteratePhdrContext {
+    DlIteratePhdrCallback callback;
+    void* data;
+    char path[4096];
+};
+
+int iterate_phdr_callback(
+    struct dl_phdr_info* info,
+    size_t size,
+    void* data
+) {
+    auto* context = static_cast<IteratePhdrContext*>(data);
+    if (context == nullptr || context->callback == nullptr) return 0;
+    struct dl_phdr_info copy = *info;
+    ssize_t mapped_length = -1;
+    if (info->dlpi_name != nullptr &&
+        virtual_path_from_actual(
+            info->dlpi_name,
+            context->path,
+            sizeof(context->path),
+            &mapped_length
+        )) {
+        copy.dlpi_name = context->path;
+    }
+    return context->callback(&copy, size, context->data);
+}
+
+int hook_dl_iterate_phdr(DlIteratePhdrCallback callback, void* data) {
+    record_hook_event(kHookEventLoader);
+    IteratePhdrContext context{callback, data, {}};
+    return g_real.dlIteratePhdr
+        ? g_real.dlIteratePhdr(iterate_phdr_callback, &context)
+        : dl_iterate_phdr(iterate_phdr_callback, &context);
+}
+
+int hook_dladdr(const void* address, Dl_info* info) {
+    record_hook_event(kHookEventLoader);
+    const int result = g_real.dladdr
+        ? g_real.dladdr(address, info)
+        : dladdr(address, info);
+    if (result == 0 || info == nullptr || info->dli_fname == nullptr) {
+        return result;
+    }
+    static thread_local char path[4096];
+    ssize_t mapped_length = -1;
+    if (virtual_path_from_actual(
+            info->dli_fname,
+            path,
+            sizeof(path),
+            &mapped_length
+        )) {
+        info->dli_fname = path;
+    }
+    return result;
+}
+
 void* hook_dlopen(const char* filename, int flags) {
     record_hook_event(kHookEventLoader);
     g_dlopen_calls.fetch_add(1, std::memory_order_relaxed);
@@ -989,6 +1051,12 @@ void* replacement_for(const char* name) {
     if (strcmp(name, "android_dlopen_ext") == 0 ||
         strcmp(name, "__loader_android_dlopen_ext") == 0) {
         return reinterpret_cast<void*>(hook_android_dlopen_ext);
+    }
+    if (strcmp(name, "dl_iterate_phdr") == 0) {
+        return reinterpret_cast<void*>(hook_dl_iterate_phdr);
+    }
+    if (strcmp(name, "dladdr") == 0) {
+        return reinterpret_cast<void*>(hook_dladdr);
     }
     return nullptr;
 }

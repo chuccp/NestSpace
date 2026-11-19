@@ -197,6 +197,10 @@ object RuntimeCapabilityProbe {
         put("ro.build.type", Build.TYPE.orEmpty())
         put("ro.build.tags", Build.TAGS.orEmpty())
         put("ro.build.fingerprint", Build.FINGERPRINT.orEmpty())
+        // Do not expose the host debugger configuration to target code.
+        put("ro.debuggable", "0")
+        put("ro.secure", "1")
+        put("ro.adb.secure", "1")
         put("ro.product.brand", Build.BRAND.orEmpty())
         put("ro.product.manufacturer", Build.MANUFACTURER.orEmpty())
         put("ro.product.model", Build.MODEL.orEmpty())

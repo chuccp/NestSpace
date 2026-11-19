@@ -128,6 +128,44 @@ bool install_process_guard() {
     return true;
 }
 
+bool install_kill_guard() {
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_kill, 0, 1),
+        BPF_STMT(
+            BPF_RET | BPF_K,
+            SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
+        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 0, 1),
+        BPF_STMT(
+            BPF_RET | BPF_K,
+            SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
+        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ptrace, 0, 1),
+        BPF_STMT(
+            BPF_RET | BPF_K,
+            SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
+        ),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program {
+        static_cast<unsigned short>(sizeof(filter) / sizeof(filter[0])),
+        filter
+    };
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        return false;
+    }
+    if (syscall(
+            SYS_seccomp,
+            SECCOMP_SET_MODE_FILTER,
+            SECCOMP_FILTER_FLAG_TSYNC,
+            &program
+        ) == 0) {
+        return true;
+    }
+    return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
+}
+
 }  // namespace
 
 extern "C" void install_native_crash_trace(const char* path) {
@@ -168,4 +206,8 @@ extern "C" void install_native_crash_trace(const char* path) {
         process_guard ? 1 : 0
     );
     __android_log_print(ANDROID_LOG_DEBUG, kLogTag, "trace installed");
+}
+
+extern "C" bool install_native_kill_guard() {
+    return install_kill_guard();
 }

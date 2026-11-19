@@ -2,7 +2,9 @@
 
 #include <android/dlext.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <jni.h>
+#include <link.h>
 #include <linux/stat.h>
 
 #include <atomic>
@@ -152,6 +154,9 @@ using PropertyReadCallbackFunction = void (*)(
 using PropertyReadFunction = int (*)(const void*, char*, char*);
 using PropertySerialFunction = uint32_t (*)(const void*);
 using DlopenFunction = void* (*)(const char*, int);
+using DlIteratePhdrCallback = int (*)(struct dl_phdr_info*, size_t, void*);
+using DlIteratePhdrFunction = int (*)(DlIteratePhdrCallback, void*);
+using DladdrFunction = int (*)(const void*, Dl_info*);
 using AndroidDlopenExtFunction = void* (*)(
     const char*,
     int,
@@ -193,6 +198,8 @@ struct RealFunctions {
     PropertyReadFunction propertyRead = nullptr;
     PropertySerialFunction propertySerial = nullptr;
     DlopenFunction dlopen = nullptr;
+    DlIteratePhdrFunction dlIteratePhdr = nullptr;
+    DladdrFunction dladdr = nullptr;
     AndroidDlopenExtFunction androidDlopenExt = nullptr;
 };
 
