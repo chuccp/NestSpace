@@ -55,7 +55,10 @@ data class VirtualEnvironment(
     val capabilities: Set<RuntimeCapability>,
     val bootTimeMillis: Long,
     val installTimeMillis: Long,
-    val updateTimeMillis: Long
+    val updateTimeMillis: Long,
+    val virtualApkPaths: List<String> = apkPaths,
+    val virtualSplitApkPaths: List<String> = splitApkPaths,
+    val virtualNativeLibraryDir: String? = nativeLibraryDir
 )
 
 data class VirtualIdentitySnapshot(
@@ -82,7 +85,8 @@ internal object VirtualEnvironmentFactory {
     fun create(
         spec: ContainerLaunchSpec,
         nativeLibraryDir: String?,
-        runtimeCapabilities: RuntimeCapabilityReport
+        runtimeCapabilities: RuntimeCapabilityReport,
+        installLayout: VirtualInstallLayout
     ): VirtualEnvironment {
         val dataRoot = File(spec.dataDir)
         val now = System.currentTimeMillis()
@@ -116,7 +120,10 @@ internal object VirtualEnvironmentFactory {
             capabilities = runtimeCapabilities.capabilities,
             bootTimeMillis = now - SystemClock.elapsedRealtime(),
             installTimeMillis = spec.packageInfo.firstInstallTime,
-            updateTimeMillis = spec.packageInfo.lastUpdateTime
+            updateTimeMillis = spec.packageInfo.lastUpdateTime,
+            virtualApkPaths = installLayout.virtualApkPaths,
+            virtualSplitApkPaths = installLayout.virtualSplitApkPaths,
+            virtualNativeLibraryDir = installLayout.virtualNativeLibraryDir
         )
     }
 }

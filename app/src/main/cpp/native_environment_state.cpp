@@ -57,6 +57,12 @@ bool starts_with_prefix(const char* path, const std::string& prefix) {
         (path[length] == '\0' || path[length] == '/');
 }
 
+std::string data_alias_path(const std::string& path) {
+    constexpr std::string_view kUserPrefix = "/data/user/0/";
+    if (path.compare(0, kUserPrefix.size(), kUserPrefix) != 0) return {};
+    return "/data/data/" + path.substr(kUserPrefix.size());
+}
+
 const char* virtual_proc_path(const char* path) {
     if (path == nullptr) return nullptr;
     if (strcmp(path, "/proc/self/status") == 0) return "/proc/self/status";
@@ -98,6 +104,54 @@ void replace_all(
         value->replace(offset, from.size(), to);
         offset += to.size();
     }
+}
+
+bool is_host_runtime_path(
+    const std::string& line,
+    const Environment* environment
+) {
+    if (environment == nullptr || environment->host_package_name.empty()) {
+        return false;
+    }
+    const std::string& host = environment->host_package_name;
+    if (line.find("/data/app/") != std::string::npos &&
+        line.find(host) != std::string::npos) {
+        return true;
+    }
+    const std::array<std::string, 5> host_roots = {
+        "/data/data/" + host,
+        "/data/user/0/" + host,
+        "/data/user_de/0/" + host,
+        "/storage/emulated/0/Android/data/" + host,
+        "/sdcard/Android/data/" + host,
+    };
+    for (const auto& root : host_roots) {
+        if (line.find(root) != std::string::npos) return true;
+    }
+    return false;
+}
+
+std::string filter_host_runtime_lines(
+    const std::string& value,
+    const Environment* environment
+) {
+    std::string filtered;
+    filtered.reserve(value.size());
+    size_t offset = 0;
+    while (offset < value.size()) {
+        const size_t end = value.find('\n', offset);
+        const size_t length = end == std::string::npos
+            ? value.size() - offset
+            : end - offset;
+        const std::string line = value.substr(offset, length);
+        if (!is_host_runtime_path(line, environment)) {
+            filtered.append(line);
+            if (end != std::string::npos) filtered.push_back('\n');
+        }
+        if (end == std::string::npos) break;
+        offset = end + 1;
+    }
+    return filtered;
 }
 
 std::string virtualized_status(const Environment* environment) {
@@ -316,6 +370,34 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
     const Environment* environment = current_environment();
     if (environment == nullptr) return false;
 
+    if (!environment->virtual_base_apk_path.empty() &&
+        strcmp(path, environment->virtual_base_apk_path.c_str()) == 0) {
+        *rewritten = environment->actual_base_apk_path;
+        return true;
+    }
+    if (!environment->virtual_native_library_dir.empty() &&
+        starts_with_prefix(
+            path,
+            environment->virtual_native_library_dir
+        )) {
+        *rewritten = environment->native_library_dir +
+            (path + environment->virtual_native_library_dir.size());
+        return true;
+    }
+    const size_t split_count = std::min(
+        environment->actual_split_apk_paths.size(),
+        environment->virtual_split_apk_paths.size()
+    );
+    for (size_t index = 0; index < split_count; ++index) {
+        if (strcmp(
+                path,
+                environment->virtual_split_apk_paths[index].c_str()
+            ) == 0) {
+            *rewritten = environment->actual_split_apk_paths[index];
+            return true;
+        }
+    }
+
     if (starts_with_prefix(path, environment->target_data_root)) {
         *rewritten = environment->data_root +
             (path + environment->target_data_root.size());
@@ -346,6 +428,47 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
     return false;
 }
 
+namespace {
+
+bool is_target_install_file(
+    const char* path,
+    const Environment* environment
+) {
+    if (path == nullptr || environment == nullptr) return false;
+    return strcmp(path, environment->actual_base_apk_path.c_str()) == 0 ||
+        std::any_of(
+            environment->actual_split_apk_paths.begin(),
+            environment->actual_split_apk_paths.end(),
+            [path](const std::string& split) {
+                return strcmp(path, split.c_str()) == 0;
+            }
+        ) ||
+        (!environment->native_library_dir.empty() &&
+            starts_with_prefix(path, environment->native_library_dir));
+}
+
+}  // namespace
+
+void virtualize_target_file_stat(const char* actual, struct stat* value) {
+    const Environment* environment = current_environment();
+    if (value == nullptr ||
+        !is_target_install_file(actual, environment)) {
+        return;
+    }
+    value->st_uid = static_cast<uid_t>(environment->observed_uid);
+    value->st_gid = static_cast<gid_t>(environment->observed_uid);
+}
+
+void virtualize_target_statx(const char* actual, struct statx* value) {
+    const Environment* environment = current_environment();
+    if (value == nullptr ||
+        !is_target_install_file(actual, environment)) {
+        return;
+    }
+    value->stx_uid = static_cast<uid_t>(environment->observed_uid);
+    value->stx_gid = static_cast<gid_t>(environment->observed_uid);
+}
+
 bool virtual_path_from_actual(
     const char* actual,
     char* buffer,
@@ -355,6 +478,43 @@ bool virtual_path_from_actual(
     if (actual == nullptr || result == nullptr) return false;
     const Environment* environment = current_environment();
     if (environment == nullptr) return false;
+
+    const auto exact = [&](const std::string& source, const std::string& target) {
+        if (source.empty() || strcmp(actual, source.c_str()) != 0) return false;
+        *result = copy_virtual_path(buffer, size, target, "");
+        return true;
+    };
+    if (exact(
+            environment->actual_base_apk_path,
+            environment->virtual_base_apk_path
+        )) {
+        return true;
+    }
+    if (starts_with_prefix(
+            actual,
+            environment->native_library_dir
+        ) &&
+        !environment->virtual_native_library_dir.empty()) {
+        *result = copy_virtual_path(
+            buffer,
+            size,
+            environment->virtual_native_library_dir,
+            actual + environment->native_library_dir.size()
+        );
+        return true;
+    }
+    const size_t split_count = std::min(
+        environment->actual_split_apk_paths.size(),
+        environment->virtual_split_apk_paths.size()
+    );
+    for (size_t index = 0; index < split_count; ++index) {
+        if (exact(
+                environment->actual_split_apk_paths[index],
+                environment->virtual_split_apk_paths[index]
+            )) {
+            return true;
+        }
+    }
 
     const auto rewrite = [&](const std::string& source, const std::string& target) {
         if (!starts_with_prefix(actual, source)) return false;
@@ -395,13 +555,75 @@ std::string virtualized_proc_content(const char* path) {
     }
     if (strcmp(path, "/proc/self/maps") == 0) {
         std::string value = read_text_file("/proc/self/maps");
+        replace_all(
+            &value,
+            environment->actual_base_apk_path,
+            environment->virtual_base_apk_path
+        );
+        replace_all(
+            &value,
+            data_alias_path(environment->actual_base_apk_path),
+            environment->virtual_base_apk_path
+        );
+        const size_t split_count = std::min(
+            environment->actual_split_apk_paths.size(),
+            environment->virtual_split_apk_paths.size()
+        );
+        for (size_t index = 0; index < split_count; ++index) {
+            replace_all(
+                &value,
+                environment->actual_split_apk_paths[index],
+                environment->virtual_split_apk_paths[index]
+            );
+            replace_all(
+                &value,
+                data_alias_path(environment->actual_split_apk_paths[index]),
+                environment->virtual_split_apk_paths[index]
+            );
+        }
+        if (!environment->native_library_dir.empty() &&
+            !environment->virtual_native_library_dir.empty()) {
+            replace_all(
+                &value,
+                environment->native_library_dir,
+                environment->virtual_native_library_dir
+            );
+        }
         replace_all(&value, environment->data_root, environment->target_data_root);
-        return value;
+        replace_all(
+            &value,
+            environment->data_root_alias,
+            environment->target_data_alias
+        );
+        return filter_host_runtime_lines(value, environment);
     }
     if (strcmp(path, "/proc/self/mountinfo") == 0) {
         std::string value = read_text_file("/proc/self/mountinfo");
+        replace_all(
+            &value,
+            environment->actual_base_apk_path,
+            environment->virtual_base_apk_path
+        );
+        replace_all(
+            &value,
+            data_alias_path(environment->actual_base_apk_path),
+            environment->virtual_base_apk_path
+        );
+        if (!environment->native_library_dir.empty() &&
+            !environment->virtual_native_library_dir.empty()) {
+            replace_all(
+                &value,
+                environment->native_library_dir,
+                environment->virtual_native_library_dir
+            );
+        }
         replace_all(&value, environment->data_root, environment->target_data_root);
-        return value;
+        replace_all(
+            &value,
+            environment->data_root_alias,
+            environment->target_data_alias
+        );
+        return filter_host_runtime_lines(value, environment);
     }
     return {};
 }
@@ -414,6 +636,7 @@ int open_virtual_proc(const char* path, int flags) {
     if (virtual_path == nullptr) return -1;
     const Environment* environment = current_environment();
     if (environment == nullptr) return -1;
+    record_hook_event(kHookEventProc);
 
     std::string content;
     const auto now = std::chrono::steady_clock::now();

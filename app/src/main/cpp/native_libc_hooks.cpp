@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <linux/stat.h>
 #include <sys/stat.h>
+#include <sys/ptrace.h>
 #include <sys/syscall.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
@@ -76,8 +77,26 @@ void initialize_real_functions() {
         g_real.lstat = reinterpret_cast<StatFunction>(
             dlsym(RTLD_DEFAULT, "lstat")
         );
+        g_real.fstatat = reinterpret_cast<FstatatFunction>(
+            dlsym(RTLD_DEFAULT, "fstatat")
+        );
+        g_real.statx = reinterpret_cast<StatxFunction>(
+            dlsym(RTLD_DEFAULT, "statx")
+        );
         g_real.readlink = reinterpret_cast<ReadlinkFunction>(
             dlsym(RTLD_DEFAULT, "readlink")
+        );
+        g_real.readlinkat = reinterpret_cast<ReadlinkatFunction>(
+            dlsym(RTLD_DEFAULT, "readlinkat")
+        );
+        g_real.opendir = reinterpret_cast<OpendirFunction>(
+            dlsym(RTLD_DEFAULT, "opendir")
+        );
+        g_real.realpath = reinterpret_cast<RealpathFunction>(
+            dlsym(RTLD_DEFAULT, "realpath")
+        );
+        g_real.canonicalize = reinterpret_cast<CanonicalizeFunction>(
+            dlsym(RTLD_DEFAULT, "canonicalize_file_name")
         );
         g_real.close = reinterpret_cast<CloseFunction>(
             dlsym(RTLD_DEFAULT, "close")
@@ -135,6 +154,7 @@ void initialize_real_functions() {
 }
 
 uid_t hook_getuid() {
+    record_hook_event(kHookEventUid);
     const Environment* environment = current_environment();
     if (environment != nullptr) {
         return static_cast<uid_t>(environment->observed_uid);
@@ -143,6 +163,7 @@ uid_t hook_getuid() {
 }
 
 uid_t hook_geteuid() {
+    record_hook_event(kHookEventUid);
     const Environment* environment = current_environment();
     if (environment != nullptr) {
         return static_cast<uid_t>(environment->observed_uid);
@@ -160,6 +181,7 @@ int hook_open(const char* path, int flags, ...) {
     }
     const int virtual_fd = open_virtual_proc(path, flags);
     if (virtual_fd >= 0) return virtual_fd;
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const bool mapped = rewrite_target_path(path, &rewritten);
     const char* actual = mapped ? rewritten.c_str() : path;
@@ -177,6 +199,7 @@ int hook_open64(const char* path, int flags, ...) {
     }
     const int virtual_fd = open_virtual_proc(path, flags);
     if (virtual_fd >= 0) return virtual_fd;
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const bool mapped = rewrite_target_path(path, &rewritten);
     const char* actual = mapped ? rewritten.c_str() : path;
@@ -200,6 +223,7 @@ int hook_openat(int dirfd, const char* path, int flags, ...) {
         const int virtual_fd = open_virtual_proc(path, flags);
         if (virtual_fd >= 0) return virtual_fd;
     }
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const bool mapped = rewrite_target_path(path, &rewritten);
     const char* actual = mapped ? rewritten.c_str() : path;
@@ -223,6 +247,7 @@ int hook_openat64(int dirfd, const char* path, int flags, ...) {
         const int virtual_fd = open_virtual_proc(path, flags);
         if (virtual_fd >= 0) return virtual_fd;
     }
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const bool mapped = rewrite_target_path(path, &rewritten);
     const char* actual = mapped ? rewritten.c_str() : path;
@@ -231,6 +256,7 @@ int hook_openat64(int dirfd, const char* path, int flags, ...) {
 }
 
 int hook_access(const char* path, int mode) {
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const char* actual = rewrite_target_path(path, &rewritten)
         ? rewritten.c_str()
@@ -239,6 +265,7 @@ int hook_access(const char* path, int mode) {
 }
 
 int hook_faccessat(int dirfd, const char* path, int mode, int flags) {
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const char* actual = rewrite_target_path(path, &rewritten)
         ? rewritten.c_str()
@@ -248,22 +275,76 @@ int hook_faccessat(int dirfd, const char* path, int mode, int flags) {
 }
 
 int hook_stat(const char* path, struct stat* value) {
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const char* actual = rewrite_target_path(path, &rewritten)
         ? rewritten.c_str()
         : path;
-    return g_real.stat ? g_real.stat(actual, value) : stat(actual, value);
+    const int result = g_real.stat
+        ? g_real.stat(actual, value)
+        : stat(actual, value);
+    if (result == 0) virtualize_target_file_stat(actual, value);
+    return result;
 }
 
 int hook_lstat(const char* path, struct stat* value) {
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const char* actual = rewrite_target_path(path, &rewritten)
         ? rewritten.c_str()
         : path;
-    return g_real.lstat ? g_real.lstat(actual, value) : lstat(actual, value);
+    const int result = g_real.lstat
+        ? g_real.lstat(actual, value)
+        : lstat(actual, value);
+    if (result == 0) virtualize_target_file_stat(actual, value);
+    return result;
+}
+
+int hook_fstatat(int dirfd, const char* path, struct stat* value, int flags) {
+    record_hook_event(kHookEventFile);
+    std::string rewritten;
+    const char* actual = rewrite_target_path(path, &rewritten)
+        ? rewritten.c_str()
+        : path;
+    const int result = g_real.fstatat
+        ? g_real.fstatat(dirfd, actual, value, flags)
+        : fstatat(dirfd, actual, value, flags);
+    if (result == 0) virtualize_target_file_stat(actual, value);
+    return result;
+}
+
+int hook_statx(
+    int dirfd,
+    const char* path,
+    int flags,
+    unsigned int mask,
+    struct statx* value
+) {
+    record_hook_event(kHookEventFile);
+    std::string rewritten;
+    const char* actual = rewrite_target_path(path, &rewritten)
+        ? rewritten.c_str()
+        : path;
+    const int result = g_real.statx != nullptr
+        ? g_real.statx(dirfd, actual, flags, mask, value)
+#if defined(SYS_statx)
+        : static_cast<int>(syscall(
+            SYS_statx,
+            dirfd,
+            actual,
+            flags,
+            mask,
+            value
+        ));
+#else
+        : -1;
+#endif
+    if (result == 0) virtualize_target_statx(actual, value);
+    return result;
 }
 
 ssize_t hook_readlink(const char* path, char* buffer, size_t size) {
+    record_hook_event(kHookEventFile);
     int fd = -1;
     if (proc_fd_number(path, &fd)) {
         const char* virtual_path = fd_virtual_path(fd);
@@ -296,6 +377,26 @@ ssize_t hook_readlink(const char* path, char* buffer, size_t size) {
                            : readlink(actual, buffer, size);
 }
 
+ssize_t hook_readlinkat(
+    int dirfd,
+    const char* path,
+    char* buffer,
+    size_t size
+) {
+    record_hook_event(kHookEventFile);
+    int fd = -1;
+    if (proc_fd_number(path, &fd)) {
+        return hook_readlink(path, buffer, size);
+    }
+    std::string rewritten;
+    const char* actual = rewrite_target_path(path, &rewritten)
+        ? rewritten.c_str()
+        : path;
+    return g_real.readlinkat
+        ? g_real.readlinkat(dirfd, actual, buffer, size)
+        : readlinkat(dirfd, actual, buffer, size);
+}
+
 ssize_t hook_readlink_chk(
     const char* path,
     char* buffer,
@@ -312,15 +413,42 @@ ssize_t hook_readlinkat_chk(
     size_t size,
     size_t
 ) {
-    int fd = -1;
-    if (proc_fd_number(path, &fd)) {
-        return hook_readlink(path, buffer, size);
-    }
+    return hook_readlinkat(dirfd, path, buffer, size);
+}
+
+DIR* hook_opendir(const char* path) {
+    record_hook_event(kHookEventFile);
     std::string rewritten;
     const char* actual = rewrite_target_path(path, &rewritten)
         ? rewritten.c_str()
         : path;
-    return readlinkat(dirfd, actual, buffer, size);
+    return g_real.opendir ? g_real.opendir(actual) : opendir(actual);
+}
+
+char* hook_realpath(const char* path, char* resolved) {
+    record_hook_event(kHookEventFile);
+    std::string rewritten;
+    if (path == nullptr ||
+        !rewrite_target_path(path, &rewritten)) {
+        return g_real.realpath ? g_real.realpath(path, resolved)
+                               : realpath(path, resolved);
+    }
+    char* actual = g_real.realpath
+        ? g_real.realpath(rewritten.c_str(), nullptr)
+        : realpath(rewritten.c_str(), nullptr);
+    if (actual == nullptr) return nullptr;
+    free(actual);
+    const size_t length = strlen(path);
+    char* output = resolved != nullptr
+        ? resolved
+        : static_cast<char*>(malloc(length + 1));
+    if (output == nullptr) return nullptr;
+    memcpy(output, path, length + 1);
+    return output;
+}
+
+char* hook_canonicalize_file_name(const char* path) {
+    return hook_realpath(path, nullptr);
 }
 
 int hook_close(int fd) {
@@ -375,6 +503,7 @@ FILE* hook_fopen(const char* path, const char* mode) {
     int fd = -1;
     if (reading) fd = open_virtual_proc(path, O_RDONLY);
     if (fd < 0) {
+        record_hook_event(kHookEventFile);
         std::string rewritten;
         const bool mapped = rewrite_target_path(path, &rewritten);
         const char* actual = mapped ? rewritten.c_str() : path;
@@ -404,6 +533,7 @@ FILE* hook_fopen64(const char* path, const char* mode) {
     int fd = -1;
     if (reading) fd = open_virtual_proc(path, O_RDONLY);
     if (fd < 0) {
+        record_hook_event(kHookEventFile);
         std::string rewritten;
         const bool mapped = rewrite_target_path(path, &rewritten);
         const char* actual = mapped ? rewritten.c_str() : path;
@@ -436,6 +566,7 @@ int hook_fclose(FILE* file) {
 }
 
 int hook_property_get(const char* name, char* value) {
+    record_hook_event(kHookEventProperty);
     if (name != nullptr && value != nullptr) {
         const Environment* environment = current_environment();
         if (environment != nullptr && environment->property_snapshot != nullptr) {
@@ -468,6 +599,7 @@ VirtualPropertyInfo* virtual_property(const void* property) {
 }
 
 const void* hook_property_find(const char* name) {
+    record_hook_event(kHookEventProperty);
     if (name == nullptr) return nullptr;
     const Environment* environment = current_environment();
     if (environment != nullptr && environment->property_snapshot != nullptr) {
@@ -484,6 +616,7 @@ void hook_property_read_callback(
     PropertyCallback callback,
     void* cookie
 ) {
+    record_hook_event(kHookEventProperty);
     VirtualPropertyInfo* virtual_info = property == nullptr
         ? nullptr
         : virtual_property(property);
@@ -503,6 +636,7 @@ void hook_property_read_callback(
 }
 
 int hook_property_read(const void* property, char* name, char* value) {
+    record_hook_event(kHookEventProperty);
     VirtualPropertyInfo* virtual_info = property == nullptr
         ? nullptr
         : virtual_property(property);
@@ -544,11 +678,18 @@ uint32_t hook_property_serial(const void* property) {
 }
 
 void* hook_dlopen(const char* filename, int flags) {
+    record_hook_event(kHookEventLoader);
     g_dlopen_calls.fetch_add(1, std::memory_order_relaxed);
+    std::string rewritten;
+    const char* actual = rewrite_target_path(filename, &rewritten)
+        ? rewritten.c_str()
+        : filename;
     void* handle = g_real.dlopen
-        ? g_real.dlopen(filename, flags)
-        : dlopen(filename, flags);
-    if (handle != nullptr) request_loaded_modules_refresh();
+        ? g_real.dlopen(actual, flags)
+        : dlopen(actual, flags);
+    if (handle != nullptr && current_environment() != nullptr) {
+        refresh_loaded_modules();
+    }
     return handle;
 }
 
@@ -557,15 +698,24 @@ void* hook_android_dlopen_ext(
     int flags,
     const android_dlextinfo* extinfo
 ) {
+    record_hook_event(kHookEventLoader);
     g_dlopen_calls.fetch_add(1, std::memory_order_relaxed);
+    std::string rewritten;
+    const char* actual = rewrite_target_path(filename, &rewritten)
+        ? rewritten.c_str()
+        : filename;
     void* handle = g_real.androidDlopenExt
-        ? g_real.androidDlopenExt(filename, flags, extinfo)
-        : android_dlopen_ext(filename, flags, extinfo);
-    if (handle != nullptr) request_loaded_modules_refresh();
+        ? g_real.androidDlopenExt(actual, flags, extinfo)
+        : android_dlopen_ext(actual, flags, extinfo);
+    if (handle != nullptr && current_environment() != nullptr) {
+        refresh_loaded_modules();
+    }
     return handle;
 }
 
 long hook_syscall(long number, ...) {
+    record_hook_event(kHookEventDirectSyscall);
+    record_syscall_event(number);
     va_list args;
     va_start(args, number);
     if (number == SYS_getuid || number == SYS_geteuid) {
@@ -792,12 +942,22 @@ void* replacement_for(const char* name) {
     if (strcmp(name, "faccessat") == 0) return reinterpret_cast<void*>(hook_faccessat);
     if (strcmp(name, "stat") == 0) return reinterpret_cast<void*>(hook_stat);
     if (strcmp(name, "lstat") == 0) return reinterpret_cast<void*>(hook_lstat);
+    if (strcmp(name, "fstatat") == 0) return reinterpret_cast<void*>(hook_fstatat);
+    if (strcmp(name, "statx") == 0) return reinterpret_cast<void*>(hook_statx);
     if (strcmp(name, "readlink") == 0) return reinterpret_cast<void*>(hook_readlink);
+    if (strcmp(name, "readlinkat") == 0) {
+        return reinterpret_cast<void*>(hook_readlinkat);
+    }
     if (strcmp(name, "__readlink_chk") == 0) {
         return reinterpret_cast<void*>(hook_readlink_chk);
     }
     if (strcmp(name, "__readlinkat_chk") == 0) {
         return reinterpret_cast<void*>(hook_readlinkat_chk);
+    }
+    if (strcmp(name, "opendir") == 0) return reinterpret_cast<void*>(hook_opendir);
+    if (strcmp(name, "realpath") == 0) return reinterpret_cast<void*>(hook_realpath);
+    if (strcmp(name, "canonicalize_file_name") == 0) {
+        return reinterpret_cast<void*>(hook_canonicalize_file_name);
     }
     if (strcmp(name, "close") == 0) return reinterpret_cast<void*>(hook_close);
     if (strcmp(name, "dup") == 0) return reinterpret_cast<void*>(hook_dup);

@@ -1,5 +1,6 @@
 package com.coke.nestspace.container
 
+import com.coke.nestspace.BuildConfig
 import com.coke.nestspace.i18n.AppLanguage
 import com.coke.nestspace.runtime.RuntimeApplicationSpec
 import com.coke.nestspace.runtime.RuntimeHostHooks
@@ -13,6 +14,7 @@ import com.coke.nestspace.container.job.ContainerJobScheduler
 import com.coke.nestspace.container.loader.ContainerClassLoader
 import com.coke.nestspace.container.loader.NativeLibs
 import com.coke.nestspace.container.loader.PluginClassPathResolver
+import com.coke.nestspace.container.loader.RuntimeDexPathClassLoader
 import com.coke.nestspace.container.loader.SharedLibraries
 import com.coke.nestspace.container.loader.withContainerClassLoader
 import com.coke.nestspace.container.remote.ContainerProcessBrokerClient
@@ -26,7 +28,9 @@ import com.coke.nestspace.container.runtime.AndroidStartupCoordinator
 import com.coke.nestspace.container.runtime.AndroidStartupPhase
 import com.coke.nestspace.container.runtime.AndroidStartupReport
 import com.coke.nestspace.container.runtime.RuntimeCapabilityProbe
+import com.coke.nestspace.container.runtime.RuntimeBootGraphRecovery
 import com.coke.nestspace.container.runtime.RuntimeDiagnostics
+import com.coke.nestspace.container.runtime.RuntimeProcessSentinel
 import com.coke.nestspace.container.runtime.VirtualEnvironment
 import com.coke.nestspace.container.runtime.VirtualEnvironmentFactory
 import com.coke.nestspace.container.runtime.VirtualEnvironmentRegistry
@@ -35,6 +39,8 @@ import com.coke.nestspace.container.runtime.VirtualEnvironmentFacts
 import com.coke.nestspace.container.runtime.VirtualEnvironmentValidator
 import com.coke.nestspace.container.runtime.EnvironmentValidation
 import com.coke.nestspace.container.runtime.VirtualStorageProbe
+import com.coke.nestspace.container.runtime.VirtualInstallLayout
+import com.coke.nestspace.container.runtime.VirtualInstallLayoutFactory
 import com.coke.nestspace.container.runtime.VirtualWebViewDataDirectory
 import com.coke.nestspace.container.vpm.VirtualPackageRegistry
 
@@ -51,6 +57,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.AssetManager
 import android.content.res.Resources
+import dalvik.system.PathClassLoader
 import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
@@ -59,6 +66,7 @@ import android.util.Log
 import android.view.ContextThemeWrapper
 import android.webkit.WebView
 import java.io.File
+import java.lang.reflect.Field
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -346,6 +354,7 @@ class ContainerSession private constructor(
     private val hostProcessState: HostProcessState,
     val virtualEnvironment: VirtualEnvironment,
     internal val runtimeProfile: RuntimeProfile?,
+    private val processSentinel: RuntimeProcessSentinel.Session,
     private val startupCoordinator: AndroidStartupCoordinator,
     private val environmentValidation: EnvironmentValidation,
     val intents: ContainerIntentResolver,
@@ -564,6 +573,26 @@ class ContainerSession private constructor(
                 application
             )
         }
+        runCatching {
+            withContainerClassLoader(loader) {
+                RuntimeBootGraphRecovery.apply(
+                    context = context,
+                    packageName = spec.packageName,
+                    dataRoot = virtualEnvironment.dataRoot,
+                    classLoader = loader
+                )
+            }
+        }.onSuccess { result ->
+            if (result != null) {
+                Log.d(
+                    TAG,
+                    "boot graph recovery applied=${result.applied} " +
+                        "skipped=${result.skipped} errors=${result.errors}"
+                )
+            }
+        }.onFailure {
+            Log.w(TAG, "boot graph recovery failed", it)
+        }
         // Target Application.onCreate often registers its own uncaught
         // exception handler (crash reporting) that terminates the host process.
         // Re-install the guard so target-thread failures stay contained.
@@ -586,6 +615,7 @@ class ContainerSession private constructor(
     }
 
     internal fun refreshNativeHooks(scanElfFallback: Boolean = false) {
+        if (!NativeHookTrial.enabled) return
         val snapshot = NativeEnvironmentBridge.refreshHooks(scanElfFallback) ?: return
         if (snapshot.hookCount == lastNativeHookCount &&
             snapshot.scannedModuleCount == lastNativeScannedCount &&
@@ -607,6 +637,10 @@ class ContainerSession private constructor(
                 "propertyReads=${snapshot.propertyReadCount} " +
                 "dlopenCalls=${snapshot.dlopenCallCount}"
         )
+    }
+
+    private object NativeHookTrial {
+        const val enabled = true
     }
 
     /** Coalesces lifecycle-triggered refreshes onto the native worker. */
@@ -672,6 +706,9 @@ class ContainerSession private constructor(
             val pathMapProbe = NativeEnvironmentBridge.rewritePathForDiagnostics(
                 "/data/user/0/${virtualEnvironment.packageName}/files"
             )?.takeIf { it == expectedPathProbe }
+            val apkPathMapProbe = virtualEnvironment.virtualApkPaths.firstOrNull()
+                ?.let(NativeEnvironmentBridge::rewritePathForDiagnostics)
+                ?.takeIf { it == virtualEnvironment.apkPaths.firstOrNull() }
             val externalPathMapProbe = virtualEnvironment.externalDataRoot
                 ?.let { externalRoot ->
                     val expected = File(externalRoot, "files").absolutePath
@@ -707,6 +744,7 @@ class ContainerSession private constructor(
                 processPid = android.os.Process.myPid(),
                 headless = headless,
                 pathMapProbe = pathMapProbe,
+                apkPathMapProbe = apkPathMapProbe,
                 externalPathMapProbe = externalPathMapProbe,
                 procViewProbe = procViewProbe,
                 propertyValueProbe = propertyValueProbe,
@@ -828,6 +866,8 @@ class ContainerSession private constructor(
         nativeHookExecutor.shutdownNow()
         fastNativeHookPump = null
         slowNativeHookPump = null
+        runCatching { runtimeProfile?.close() }
+            .onFailure { Log.w(TAG, "runtime profile cleanup failed", it) }
         NativeEnvironmentBridge.clear()
         VirtualEnvironmentRegistry.clear(virtualEnvironment)
         suspendProcessIdentity()
@@ -835,7 +875,12 @@ class ContainerSession private constructor(
         providerManager.destroy()
         serviceManager.destroyAll()
         jobScheduler.shutdown()
+        processSentinel.finish("clean-shutdown")
         ProcessNameCompat.restorePersistent()
+    }
+
+    internal fun recordRuntimeFailure(stage: String, error: Throwable) {
+        processSentinel.markFailure(stage, error)
     }
 
     /**
@@ -888,9 +933,8 @@ class ContainerSession private constructor(
     private fun activateProcessIdentityLocked() {
         if (!hostIdentitySuspended) return
         ProcessNameCompat.setPersistent(spec.targetProcessName)
-        publishVirtualIdentity(activityThread, context)
+        publishVirtualIdentity(activityThread, context, loader)
         publishAsProcessApplication()
-        restoreHostLoadedApkPackageName()
         hostIdentitySuspended = false
         Log.d(TAG, "activated target process identity")
     }
@@ -998,6 +1042,7 @@ class ContainerSession private constructor(
         applyTargetResources(target, resources, theme)
         installVirtualTaskRoot(target)
         targetHosts[target] = host
+        logJniSurface(target)
         try {
             instrumentation.callActivityOnCreate(target, savedState)
         } catch (t: Throwable) {
@@ -1275,6 +1320,37 @@ class ContainerSession private constructor(
         }
     }
 
+    private fun logJniSurface(activity: Activity) {
+        var type: Class<*>? = activity.javaClass
+        var depth = 0
+        while (type != null && depth < 8 && type != Activity::class.java) {
+            val nativeMethods = runCatching {
+                type?.declaredMethods
+                    ?.filter { java.lang.reflect.Modifier.isNative(it.modifiers) }
+                    ?.map {
+                        it.name + "(" +
+                            it.parameterTypes.joinToString(",") { parameter ->
+                                parameter.name
+                            } +
+                            ")"
+                    }
+                    .orEmpty()
+            }.getOrDefault(emptyList())
+            Log.d(
+                TAG,
+                "jni surface class=${type?.name} loader=${type?.classLoader} " +
+                    "nativeMethods=$nativeMethods"
+            )
+            type = type?.superclass
+            depth += 1
+        }
+        Log.d(
+            TAG,
+            "jni surface targetLoader=${activity.javaClass.classLoader} " +
+                "sessionLoader=$loader applicationLoader=${application.javaClass.classLoader}"
+        )
+    }
+
     fun startExternalActivity(host: StageAActivity, intent: Intent, requestCode: Int): Boolean {
         val webUrl = webUrlFromViewIntent(intent)
         if (webUrl != null) {
@@ -1436,6 +1512,7 @@ class ContainerSession private constructor(
 
         fun create(host: Context, spec: ContainerLaunchSpec): ContainerSession {
             ContainerLaunchProgress.begin()
+            var processSentinel: RuntimeProcessSentinel.Session? = null
             val startupCoordinator = AndroidStartupCoordinator(
                 observer = { phase ->
                     Log.d(
@@ -1446,8 +1523,14 @@ class ContainerSession private constructor(
                             "failure=${phase.failure.orEmpty()}"
                     )
                     ContainerLaunchProgress.phaseCompleted(phase.phase)
+                    processSentinel?.markPhase(
+                        "${phase.phase}:${phase.outcome}"
+                    )
                 },
-                phaseStartedObserver = ContainerLaunchProgress::phaseStarted
+                phaseStartedObserver = { phase ->
+                    ContainerLaunchProgress.phaseStarted(phase)
+                    processSentinel?.markPhase(phase.name)
+                }
             )
             val classLoaderStartedAt = SystemClock.elapsedRealtime()
             HiddenApiCompat.ensure()
@@ -1462,6 +1545,11 @@ class ContainerSession private constructor(
             ProcessNameCompat.setPersistent(spec.targetProcessName)
             Log.d(TAG, "create session ${spec.packageName}/${spec.instanceId}")
             val dataRoot = File(spec.dataDir).apply { mkdirs() }
+            processSentinel = RuntimeProcessSentinel.begin(
+                dataRoot = dataRoot.absolutePath,
+                packageName = spec.packageName,
+                processName = spec.targetProcessName
+            )
             File(dataRoot, "code_cache").apply { mkdirs() }
             val apkPaths = listOf(spec.baseApkPath) + spec.splitApkPaths
             val sharedLibraryPaths = SharedLibraries.classPathEntries(
@@ -1479,6 +1567,9 @@ class ContainerSession private constructor(
             } else {
                 PluginClassPathResolver.Mount.EMPTY
             }
+            // Keep the platform loader as parent and the target APK first so
+            // hardened startup code sees the same class path shape as a
+            // directly installed app.
             val classPath = (listOf(baseClassPath) + pluginMount.apkPaths)
                 .filter { it.isNotBlank() }
                 .joinToString(File.pathSeparator)
@@ -1516,16 +1607,23 @@ class ContainerSession private constructor(
                 runCatching { legacyNativeLibs.deleteRecursively() }
             }
             Log.d(TAG, "native libs: ${nativeLibs?.absolutePath} abi=$nativeAbi")
+            val installLayout = VirtualInstallLayoutFactory.create(
+                spec,
+                actualNativeLibraryDir = nativeLibs?.absolutePath,
+                nativeAbi = nativeAbi
+            )
 
             val nativeSearchPath = (listOfNotNull(nativeLibs?.absolutePath) +
                 pluginMount.nativeLibraryDirs)
                 .distinct()
                 .joinToString(File.pathSeparator)
                 .ifBlank { null }
-            var loader: ClassLoader = ContainerClassLoader(
+            var loader: ClassLoader = RuntimeDexPathClassLoader(
                 classPath,
                 nativeSearchPath,
-                host.classLoader
+                ClassLoader.getSystemClassLoader().parent,
+                dataRoot,
+                File(dataRoot, "code_cache")
             )
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_CODE)
             val appInfo = spec.applicationInfo
@@ -1573,12 +1671,12 @@ class ContainerSession private constructor(
                     .getField("splitSourceDirs")
                     .set(appInfo, spec.splitApkPaths.toTypedArray())
             }
-
             // Some packers expose their decrypted runtime DEX through the
             // AppComponentFactory hook that Android normally calls while
             // creating LoadedApk. Manually attached virtual applications skip
             // that framework path, so run the hook before attaching the target.
             loader = ContainerCompat.installRuntimeClassLoader(spec, loader, appInfo)
+            exposeVirtualClassPath(loader, installLayout)
             // Some native packers replace the VM hidden-API policy while
             // installing their runtime loader. Re-apply the exemption before
             // the Activity attachment path uses framework-private fields.
@@ -1606,8 +1704,9 @@ class ContainerSession private constructor(
                 targetResources = resources,
                 targetAppInfo = appInfo,
                 targetRequestedPermissions = spec.packageInfo.requestedPermissions,
-                baseApkPath = spec.baseApkPath,
-                splitApkPaths = spec.splitApkPaths
+                baseApkPath = installLayout.virtualBaseApkPath,
+                resourceApkPath = spec.baseApkPath,
+                splitApkPaths = installLayout.virtualSplitApkPaths
             )
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                 val suffix = VirtualWebViewDataDirectory.suffix(
@@ -1696,14 +1795,17 @@ class ContainerSession private constructor(
             val virtualEnvironment = VirtualEnvironmentFactory.create(
                 spec = spec,
                 nativeLibraryDir = nativeLibs?.absolutePath,
-                runtimeCapabilities = capabilityReport
+                runtimeCapabilities = capabilityReport,
+                installLayout = installLayout
             )
             context.virtualEnvironment = virtualEnvironment
             VirtualEnvironmentRegistry.install(virtualEnvironment)
             NativeEnvironmentBridge.install(
                 virtualEnvironment,
-                VirtualEnvironmentRegistry.identitySnapshot()
+                VirtualEnvironmentRegistry.identitySnapshot(),
+                HostIdentity.packageName
             )
+            NativeEnvironmentBridge.installCrashTrace(virtualEnvironment.dataRoot)
             NativeEnvironmentBridge.snapshot()?.let { native ->
                 Log.d(
                     TAG,
@@ -1770,11 +1872,28 @@ class ContainerSession private constructor(
             val activityThread = Class.forName("android.app.ActivityThread")
                 .getMethod("currentActivityThread")
                 .invoke(null)
+            // Resources and the runtime class loader are already bound to the
+            // imported files. From this point on, expose the stable installed-
+            // app path to the target so packers cannot observe a half-virtual
+            // package whose code path and PackageManager metadata disagree.
+            appInfo.sourceDir = installLayout.virtualBaseApkPath
+            appInfo.publicSourceDir = installLayout.virtualBaseApkPath
+            installLayout.virtualNativeLibraryDir?.let { virtualDir ->
+                appInfo.nativeLibraryDir = virtualDir
+            }
+            runCatching {
+                appInfo.javaClass
+                    .getField("splitSourceDirs")
+                    .set(
+                        appInfo,
+                        installLayout.virtualSplitApkPaths.toTypedArray()
+                    )
+            }
             // Native packers (SecNeo/Bangcle) run package checks in JNI_OnLoad
             // while the target Application class is being loaded. Publish the
             // virtual identity first, otherwise those checks see the host
             // package and abort with NameNotFoundException.
-            publishVirtualIdentity(activityThread, context)
+            publishVirtualIdentity(activityThread, context, loader)
             TargetWebViewIdentityHook.install(context)
             val runtimeSpec = spec.toRuntimeApplicationSpec()
             val runtimeProfile = RuntimeProfiles.resolve(
@@ -1842,6 +1961,7 @@ class ContainerSession private constructor(
                         hostProcessState = hostProcessState,
                         virtualEnvironment = virtualEnvironment,
                         runtimeProfile = runtimeProfile,
+                        processSentinel = requireNotNull(processSentinel),
                         startupCoordinator = startupCoordinator,
                         environmentValidation = environmentValidation,
                         intents = intents,
@@ -1862,7 +1982,11 @@ class ContainerSession private constructor(
          * (SecNeo's libDexHelper) call PackageManager from JNI_OnLoad, which
          * runs during class loading and before attachBaseContext.
          */
-        private fun publishVirtualIdentity(activityThread: Any, context: Context) {
+        private fun publishVirtualIdentity(
+            activityThread: Any,
+            context: Context,
+            loader: ClassLoader
+        ) {
             val threadClass = Class.forName("android.app.ActivityThread")
 
             runCatching {
@@ -1891,6 +2015,11 @@ class ContainerSession private constructor(
                         loadedApkClass.getDeclaredField("mPackageName")
                             .apply { isAccessible = true }
                             .set(loadedApk, context.packageName)
+                    }
+                    runCatching {
+                        loadedApkClass.getDeclaredField("mClassLoader")
+                            .apply { isAccessible = true }
+                            .set(loadedApk, loader)
                     }
                     runCatching {
                         loadedApkClass.getDeclaredField("mDataDir")
@@ -1940,6 +2069,79 @@ class ContainerSession private constructor(
                     "prepublished system context: pmFields=$pmFields appInfoFields=$appInfoFields"
                 )
             }.onFailure { Log.w(TAG, "prepublish system context failed", it) }
+        }
+
+        private fun exposeVirtualClassPath(
+            loader: ClassLoader,
+            layout: VirtualInstallLayout
+        ) {
+            val replacements = layout.actualApkPaths
+                .zip(layout.virtualApkPaths)
+                .toMap()
+            var current: ClassLoader? = loader
+            var rewritten = 0
+            while (current != null) {
+                rewritten += rewriteDexElements(current, replacements)
+                current = current.parent
+            }
+            Log.d(TAG, "virtual class path entries rewritten=$rewritten")
+        }
+
+        private fun rewriteDexElements(
+            loader: ClassLoader,
+            replacements: Map<String, String>
+        ): Int {
+            val pathList = findField(loader.javaClass, "pathList")?.let { field ->
+                runCatching { field.get(loader) }.getOrNull()
+            } ?: return 0
+            val elements = findField(pathList.javaClass, "dexElements")?.let { field ->
+                runCatching { field.get(pathList) as? Array<*> }.getOrNull()
+            } ?: return 0
+            var rewritten = 0
+            elements.filterNotNull().forEach { element ->
+                val pathField = findField(element.javaClass, "path") ?: return@forEach
+                val value = runCatching { pathField.get(element) }.getOrNull()
+                val actual = when (value) {
+                    is String -> value
+                    is File -> value.path
+                    else -> return@forEach
+                }
+                val virtual = replacements[actual] ?: return@forEach
+                val replacement: Any = if (value is File) File(virtual) else virtual
+                runCatching {
+                    pathField.set(element, replacement)
+                    rewritten += 1
+                }.onFailure {
+                    Log.w(TAG, "rewrite dex element failed path=$actual", it)
+                }
+                rewriteDexFileIdentity(element, virtual)
+            }
+            return rewritten
+        }
+
+        private fun rewriteDexFileIdentity(element: Any, virtualPath: String) {
+            val dexFile = findField(element.javaClass, "dexFile")
+                ?.let { field -> runCatching { field.get(element) }.getOrNull() }
+                ?: return
+            val fileName = findField(dexFile.javaClass, "mFileName") ?: return
+            runCatching {
+                fileName.set(dexFile, virtualPath)
+            }.onFailure {
+                Log.w(TAG, "rewrite dex file identity failed path=$virtualPath", it)
+            }
+        }
+
+        private fun findField(type: Class<*>, name: String): Field? {
+            var current: Class<*>? = type
+            while (current != null && current != Any::class.java) {
+                runCatching {
+                    return current.getDeclaredField(name).apply {
+                        isAccessible = true
+                    }
+                }
+                current = current.superclass
+            }
+            return null
         }
 
         private fun attachApplication(

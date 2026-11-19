@@ -28,6 +28,7 @@ object RuntimeDiagnostics {
         processPid: Int,
         headless: Boolean,
         pathMapProbe: String? = null,
+        apkPathMapProbe: String? = null,
         externalPathMapProbe: String? = null,
         procViewProbe: String? = null,
         propertyValueProbe: String? = null,
@@ -137,6 +138,10 @@ object RuntimeDiagnostics {
                 .put(
                     "path_map_probe",
                     if (pathMapProbe != null) "verified" else "unverified"
+                )
+                .put(
+                    "apk_path_map_probe",
+                    if (apkPathMapProbe != null) "verified" else "unverified"
                 )
                 .put(
                     "external_path_map_probe",

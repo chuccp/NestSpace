@@ -1,6 +1,7 @@
 package com.coke.nestspace.container.runtime
 
 import android.util.Log
+import java.io.File
 
 data class NativeEnvironmentSnapshot(
     val configuredHostUid: Int,
@@ -18,7 +19,9 @@ data class NativeEnvironmentSnapshot(
     val hookErrorCount: Int = 0,
     val virtualProcReadCount: Int = 0,
     val propertyReadCount: Int = 0,
-    val dlopenCallCount: Int = 0
+    val dlopenCallCount: Int = 0,
+    val lastHookEvent: Int = 0,
+    val lastSyscallNumber: Long = -1
 )
 
 data class NativeHookSnapshot(
@@ -29,7 +32,9 @@ data class NativeHookSnapshot(
     val errorCount: Int,
     val virtualProcReadCount: Int,
     val propertyReadCount: Int,
-    val dlopenCallCount: Int
+    val dlopenCallCount: Int,
+    val lastHookEvent: Int = 0,
+    val lastSyscallNumber: Long = -1
 )
 
 data class NativeRuntimeProbe(
@@ -73,19 +78,37 @@ object NativeEnvironmentBridge {
         }
     }
 
+    fun installCrashTrace(dataRoot: String) {
+        if (!ensureLoaded()) return
+        val target = File(dataRoot, ".nestspace/native-crash-trace.log")
+        target.parentFile?.mkdirs()
+        runCatching {
+            nativeInstallCrashTrace(target.absolutePath)
+        }.onFailure {
+            Log.w(TAG, "install native crash trace failed", it)
+        }
+    }
+
     fun install(
         environment: VirtualEnvironment,
-        identity: VirtualIdentitySnapshot
+        identity: VirtualIdentitySnapshot,
+        hostPackageName: String
     ): Boolean {
         if (!ensureLoaded()) return false
         return runCatching {
             nativeInstall(
                 environment.instanceId,
                 environment.packageName,
+                hostPackageName,
                 environment.dataRoot,
                 environment.externalDataRoot.orEmpty(),
                 environment.processName,
                 environment.nativeLibraryDir.orEmpty(),
+                environment.virtualNativeLibraryDir.orEmpty(),
+                environment.apkPaths.firstOrNull().orEmpty(),
+                environment.virtualApkPaths.firstOrNull().orEmpty(),
+                environment.splitApkPaths.toTypedArray(),
+                environment.virtualSplitApkPaths.toTypedArray(),
                 environment.properties.flatMap { (key, value) -> listOf(key, value) }
                     .toTypedArray(),
                 environment.hostUid,
@@ -130,7 +153,9 @@ object NativeEnvironmentBridge {
                 hookErrorCount = hooks?.errorCount ?: 0,
                 virtualProcReadCount = hooks?.virtualProcReadCount ?: 0,
                 propertyReadCount = hooks?.propertyReadCount ?: 0,
-                dlopenCallCount = hooks?.dlopenCallCount ?: 0
+                dlopenCallCount = hooks?.dlopenCallCount ?: 0,
+                lastHookEvent = hooks?.lastHookEvent ?: 0,
+                lastSyscallNumber = hooks?.lastSyscallNumber ?: -1
             )
         }.onFailure {
             Log.w(TAG, "read native environment failed", it)
@@ -174,7 +199,9 @@ object NativeEnvironmentBridge {
                 errorCount = values[4].toInt(),
                 virtualProcReadCount = values[5].toInt(),
                 propertyReadCount = values[6].toInt(),
-                dlopenCallCount = values[7].toInt()
+                dlopenCallCount = values[7].toInt(),
+                lastHookEvent = values.getOrNull(8)?.toInt() ?: 0,
+                lastSyscallNumber = values.getOrNull(9) ?: -1
             )
         }.onFailure {
             Log.w(TAG, "native hook refresh failed", it)
@@ -194,7 +221,9 @@ object NativeEnvironmentBridge {
                 errorCount = values[4].toInt(),
                 virtualProcReadCount = values[5].toInt(),
                 propertyReadCount = values[6].toInt(),
-                dlopenCallCount = values[7].toInt()
+                dlopenCallCount = values[7].toInt(),
+                lastHookEvent = values.getOrNull(8)?.toInt() ?: 0,
+                lastSyscallNumber = values.getOrNull(9) ?: -1
             )
         }.getOrNull()
     }
@@ -234,10 +263,16 @@ object NativeEnvironmentBridge {
     private external fun nativeInstall(
         instanceId: String,
         packageName: String,
+        hostPackageName: String,
         dataRoot: String,
         externalDataRoot: String,
         processName: String,
         nativeLibraryDir: String,
+        virtualNativeLibraryDir: String,
+        actualBaseApkPath: String,
+        virtualBaseApkPath: String,
+        actualSplitApkPaths: Array<String>,
+        virtualSplitApkPaths: Array<String>,
         properties: Array<String>,
         hostUid: Int,
         observedUid: Int,
@@ -260,6 +295,9 @@ object NativeEnvironmentBridge {
 
     @JvmStatic
     private external fun nativeHookSnapshot(): LongArray?
+
+    @JvmStatic
+    private external fun nativeInstallCrashTrace(path: String)
 
     @JvmStatic
     private external fun nativeRewritePath(path: String): String?

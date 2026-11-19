@@ -9,6 +9,7 @@ add_library(
     native_environment_state.cpp
     native_libc_hooks.cpp
     native_elf_hooks.cpp
+    native_crash_trace.cpp
 )
 
 target_compile_features(nestspace_runtime PRIVATE cxx_std_17)

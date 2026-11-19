@@ -1,7 +1,9 @@
 #pragma once
 
 #include <android/dlext.h>
+#include <dirent.h>
 #include <jni.h>
+#include <linux/stat.h>
 
 #include <atomic>
 #include <cstdio>
@@ -23,6 +25,14 @@ constexpr jlong kProbeSelinuxReadable = 1LL << 4;
 constexpr jlong kProbeDirectOpenReadable = 1LL << 5;
 constexpr jlong kProbeDirectStatReadable = 1LL << 6;
 
+constexpr jint kHookEventNone = 0;
+constexpr jint kHookEventUid = 1;
+constexpr jint kHookEventFile = 2;
+constexpr jint kHookEventProc = 3;
+constexpr jint kHookEventProperty = 4;
+constexpr jint kHookEventDirectSyscall = 5;
+constexpr jint kHookEventLoader = 6;
+
 struct VirtualPropertyInfo {
     std::string name;
     std::string value;
@@ -41,10 +51,16 @@ struct PropertySnapshot {
 struct Environment {
     std::string instance_id;
     std::string package_name;
+    std::string host_package_name;
     std::string data_root;
     std::string external_data_root;
     std::string process_name;
     std::string native_library_dir;
+    std::string virtual_native_library_dir;
+    std::string actual_base_apk_path;
+    std::string virtual_base_apk_path;
+    std::vector<std::string> actual_split_apk_paths;
+    std::vector<std::string> virtual_split_apk_paths;
     std::string target_data_root;
     std::string target_data_alias;
     std::string target_device_root;
@@ -79,6 +95,8 @@ bool can_syscall_stat(const char* path);
 jint read_status_uid();
 
 bool rewrite_target_path(const char* path, std::string* rewritten);
+void virtualize_target_file_stat(const char* actual, struct stat* value);
+void virtualize_target_statx(const char* actual, struct statx* value);
 bool virtual_path_from_actual(
     const char* actual,
     char* buffer,
@@ -100,7 +118,19 @@ using OpenatFunction = int (*)(int, const char*, int, ...);
 using AccessFunction = int (*)(const char*, int);
 using FaccessatFunction = int (*)(int, const char*, int, int);
 using StatFunction = int (*)(const char*, struct stat*);
+using FstatatFunction = int (*)(int, const char*, struct stat*, int);
+using StatxFunction = int (*)(
+    int,
+    const char*,
+    int,
+    unsigned int,
+    struct statx*
+);
 using ReadlinkFunction = ssize_t (*)(const char*, char*, size_t);
+using ReadlinkatFunction = ssize_t (*)(int, const char*, char*, size_t);
+using OpendirFunction = DIR* (*)(const char*);
+using RealpathFunction = char* (*)(const char*, char*);
+using CanonicalizeFunction = char* (*)(const char*);
 using CloseFunction = int (*)(int);
 using DupFunction = int (*)(int);
 using Dup2Function = int (*)(int, int);
@@ -139,7 +169,13 @@ struct RealFunctions {
     FaccessatFunction faccessat = nullptr;
     StatFunction stat = nullptr;
     StatFunction lstat = nullptr;
+    FstatatFunction fstatat = nullptr;
+    StatxFunction statx = nullptr;
     ReadlinkFunction readlink = nullptr;
+    ReadlinkatFunction readlinkat = nullptr;
+    OpendirFunction opendir = nullptr;
+    RealpathFunction realpath = nullptr;
+    CanonicalizeFunction canonicalize = nullptr;
     CloseFunction close = nullptr;
     DupFunction dup = nullptr;
     Dup2Function dup2 = nullptr;
@@ -183,8 +219,12 @@ struct HookState {
     int virtual_proc_reads = 0;
     int property_reads = 0;
     int dlopen_calls = 0;
+    jint last_hook_event = kHookEventNone;
+    jlong last_syscall_number = -1;
 };
 
+void record_hook_event(jint event);
+void record_syscall_event(jlong number);
 HookState refresh_hooks(bool scan_elf_fallback);
 void refresh_loaded_modules();
 void request_loaded_modules_refresh();

@@ -60,6 +60,7 @@ class ContainerContext(
     private val targetAppInfo: ApplicationInfo,
     private val targetRequestedPermissions: Array<String>?,
     private val baseApkPath: String,
+    private val resourceApkPath: String = baseApkPath,
     private val splitApkPaths: List<String>,
     private val deviceProtected: Boolean = false
 ) : ContextWrapper(base) {
@@ -516,7 +517,7 @@ class ContainerContext(
 
     override fun getPackageCodePath(): String = baseApkPath
 
-    override fun getPackageResourcePath(): String = baseApkPath
+    override fun getPackageResourcePath(): String = resourceApkPath
 
     override fun getClassLoader(): ClassLoader = targetClassLoader
 
@@ -591,6 +592,7 @@ class ContainerContext(
             targetAppInfo = targetAppInfo,
             targetRequestedPermissions = targetRequestedPermissions,
             baseApkPath = baseApkPath,
+            resourceApkPath = resourceApkPath,
             splitApkPaths = splitApkPaths,
             deviceProtected = deviceProtected
         )

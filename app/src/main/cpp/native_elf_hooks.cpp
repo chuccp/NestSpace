@@ -60,6 +60,8 @@ struct HookCounters {
     int errors = 0;
 };
 
+std::atomic<jint> g_last_hook_event{kHookEventNone};
+std::atomic<jlong> g_last_syscall_number{-1};
 std::mutex g_hook_lock;
 std::vector<PatchedSlot> g_patched_slots;
 std::unordered_set<void**> g_patched_addresses;
@@ -774,10 +776,20 @@ HookState snapshot_locked() {
         g_virtual_proc_reads.load(std::memory_order_relaxed),
         g_property_reads.load(std::memory_order_relaxed),
         g_dlopen_calls.load(std::memory_order_relaxed),
+        g_last_hook_event.load(std::memory_order_relaxed),
+        g_last_syscall_number.load(std::memory_order_relaxed),
     };
 }
 
 }  // namespace
+
+void record_hook_event(jint event) {
+    g_last_hook_event.store(event, std::memory_order_relaxed);
+}
+
+void record_syscall_event(jlong number) {
+    g_last_syscall_number.store(number, std::memory_order_relaxed);
+}
 
 HookState refresh_hooks(bool scan_elf_fallback) {
     initialize_real_functions();
@@ -839,6 +851,8 @@ void restore_hooks() {
     g_virtual_proc_reads.store(0, std::memory_order_relaxed);
     g_property_reads.store(0, std::memory_order_relaxed);
     g_dlopen_calls.store(0, std::memory_order_relaxed);
+    g_last_hook_event.store(kHookEventNone, std::memory_order_relaxed);
+    g_last_syscall_number.store(-1, std::memory_order_relaxed);
     clear_fd_paths();
 }
 

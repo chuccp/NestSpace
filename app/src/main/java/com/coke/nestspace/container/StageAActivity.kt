@@ -4,6 +4,7 @@ import com.coke.nestspace.i18n.AppLanguage
 import com.coke.nestspace.container.identity.ProcessNameCompat
 import com.coke.nestspace.container.identity.HostIdentity
 import com.coke.nestspace.container.identity.SystemServiceIdentity
+import com.coke.nestspace.container.runtime.RuntimeBootGraphDiagnostics
 import com.coke.nestspace.container.loader.withContainerClassLoader
 
 
@@ -1875,6 +1876,7 @@ open class StageAActivity : Activity() {
             } catch (t: Throwable) {
                 Log.e(TAG, "container launch failed", t)
                 ContainerLaunchProgress.fail()
+                analyzeBootFailure("container-launch", t)
                 showError(
                     AppLanguage.tr(
                         "容器启动失败：${t.message ?: t.javaClass.name}\n\n" +
@@ -1937,6 +1939,7 @@ open class StageAActivity : Activity() {
         } catch (t: Throwable) {
             Log.e(TAG, "container first activity failed", t)
             ContainerLaunchProgress.fail()
+            analyzeBootFailure("first-activity-launch", t)
             showError(
                 AppLanguage.tr(
                     "容器启动失败：${t.message ?: t.javaClass.name}\n\n" +
@@ -2112,6 +2115,7 @@ open class StageAActivity : Activity() {
         } catch (t: Throwable) {
             Log.e(TAG, "container target activity failed", t)
             ContainerLaunchProgress.fail()
+            analyzeBootFailure("target-activity-create", t)
             showError(
                 AppLanguage.tr(
                     "容器启动失败：${t.message ?: t.javaClass.name}\n\n" +
@@ -2278,6 +2282,20 @@ open class StageAActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
+        )
+    }
+
+    private fun analyzeBootFailure(stage: String, error: Throwable) {
+        val current = session ?: return
+        current.recordRuntimeFailure(stage, error)
+        RuntimeBootGraphDiagnostics.analyzeAsync(
+            packageName = current.spec.packageName,
+            processName = current.spec.targetProcessName,
+            dataRoot = current.spec.dataDir,
+            classLoader = current.loader,
+            apkPaths = listOf(current.spec.baseApkPath) + current.spec.splitApkPaths,
+            stage = stage,
+            failure = error
         )
     }
 

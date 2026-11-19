@@ -4,10 +4,15 @@
 #include <sys/system_properties.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <mutex>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
+
+extern "C" void install_native_crash_trace(const char* path);
 
 namespace {
 
@@ -39,6 +44,22 @@ std::unordered_map<std::string, std::string> to_properties(
     return result;
 }
 
+std::vector<std::string> to_strings(JNIEnv* env, jobjectArray values) {
+    std::vector<std::string> result;
+    if (values == nullptr) return result;
+    const jsize length = env->GetArrayLength(values);
+    result.reserve(static_cast<size_t>(length));
+    for (jsize index = 0; index < length; ++index) {
+        auto value = static_cast<jstring>(
+            env->GetObjectArrayElement(values, index)
+        );
+        const std::string content = to_string(env, value);
+        if (value != nullptr) env->DeleteLocalRef(value);
+        if (!content.empty()) result.push_back(content);
+    }
+    return result;
+}
+
 std::string data_alias(const std::string& path) {
     static constexpr char kUser[] = "/data/user/0/";
     static constexpr char kData[] = "/data/data/";
@@ -52,7 +73,7 @@ std::string data_alias(const std::string& path) {
 }
 
 jlongArray hook_state_array(JNIEnv* env, nestspace::HookState state) {
-    const jlong values[8] = {
+    const jlong values[10] = {
         static_cast<jlong>(state.patch_count),
         static_cast<jlong>(state.hooked_modules),
         static_cast<jlong>(state.scanned_modules),
@@ -61,10 +82,12 @@ jlongArray hook_state_array(JNIEnv* env, nestspace::HookState state) {
         static_cast<jlong>(state.virtual_proc_reads),
         static_cast<jlong>(state.property_reads),
         static_cast<jlong>(state.dlopen_calls),
+        static_cast<jlong>(state.last_hook_event),
+        static_cast<jlong>(state.last_syscall_number),
     };
-    jlongArray result = env->NewLongArray(8);
+    jlongArray result = env->NewLongArray(10);
     if (result != nullptr) {
-        env->SetLongArrayRegion(result, 0, 8, values);
+        env->SetLongArrayRegion(result, 0, 10, values);
     }
     return result;
 }
@@ -92,10 +115,16 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     jclass,
     jstring instance_id,
     jstring package_name,
+    jstring host_package_name,
     jstring data_root,
     jstring external_data_root,
     jstring process_name,
     jstring native_library_dir,
+    jstring virtual_native_library_dir,
+    jstring actual_base_apk_path,
+    jstring virtual_base_apk_path,
+    jobjectArray actual_split_apk_paths,
+    jobjectArray virtual_split_apk_paths,
     jobjectArray properties,
     jint host_uid,
     jint observed_uid,
@@ -106,10 +135,25 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     auto environment = std::make_unique<nestspace::Environment>();
     environment->instance_id = to_string(env, instance_id);
     environment->package_name = to_string(env, package_name);
+    environment->host_package_name = to_string(env, host_package_name);
     environment->data_root = to_string(env, data_root);
     environment->external_data_root = to_string(env, external_data_root);
     environment->process_name = to_string(env, process_name);
     environment->native_library_dir = to_string(env, native_library_dir);
+    environment->virtual_native_library_dir = to_string(
+        env,
+        virtual_native_library_dir
+    );
+    environment->actual_base_apk_path = to_string(env, actual_base_apk_path);
+    environment->virtual_base_apk_path = to_string(env, virtual_base_apk_path);
+    environment->actual_split_apk_paths = to_strings(
+        env,
+        actual_split_apk_paths
+    );
+    environment->virtual_split_apk_paths = to_strings(
+        env,
+        virtual_split_apk_paths
+    );
     environment->target_data_root =
         "/data/user/0/" + environment->package_name;
     environment->target_data_alias =
@@ -136,6 +180,25 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
 
     nestspace::restore_hooks();
     nestspace::publish_environment(std::move(environment));
+    nestspace::refresh_hooks(false);
+    static std::mutex watcher_lock;
+    static bool watcher_started = false;
+    {
+        std::lock_guard<std::mutex> guard(watcher_lock);
+        if (!watcher_started) {
+            watcher_started = true;
+            std::thread([] {
+                const auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::seconds(15);
+                while (nestspace::current_environment() != nullptr &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    nestspace::refresh_loaded_modules();
+                    if (nestspace::hook_state().target_modules > 0) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }).detach();
+        }
+    }
     return JNI_TRUE;
 }
 
@@ -343,6 +406,16 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeHookSnap
     jclass
 ) {
     return hook_state_array(env, nestspace::hook_state());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstallCrashTrace(
+    JNIEnv* env,
+    jobject,
+    jstring path
+) {
+    const std::string content = to_string(env, path);
+    install_native_crash_trace(content.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL
