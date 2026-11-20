@@ -428,10 +428,10 @@ open class StageAActivity : Activity() {
         targetIntent: Intent,
         requestCode: Int
     ): Boolean {
-        if (!mirrorMode || isFinishing || isDestroyed) return false
+        if (isFinishing || isDestroyed) return false
         val activeSession = session ?: return false
         val parent = current ?: return false
-        val presentationRoot = mirrorRoot ?: return false
+        val presentationRoot = mirrorRoot ?: root ?: return false
         if (parent.isFinishing) return false
 
         // The parent may call finish() as soon as startActivity returns
@@ -441,27 +441,33 @@ open class StageAActivity : Activity() {
         captureMirrorSnapshotForTransition()
         val parentDecor = parent.window.decorView
         val instrumentation = activeSession.instrumentation
-        withTargetLoader {
-            if (targetResumed) {
-                runCatching { instrumentation.callActivityOnPause(parent) }
-                    .onFailure { Log.w(TAG, "parent onPause failed", it) }
-            }
-            if (targetStarted) {
-                if (!TargetLifecycle.perform(
-                        parent,
-                        "performStop",
-                        arrayOf<Any?>(false, "mirror child open"),
-                        arrayOf<Any?>(false),
-                        emptyArray<Any?>()
-                    )
-                ) {
-                    runCatching { instrumentation.callActivityOnStop(parent) }
-                        .onFailure { Log.w(TAG, "parent onStop failed", it) }
+        if (mirrorMode) {
+            withTargetLoader {
+                if (targetResumed) {
+                    runCatching { instrumentation.callActivityOnPause(parent) }
+                        .onFailure { Log.w(TAG, "parent onPause failed", it) }
+                }
+                if (targetStarted) {
+                    if (!TargetLifecycle.perform(
+                            parent,
+                            "performStop",
+                            arrayOf<Any?>(false, "mirror child open"),
+                            arrayOf<Any?>(false),
+                            emptyArray<Any?>()
+                        )
+                    ) {
+                        runCatching { instrumentation.callActivityOnStop(parent) }
+                            .onFailure { Log.w(TAG, "parent onStop failed", it) }
+                    }
                 }
             }
+            if (targetResumed) {
+                dispatchTargetApplicationLifecycle("dispatchActivityPaused", parent)
+            }
+            if (targetStarted) {
+                dispatchTargetApplicationLifecycle("dispatchActivityStopped", parent)
+            }
         }
-        if (targetResumed) dispatchTargetApplicationLifecycle("dispatchActivityPaused", parent)
-        if (targetStarted) dispatchTargetApplicationLifecycle("dispatchActivityStopped", parent)
         targetResumed = false
         targetStarted = false
         targetStopped = true
@@ -487,7 +493,9 @@ open class StageAActivity : Activity() {
 
         current = child
         currentPackageName = activeSession.spec.packageName
-        dispatchTargetApplicationLifecycle("dispatchActivityCreated", child)
+        if (mirrorMode) {
+            dispatchTargetApplicationLifecycle("dispatchActivityCreated", child)
+        }
         targetStarted = false
         targetPostCreated = false
         targetRestored = false
@@ -517,7 +525,9 @@ open class StageAActivity : Activity() {
             }
         }
         targetStarted = true
-        dispatchTargetApplicationLifecycle("dispatchActivityStarted", child)
+        if (mirrorMode) {
+            dispatchTargetApplicationLifecycle("dispatchActivityStarted", child)
+        }
         callTargetRestoreState(child)
         callTargetPostCreate(child)
         withTargetLoader {
@@ -535,11 +545,17 @@ open class StageAActivity : Activity() {
             }
         }
         targetResumed = true
-        dispatchTargetApplicationLifecycle("dispatchActivityResumed", child)
+        if (mirrorMode) {
+            dispatchTargetApplicationLifecycle("dispatchActivityResumed", child)
+        }
         attachTarget(child)
         applyTargetActionBarInset(child)
         giveTargetPrivateToken(child)
-        Log.d(TAG, "mirror child opened ${child.javaClass.name} depth=${mirrorBackStack.size}")
+        Log.d(
+            TAG,
+            "child target opened ${child.javaClass.name} " +
+                "depth=${mirrorBackStack.size} mirror=$mirrorMode"
+        )
         return true
     }
 
@@ -578,7 +594,7 @@ open class StageAActivity : Activity() {
         }
         current = parent
         currentPackageName = session?.spec?.packageName
-        val frame = mirrorRoot ?: return
+        val frame = mirrorRoot ?: root ?: return
         frame.removeAllViews()
         addMirrorSnapshotBackground(frame)
         frame.addView(
@@ -594,21 +610,23 @@ open class StageAActivity : Activity() {
         targetAttached = false
         targetResumed = false
         targetStopped = false
-        withTargetLoader {
-            TargetLifecycle.perform(parent, "performRestart", emptyArray<Any?>())
-            if (!TargetLifecycle.perform(
-                    parent,
-                    "performStart",
-                    arrayOf<Any?>("mirror parent start"),
-                    emptyArray<Any?>()
-                )
-            ) {
-                runCatching { session?.instrumentation?.callActivityOnStart(parent) }
-                    .onFailure { Log.w(TAG, "parent onStart failed", it) }
+        if (mirrorMode) {
+            withTargetLoader {
+                TargetLifecycle.perform(parent, "performRestart", emptyArray<Any?>())
+                if (!TargetLifecycle.perform(
+                        parent,
+                        "performStart",
+                        arrayOf<Any?>("mirror parent start"),
+                        emptyArray<Any?>()
+                    )
+                ) {
+                    runCatching { session?.instrumentation?.callActivityOnStart(parent) }
+                        .onFailure { Log.w(TAG, "parent onStart failed", it) }
+                }
             }
+            dispatchTargetApplicationLifecycle("dispatchActivityStarted", parent)
         }
         targetStarted = true
-        dispatchTargetApplicationLifecycle("dispatchActivityStarted", parent)
         if (entry.requestCode >= 0) {
             session?.loader?.let { resultData?.setExtrasClassLoader(it) }
             withTargetLoader {
@@ -624,22 +642,24 @@ open class StageAActivity : Activity() {
                 }.onFailure { Log.w(TAG, "parent onActivityResult failed", it) }
             }
         }
-        withTargetLoader {
-            val performed = TargetLifecycle.perform(
-                parent,
-                "performResume",
-                arrayOf<Any?>(false, "mirror parent resume"),
-                emptyArray<Any?>()
-            )
-            if (!performed) {
-                runCatching { session?.instrumentation?.callActivityOnResume(parent) }
-                    .onFailure { Log.w(TAG, "parent onResume failed", it) }
-                runCatching { TargetLifecycle.postResume(parent) }
-                    .onFailure { Log.w(TAG, "parent onPostResume failed", it) }
+        if (mirrorMode) {
+            withTargetLoader {
+                val performed = TargetLifecycle.perform(
+                    parent,
+                    "performResume",
+                    arrayOf<Any?>(false, "mirror parent resume"),
+                    emptyArray<Any?>()
+                )
+                if (!performed) {
+                    runCatching { session?.instrumentation?.callActivityOnResume(parent) }
+                        .onFailure { Log.w(TAG, "parent onResume failed", it) }
+                    runCatching { TargetLifecycle.postResume(parent) }
+                        .onFailure { Log.w(TAG, "parent onPostResume failed", it) }
+                }
             }
+            dispatchTargetApplicationLifecycle("dispatchActivityResumed", parent)
         }
         targetResumed = true
-        dispatchTargetApplicationLifecycle("dispatchActivityResumed", parent)
         attachTarget(parent)
         title = session?.spec?.let { "${it.label} · ${it.instanceId}" }
         Log.d(TAG, "mirror parent restored ${parent.javaClass.name} depth=${mirrorBackStack.size}")
@@ -1666,7 +1686,7 @@ open class StageAActivity : Activity() {
             return
         }
         if (target.isFinishing) {
-            if (mirrorMode && mirrorBackStack.isNotEmpty()) popMirrorTarget() else finish()
+            if (mirrorBackStack.isNotEmpty()) popMirrorTarget() else finish()
             return
         }
         val callbacksBefore = hasEnabledBackCallbacks(target)
@@ -1712,7 +1732,7 @@ open class StageAActivity : Activity() {
             finish()
             return
         }
-        if (mirrorMode && target.isFinishing) {
+        if (target.isFinishing) {
             if (mirrorBackStack.isNotEmpty()) popMirrorTarget() else finish()
             return
         }
@@ -1735,7 +1755,7 @@ open class StageAActivity : Activity() {
                 declaring?.name?.startsWith("androidx.appcompat.app.AppCompatActivity") == true
             if (baseHandlesBack) {
                 Log.d(TAG, "back unhandled by ${target.javaClass.name}; closing")
-                if (mirrorMode && mirrorBackStack.isNotEmpty()) {
+                if (mirrorBackStack.isNotEmpty()) {
                     popMirrorTarget()
                 } else {
                     finish()

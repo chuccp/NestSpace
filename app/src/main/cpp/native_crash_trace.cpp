@@ -1,3 +1,5 @@
+#include "native_environment_internal.h"
+
 #include <android/log.h>
 #include <csignal>
 #include <cerrno>
@@ -10,6 +12,7 @@
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include <unwind.h>
 
@@ -60,11 +63,41 @@ void write_hex(uintptr_t value) {
     write(g_trace_fd, buffer, offset);
 }
 
-void crash_handler(int sig, siginfo_t*, void*) {
+void crash_handler(int sig, siginfo_t* info, void* raw_context) {
     if (g_trace_fd >= 0) {
         const char header[] = "signal\n";
         write(g_trace_fd, header, sizeof(header) - 1);
         write_hex(static_cast<uintptr_t>(sig));
+        if (info != nullptr) {
+            const char fault_header[] = "fault\n";
+            write(g_trace_fd, fault_header, sizeof(fault_header) - 1);
+            write_hex(reinterpret_cast<uintptr_t>(info->si_addr));
+        }
+        if (raw_context != nullptr) {
+            auto* context = static_cast<ucontext_t*>(raw_context);
+            const char pc_header[] = "pc\n";
+            const char sp_header[] = "sp\n";
+            const char regs_header[] = "regs\n";
+            const char code_header[] = "code\n";
+            write(g_trace_fd, pc_header, sizeof(pc_header) - 1);
+            write_hex(static_cast<uintptr_t>(context->uc_mcontext.pc));
+            write(g_trace_fd, sp_header, sizeof(sp_header) - 1);
+            write_hex(static_cast<uintptr_t>(context->uc_mcontext.sp));
+            write(g_trace_fd, regs_header, sizeof(regs_header) - 1);
+            for (int index = 0; index < 31; ++index) {
+                write_hex(
+                    static_cast<uintptr_t>(context->uc_mcontext.regs[index])
+                );
+            }
+            const uintptr_t pc = context->uc_mcontext.pc;
+            const uintptr_t code_start = (pc & ~0xffU) - 0x100;
+            write(g_trace_fd, code_header, sizeof(code_header) - 1);
+            write(
+                g_trace_fd,
+                reinterpret_cast<const void*>(code_start),
+                0x300
+            );
+        }
 
         uintptr_t frames[kMaxFrames]{};
         BacktraceState state{frames, 0, kMaxFrames};
@@ -90,16 +123,12 @@ void install_handler(int signal_number) {
 bool install_process_guard() {
     struct sock_filter filter[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_kill, 5, 0),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 4, 0),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ptrace, 3, 0),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_exit, 2, 0),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_exit_group, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 1, 0),
         BPF_STMT(
             BPF_RET | BPF_K,
             SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
         ),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
     struct sock_fprog program {
         static_cast<unsigned short>(
@@ -116,6 +145,14 @@ bool install_process_guard() {
         );
         return false;
     }
+    if (syscall(
+            SYS_seccomp,
+            SECCOMP_SET_MODE_FILTER,
+            SECCOMP_FILTER_FLAG_TSYNC,
+            &program
+        ) == 0) {
+        return true;
+    }
     if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) != 0) {
         __android_log_print(
             ANDROID_LOG_WARN,
@@ -131,30 +168,19 @@ bool install_process_guard() {
 bool install_kill_guard() {
     struct sock_filter filter[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_kill, 0, 1),
-        BPF_STMT(
-            BPF_RET | BPF_K,
-            SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
-        ),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 0, 1),
-        BPF_STMT(
-            BPF_RET | BPF_K,
-            SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
-        ),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ptrace, 0, 1),
-        BPF_STMT(
-            BPF_RET | BPF_K,
-            SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
-        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_kill, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 1, 0),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(
+            BPF_RET | BPF_K,
+            SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)
+        ),
     };
     struct sock_fprog program {
         static_cast<unsigned short>(sizeof(filter) / sizeof(filter[0])),
         filter
     };
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
-        return false;
-    }
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
     if (syscall(
             SYS_seccomp,
             SECCOMP_SET_MODE_FILTER,
@@ -163,6 +189,12 @@ bool install_kill_guard() {
         ) == 0) {
         return true;
     }
+    __android_log_print(
+        ANDROID_LOG_WARN,
+        kLogTag,
+        "seccomp TSYNC failed: %s; falling back to current thread",
+        strerror(errno)
+    );
     return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
 }
 
@@ -196,6 +228,7 @@ extern "C" void install_native_crash_trace(const char* path) {
     install_handler(SIGSEGV);
     install_handler(SIGBUS);
     install_handler(SIGILL);
+    nestspace::install_process_signal_hooks();
     const bool process_guard =
         getenv("NESTSPACE_PROCESS_GUARD") != nullptr &&
         install_process_guard();

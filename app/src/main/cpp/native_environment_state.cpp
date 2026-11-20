@@ -1,5 +1,6 @@
 #include "native_environment_internal.h"
 
+#include <android/log.h>
 #include <fcntl.h>
 #include <linux/memfd.h>
 #include <linux/stat.h>
@@ -13,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <climits>
 #include <cstdarg>
 #include <cstdint>
@@ -20,9 +22,11 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace nestspace {
@@ -32,6 +36,8 @@ std::atomic<const Environment*> g_environment{nullptr};
 std::mutex g_environment_publish_lock;
 std::vector<std::unique_ptr<Environment>> g_environment_history;
 std::mutex g_virtual_proc_cache_lock;
+std::mutex g_thread_view_lock;
+std::unordered_map<pid_t, std::string> g_thread_view_names;
 
 constexpr auto kVirtualProcCacheTtl = std::chrono::milliseconds(200);
 
@@ -50,6 +56,80 @@ struct FdPathSlot {
 };
 std::array<FdPathSlot, kTrackedFdLimit> g_fd_paths{};
 
+std::string read_text_file(const char* path);
+
+std::string process_thread_name(const Environment* environment) {
+    if (environment == nullptr) return {};
+    std::string name = environment->process_name;
+    const size_t separator = name.find_last_of(":/");
+    if (separator != std::string::npos) name = name.substr(separator + 1);
+    if (name.size() > 15) name.erase(0, name.size() - 15);
+    return name;
+}
+
+std::vector<std::pair<pid_t, std::string>> virtual_task_threads(
+    const Environment* environment
+) {
+    std::vector<std::pair<pid_t, std::string>> result;
+    if (environment == nullptr) return result;
+    const std::string process_name = process_thread_name(environment);
+    const pid_t base = getpid();
+    const std::string binder_prefix =
+        "binder:" + std::to_string(base) + "_";
+    const std::string names[] = {
+        process_name,
+        "Signal Catcher",
+        "perfetto_hprof_",
+        "Jit thread pool",
+        "HeapTaskDaemon",
+        "ReferenceQueueD",
+        "FinalizerDaemon",
+        "FinalizerWatchd",
+        binder_prefix + "1",
+        binder_prefix + "2",
+        binder_prefix + "3",
+        "Profile Saver",
+    };
+    std::lock_guard<std::mutex> guard(g_thread_view_lock);
+    g_thread_view_names.clear();
+    for (size_t index = 0; index < std::size(names); ++index) {
+        const pid_t task_id = base + static_cast<pid_t>(index);
+        g_thread_view_names[task_id] = names[index];
+        result.emplace_back(task_id, names[index]);
+    }
+    return result;
+}
+
+std::string ensure_thread_view(const Environment* environment) {
+    if (environment == nullptr) return {};
+    const std::string parent = environment->data_root +
+        "/.nestspace/task-view";
+    mkdir(parent.c_str(), 0700);
+    const std::string root = parent + "/" + std::to_string(getpid());
+    mkdir(root.c_str(), 0700);
+    for (const auto& [task_id, name] : virtual_task_threads(environment)) {
+        const std::string task_dir = root + "/" + std::to_string(task_id);
+        mkdir(task_dir.c_str(), 0700);
+        const std::string comm_path = task_dir + "/comm";
+        const int fd = open(
+            comm_path.c_str(),
+            O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC,
+            0600
+        );
+        if (fd < 0) continue;
+        const std::string value = name + "\n";
+        write(fd, value.data(), value.size());
+        close(fd);
+    }
+    return root;
+}
+
+std::string virtual_task_comm(pid_t task_id) {
+    std::lock_guard<std::mutex> guard(g_thread_view_lock);
+    const auto found = g_thread_view_names.find(task_id);
+    return found == g_thread_view_names.end() ? std::string{} : found->second;
+}
+
 bool starts_with_prefix(const char* path, const std::string& prefix) {
     if (path == nullptr || prefix.empty()) return false;
     const size_t length = prefix.size();
@@ -63,13 +143,90 @@ std::string data_alias_path(const std::string& path) {
     return "/data/data/" + path.substr(kUserPrefix.size());
 }
 
+bool virtual_task_suffix(
+    const char* path,
+    pid_t* tid,
+    const char** suffix
+) {
+    if (path == nullptr || tid == nullptr || suffix == nullptr) return false;
+    const char* cursor = nullptr;
+    if (strncmp(path, "/proc/self/task/", 16) == 0) {
+        cursor = path + 16;
+    } else if (strncmp(path, "/proc/", 6) == 0) {
+        char* pid_end = nullptr;
+        const long pid = strtol(path + 6, &pid_end, 10);
+        if (pid != getpid() ||
+            pid_end == path + 6 ||
+            strncmp(pid_end, "/task/", 6) != 0) {
+            return false;
+        }
+        cursor = pid_end + 6;
+    } else {
+        return false;
+    }
+    char* task_end = nullptr;
+    const long parsed_tid = strtol(cursor, &task_end, 10);
+    if (task_end == cursor || parsed_tid <= 0 || *task_end != '/') {
+        return false;
+    }
+    *tid = static_cast<pid_t>(parsed_tid);
+    *suffix = task_end;
+    return true;
+}
+
+bool is_task_directory(const char* path) {
+    if (path == nullptr) return false;
+    if (strcmp(path, "/proc/self/task") == 0) return true;
+    if (strncmp(path, "/proc/", 6) != 0) return false;
+    char* end = nullptr;
+    const long pid = strtol(path + 6, &end, 10);
+    return pid == getpid() && end != path + 6 &&
+        strcmp(end, "/task") == 0;
+}
+
 const char* virtual_proc_path(const char* path) {
     if (path == nullptr) return nullptr;
     if (strcmp(path, "/proc/self/status") == 0) return "/proc/self/status";
     if (strcmp(path, "/proc/self/cmdline") == 0) return "/proc/self/cmdline";
     if (strcmp(path, "/proc/self/maps") == 0) return "/proc/self/maps";
     if (strcmp(path, "/proc/self/mountinfo") == 0) return "/proc/self/mountinfo";
+    if (is_task_directory(path)) return "/proc/self/task";
+    pid_t tid = 0;
+    const char* task_suffix = nullptr;
+    if (virtual_task_suffix(path, &tid, &task_suffix)) {
+        if (strcmp(task_suffix, "/comm") == 0 ||
+            strcmp(task_suffix, "/status") == 0) {
+            return "/proc/self/task";
+        }
+    }
+    if (strncmp(path, "/proc/", 6) != 0) return nullptr;
+    char* end = nullptr;
+    const long pid = strtol(path + 6, &end, 10);
+    if (end == path + 6 || pid <= 0 ||
+        (pid != getpid() && pid != getppid()) || *end != '/') {
+        return nullptr;
+    }
+    if (strcmp(end, "/status") == 0) return "/proc/self/status";
+    if (strcmp(end, "/cmdline") == 0) return "/proc/self/cmdline";
+    if (strcmp(end, "/maps") == 0) return "/proc/self/maps";
+    if (strcmp(end, "/mountinfo") == 0) return "/proc/self/mountinfo";
     return nullptr;
+}
+
+bool proc_readable(const char* path) {
+    return virtual_proc_path(path) != nullptr;
+}
+
+std::string proc_path(pid_t pid, const char* name) {
+    return "/proc/" + std::to_string(pid) + "/" + name;
+}
+
+bool proc_suffix(const char* path, const char* suffix) {
+    if (path == nullptr) return false;
+    const size_t length = strlen(path);
+    const size_t suffix_length = strlen(suffix);
+    return length >= suffix_length &&
+        strcmp(path + length - suffix_length, suffix) == 0;
 }
 
 void record_fd_path(int fd, const char* path) {
@@ -154,8 +311,14 @@ std::string filter_host_runtime_lines(
     return filtered;
 }
 
-std::string virtualized_status(const Environment* environment) {
-    const std::string real = read_text_file("/proc/self/status");
+std::string virtualized_status(
+    const Environment* environment,
+    pid_t pid,
+    pid_t reported_pid = -1,
+    const std::string& thread_name = {}
+) {
+    const std::string path = proc_path(pid, "status");
+    const std::string real = read_text_file(path.c_str());
     if (real.empty() || environment == nullptr) return {};
     std::string virtual_value;
     virtual_value.reserve(real.size() + 64);
@@ -166,14 +329,30 @@ std::string virtualized_status(const Environment* environment) {
                                                        : end - offset;
         const std::string line = real.substr(offset, length);
         if (line.rfind("Name:", 0) == 0) {
-            std::string name = environment->process_name;
+            std::string name = thread_name.empty()
+                ? environment->process_name
+                : thread_name;
             const size_t separator = name.find_last_of(":/");
             if (separator != std::string::npos) name = name.substr(separator + 1);
-            if (name.size() > 15) name.resize(15);
+            if (name.size() > 15) name.erase(0, name.size() - 15);
             virtual_value += "Name:\t" + name;
         } else if (line.rfind("Uid:", 0) == 0) {
             const std::string uid = std::to_string(environment->observed_uid);
             virtual_value += "Uid:\t" + uid + "\t" + uid + "\t" + uid + "\t" + uid;
+        } else if (reported_pid > 0 &&
+                   (line.rfind("Pid:", 0) == 0 ||
+                    line.rfind("NSpid:", 0) == 0)) {
+            virtual_value += line.substr(0, line.find(':') + 1) +
+                "\t" + std::to_string(reported_pid);
+        } else if (line.rfind("TracerPid:", 0) == 0) {
+            virtual_value += "TracerPid:\t0";
+        } else if (line.rfind("NoNewPrivs:", 0) == 0) {
+            virtual_value += "NoNewPrivs:\t0";
+        } else if (line.rfind("Seccomp_filters:", 0) == 0) {
+            virtual_value += "Seccomp_filters:\t1";
+        } else if (line.rfind("Threads:", 0) == 0) {
+            const size_t count = virtual_task_threads(environment).size();
+            virtual_value += "Threads:\t" + std::to_string(count);
         } else {
             virtual_value += line;
         }
@@ -546,15 +725,53 @@ bool virtual_path_from_actual(
 
 std::string virtualized_proc_content(const char* path) {
     const Environment* environment = current_environment();
-    if (environment == nullptr || path == nullptr) return {};
-    if (strcmp(path, "/proc/self/status") == 0) {
-        return virtualized_status(environment);
+    if (environment == nullptr || !proc_readable(path)) return {};
+    pid_t task_id = 0;
+    const char* task_suffix = nullptr;
+    if (virtual_task_suffix(path, &task_id, &task_suffix)) {
+        if (strcmp(task_suffix, "/comm") == 0) {
+            std::string value = virtual_task_comm(task_id);
+            if (value.empty()) return {};
+            __android_log_print(
+                ANDROID_LOG_DEBUG,
+                "NestSpaceNative",
+                "target-thread-comm tid=%d name=%s",
+                task_id,
+                value.c_str()
+            );
+            value.push_back('\n');
+            return value;
+        }
+        if (strcmp(task_suffix, "/status") == 0) {
+            const std::string thread_name = virtual_task_comm(task_id);
+            if (thread_name.empty()) return {};
+            return virtualized_status(
+                environment,
+                getpid(),
+                task_id,
+                thread_name
+            );
+        }
     }
-    if (strcmp(path, "/proc/self/cmdline") == 0) {
+    pid_t pid = getpid();
+    if (strncmp(path, "/proc/self/", 11) != 0) {
+        char* end = nullptr;
+        const long parsed = strtol(path + 6, &end, 10);
+        if (parsed <= 0 ||
+            (parsed != getpid() && parsed != getppid())) {
+            return {};
+        }
+        pid = static_cast<pid_t>(parsed);
+    }
+    if (proc_suffix(path, "/status")) {
+        return virtualized_status(environment, pid);
+    }
+    if (proc_suffix(path, "/cmdline")) {
         return environment->process_name + '\0';
     }
-    if (strcmp(path, "/proc/self/maps") == 0) {
-        std::string value = read_text_file("/proc/self/maps");
+    if (proc_suffix(path, "/maps")) {
+        const std::string proc_maps = proc_path(pid, "maps");
+        std::string value = read_text_file(proc_maps.c_str());
         replace_all(
             &value,
             environment->actual_base_apk_path,
@@ -597,8 +814,9 @@ std::string virtualized_proc_content(const char* path) {
         );
         return filter_host_runtime_lines(value, environment);
     }
-    if (strcmp(path, "/proc/self/mountinfo") == 0) {
-        std::string value = read_text_file("/proc/self/mountinfo");
+    if (proc_suffix(path, "/mountinfo")) {
+        const std::string proc_mountinfo = proc_path(pid, "mountinfo");
+        std::string value = read_text_file(proc_mountinfo.c_str());
         replace_all(
             &value,
             environment->actual_base_apk_path,
@@ -637,7 +855,17 @@ int open_virtual_proc(const char* path, int flags) {
     const Environment* environment = current_environment();
     if (environment == nullptr) return -1;
     record_hook_event(kHookEventProc);
-
+    if (is_task_directory(path)) {
+        const std::string root = ensure_thread_view(environment);
+        if (root.empty()) return -1;
+        const int fd = open(
+            root.c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC
+        );
+        if (fd < 0) return -1;
+        record_fd_path(fd, path);
+        return fd;
+    }
     std::string content;
     const auto now = std::chrono::steady_clock::now();
     {
@@ -652,7 +880,7 @@ int open_virtual_proc(const char* path, int flags) {
         }
     }
     if (content.empty()) {
-        content = virtualized_proc_content(virtual_path);
+        content = virtualized_proc_content(path);
     }
     if (content.empty()) return -1;
     {

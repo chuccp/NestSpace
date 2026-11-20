@@ -22,10 +22,27 @@ class ContainerHostInstrumentation : Instrumentation() {
         className: String,
         intent: Intent?
     ): Activity {
-        val type = Class.forName(className, false, cl)
-        if (StageAActivity::class.java.isAssignableFrom(type)) {
+        val type = runCatching {
+            Class.forName(className, false, cl)
+        }.getOrElse {
+            Class.forName(
+                className,
+                false,
+                ContainerHostInstrumentation::class.java.classLoader
+            )
+        }
+        val hostStage = StageAActivity::class.java.isAssignableFrom(type)
+        if (hostStage) {
             ContainerSessions.prepareHostActivityLaunch()
         }
-        return super.newActivity(cl, className, intent)
+        return super.newActivity(
+            if (hostStage) {
+                ContainerHostInstrumentation::class.java.classLoader
+            } else {
+                cl
+            },
+            className,
+            intent
+        )
     }
 }

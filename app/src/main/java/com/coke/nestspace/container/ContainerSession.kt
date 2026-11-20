@@ -60,6 +60,7 @@ import android.content.res.Resources
 import dalvik.system.PathClassLoader
 import android.os.Bundle
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -1166,8 +1167,66 @@ class ContainerSession private constructor(
                 return true
             }
         }
+        val currentSlot = ContainerProcessPool.currentSlot()
+        if (!host.isMirrorMode() &&
+            targetProcess == spec.targetProcessName &&
+            currentSlot >= 0
+        ) {
+            val navigationSuffix = info.name
+                .substringAfterLast('.')
+                .replace(Regex("[^A-Za-z0-9_]"), "_")
+                .take(24)
+            val navigationProcess = "$targetProcess:nav_$navigationSuffix"
+            val launchNavigationSlot = {
+                ContainerProcessBrokerClient.acquireAsync(
+                    host,
+                    spec.packageName,
+                    spec.instanceId,
+                    navigationProcess
+                ) { slot ->
+                    if (slot == null) {
+                        Log.w(
+                            TAG,
+                            "no navigation slot for ${info.name} process=$navigationProcess"
+                        )
+                        return@acquireAsync
+                    }
+                    launchOnHost(
+                        host,
+                        hostPackage,
+                        info,
+                        ContainerProcessPool.activityClass(slot),
+                        targetProcess,
+                        intent,
+                        requestCode,
+                        forceSessionBootstrap = true
+                    )
+                }
+            }
+            val targetIntent = Intent(intent).setClassName(
+                spec.packageName,
+                info.name
+            )
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                if (host.openMirrorChildTarget(info.name, targetIntent, requestCode)) {
+                    return true
+                }
+                launchNavigationSlot()
+            } else {
+                host.runOnUiThread {
+                    if (!host.openMirrorChildTarget(
+                            info.name,
+                            targetIntent,
+                            requestCode
+                        )
+                    ) {
+                        launchNavigationSlot()
+                    }
+                }
+            }
+            return true
+        }
         if (targetProcess == spec.targetProcessName) {
-            val currentSlot = ContainerProcessPool.currentSlot()
             val launchHostClass = when {
                 info.launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_INSTANCE &&
                     currentSlot in 0 until ContainerProcessPool.SLOT_COUNT ->
@@ -1238,7 +1297,8 @@ class ContainerSession private constructor(
         hostClass: Class<out StageAActivity>,
         targetProcess: String,
         intent: Intent,
-        requestCode: Int
+        requestCode: Int,
+        forceSessionBootstrap: Boolean = false
     ): Boolean {
         val targetSessionId = ContainerProcessRouter.sessionId(
             spec.packageName,
@@ -1256,7 +1316,7 @@ class ContainerSession private constructor(
                 putExtra(StageAActivity.EXTRA_SESSION_ID, targetSessionId)
                 putExtra(StageAActivity.EXTRA_TARGET_PROCESS, targetProcess)
                 putExtra(StageAActivity.EXTRA_APP_LABEL, spec.label)
-                if (targetProcess != spec.targetProcessName) {
+                if (targetProcess != spec.targetProcessName || forceSessionBootstrap) {
                     // The target slot process may not have created this
                     // subprocess session yet; let it build one from the
                     // launch descriptor instead of reporting "session lost".
@@ -1814,6 +1874,10 @@ class ContainerSession private constructor(
                 VirtualEnvironmentRegistry.identitySnapshot(),
                 HostIdentity.packageName
             )
+            // Packer checks run during Application class loading. Install the
+            // process guard before attachBaseContext, not only before the
+            // first target Activity is created.
+            NativeEnvironmentBridge.installCrashTrace(spec.dataDir)
             NativeEnvironmentBridge.snapshot()?.let { native ->
                 Log.d(
                     TAG,
@@ -1930,7 +1994,6 @@ class ContainerSession private constructor(
                 detail = "application=${application.javaClass.simpleName}"
             )
             Log.d(TAG, "application attached: ${application.javaClass.name}")
-            NativeEnvironmentBridge.installKillGuard()
             val deviceProtectedContext = context.createDeviceProtectedStorageContext()
             val environmentValidation = VirtualEnvironmentValidator.validate(
                 virtualEnvironment,

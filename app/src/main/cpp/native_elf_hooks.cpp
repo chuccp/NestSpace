@@ -793,6 +793,7 @@ void record_syscall_event(jlong number) {
 
 HookState refresh_hooks(bool scan_elf_fallback) {
     initialize_real_functions();
+    install_property_hooks();
     std::lock_guard<std::mutex> guard(g_hook_lock);
     dl_iterate_phdr(hook_callback, nullptr);
     if (scan_elf_fallback) scan_maps_for_target_modules();

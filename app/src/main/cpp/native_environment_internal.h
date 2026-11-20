@@ -154,6 +154,13 @@ using PropertyReadCallbackFunction = void (*)(
 using PropertyReadFunction = int (*)(const void*, char*, char*);
 using PropertySerialFunction = uint32_t (*)(const void*);
 using DlopenFunction = void* (*)(const char*, int);
+using TgkillFunction = int (*)(pid_t, pid_t, int);
+using ExitFunction = void (*)(int);
+using StackCheckFailFunction = void (*)();
+using PtraceFunction = long (*)(int, pid_t, void*, void*);
+using PrctlFunction = int (*)(int, unsigned long, unsigned long, unsigned long, unsigned long);
+using DlsymFunction = void* (*)(void*, const char*);
+using DlvsymFunction = void* (*)(void*, const char*, const char*);
 using DlIteratePhdrCallback = int (*)(struct dl_phdr_info*, size_t, void*);
 using DlIteratePhdrFunction = int (*)(DlIteratePhdrCallback, void*);
 using DladdrFunction = int (*)(const void*, Dl_info*);
@@ -198,6 +205,14 @@ struct RealFunctions {
     PropertyReadFunction propertyRead = nullptr;
     PropertySerialFunction propertySerial = nullptr;
     DlopenFunction dlopen = nullptr;
+    TgkillFunction tgkill = nullptr;
+    ExitFunction exitProcess = nullptr;
+    ExitFunction exitImmediately = nullptr;
+    StackCheckFailFunction stackCheckFail = nullptr;
+    PtraceFunction ptraceCall = nullptr;
+    PrctlFunction prctlCall = nullptr;
+    DlsymFunction dlsym = nullptr;
+    DlvsymFunction dlvsym = nullptr;
     DlIteratePhdrFunction dlIteratePhdr = nullptr;
     DladdrFunction dladdr = nullptr;
     AndroidDlopenExtFunction androidDlopenExt = nullptr;
@@ -206,6 +221,29 @@ struct RealFunctions {
 extern RealFunctions g_real;
 
 void initialize_real_functions();
+void install_loader_symbol_hooks();
+void install_libc_path_hooks();
+void install_process_signal_hooks();
+void install_property_hooks();
+void* hook_dlsym(void* handle, const char* name);
+void* hook_dlvsym(void* handle, const char* name, const char* version);
+int hook_open(const char* path, int flags, ...);
+int hook_open64(const char* path, int flags, ...);
+int hook_openat(int dirfd, const char* path, int flags, ...);
+int hook_openat64(int dirfd, const char* path, int flags, ...);
+extern "C" int hook_tgkill_entry(pid_t group, pid_t thread, int signal);
+long hook_syscall(long number, ...);
+void hook_exit(int status);
+void hook_exit_immediately(int status);
+void hook_stack_check_fail();
+long hook_ptrace(int request, pid_t pid, void* address, void* data);
+int hook_prctl(
+    int option,
+    unsigned long argument2,
+    unsigned long argument3,
+    unsigned long argument4,
+    unsigned long argument5
+);
 void* replacement_for(const char* name);
 void* loader_replacement_for(const char* name);
 
@@ -216,6 +254,8 @@ void hook_property_read_callback(
     PropertyCallback callback,
     void* cookie
 );
+int hook_property_read(const void* property, char* name, char* value);
+uint32_t hook_property_serial(const void* property);
 
 struct HookState {
     int patch_count = 0;

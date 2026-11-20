@@ -1,7 +1,9 @@
 package com.coke.nestspace.browser
 
 import android.content.Context
+import android.app.Application
 import android.os.Handler
+import android.os.Build
 import android.os.Looper
 import android.util.Log
 import androidx.webkit.ProxyConfig
@@ -11,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.Executor
+import java.io.File
 
 /**
  * Applies the persisted proxy to every WebView in the main process through
@@ -54,11 +57,27 @@ object BrowserProxyManager {
      */
     fun apply(context: Context, onSettled: ((Status) -> Unit)? = null) {
         val app = context.applicationContext
+        if (!shouldApplyInProcess(app)) {
+            Log.d(TAG, "WebView proxy skipped in isolated process")
+            return
+        }
         if (Looper.myLooper() == Looper.getMainLooper()) {
             applyOnMain(app, onSettled)
         } else {
             mainHandler.post { applyOnMain(app, onSettled) }
         }
+    }
+
+    private fun shouldApplyInProcess(context: Context): Boolean {
+        val processName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Application.getProcessName()
+        } else {
+            runCatching {
+                File("/proc/self/cmdline").readText().trim('\u0000')
+            }.getOrDefault("")
+        }
+        return processName == context.packageName ||
+            processName == context.packageName + ":c1"
     }
 
     private fun applyOnMain(context: Context, onSettled: ((Status) -> Unit)?) {
