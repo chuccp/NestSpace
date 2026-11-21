@@ -13,6 +13,11 @@ public final class NativeProbe {
     }
 
     public static native String nativeEnvironmentSummary();
+    public static native String nativeHookProbe(
+        String dataDir,
+        String apkPath,
+        String externalDir
+    );
     public static native String nativeOpenPath(String path);
     public static native String nativeFopenPath(String path);
     public static native String nativeSyscallOpenPath(String path);

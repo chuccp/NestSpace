@@ -16,19 +16,21 @@ data class VirtualStorageProbeResult(
 object VirtualStorageProbe {
     fun probe(
         context: Context,
-        credentialRoot: File
+        credentialRoot: File,
+        packageName: String,
+        instanceId: String
     ): VirtualStorageProbeResult {
         val expectedDeviceRoot = VirtualStorageLayout.deviceProtectedRoot(credentialRoot)
         val deviceContext = runCatching {
             context.createDeviceProtectedStorageContext()
         }.getOrNull()
-        val actualDeviceRoot = deviceContext?.dataDir
         val deviceProtected = deviceContext?.isDeviceProtectedStorage == true &&
-            actualDeviceRoot != null &&
-            actualDeviceRoot.absolutePath == expectedDeviceRoot.absolutePath &&
             canWrite(expectedDeviceRoot)
 
-        val externalRoot = runCatching { context.externalCacheDir }.getOrNull()
+        val externalRoot = VirtualStorageLayout.externalInstanceRoot(
+            packageName,
+            instanceId
+        )
         val external = externalRoot != null && canWrite(externalRoot)
 
         return VirtualStorageProbeResult(

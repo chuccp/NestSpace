@@ -58,7 +58,8 @@ data class VirtualEnvironment(
     val updateTimeMillis: Long,
     val virtualApkPaths: List<String> = apkPaths,
     val virtualSplitApkPaths: List<String> = splitApkPaths,
-    val virtualNativeLibraryDir: String? = nativeLibraryDir
+    val virtualNativeLibraryDir: String? = nativeLibraryDir,
+    val supplementaryGroups: List<Int> = emptyList()
 )
 
 data class VirtualIdentitySnapshot(
@@ -82,22 +83,37 @@ data class VirtualIdentitySnapshot(
 }
 
 internal object VirtualEnvironmentFactory {
+    private fun observedUid(spec: ContainerLaunchSpec): Int {
+        if (spec.targetUid > 0) return spec.targetUid
+        return 10_000 + (spec.packageName.hashCode() and 0x3fff)
+    }
+
     fun create(
         spec: ContainerLaunchSpec,
         nativeLibraryDir: String?,
         runtimeCapabilities: RuntimeCapabilityReport,
-        installLayout: VirtualInstallLayout
+        installLayout: VirtualInstallLayout,
+        packageGids: List<Int> = emptyList()
     ): VirtualEnvironment {
         val dataRoot = File(spec.dataDir)
         val now = System.currentTimeMillis()
+        val targetUid = observedUid(spec)
+        val supplementaryGroups = buildList {
+            addAll(packageGids)
+            add(9_997)
+            add(targetUid + 10_000)
+            add(targetUid + 40_000)
+        }.distinct()
         return VirtualEnvironment(
             instanceId = spec.instanceId,
             packageName = spec.packageName,
             hostUid = ContainerIdentity.hostUid(),
-            observedUid = ContainerIdentity.hostUid(),
+            observedUid = targetUid,
             virtualPid = Process.myPid(),
             dataRoot = dataRoot.absolutePath,
-            externalDataRoot = runtimeCapabilities.externalDataRoot,
+            externalDataRoot = VirtualStorageLayout
+                .externalInstanceRoot(spec.packageName, spec.instanceId)
+                .absolutePath,
             deviceProtectedDataRoot = VirtualStorageLayout
                 .deviceProtectedRoot(dataRoot)
                 .absolutePath,
@@ -123,7 +139,8 @@ internal object VirtualEnvironmentFactory {
             updateTimeMillis = spec.packageInfo.lastUpdateTime,
             virtualApkPaths = installLayout.virtualApkPaths,
             virtualSplitApkPaths = installLayout.virtualSplitApkPaths,
-            virtualNativeLibraryDir = installLayout.virtualNativeLibraryDir
+            virtualNativeLibraryDir = installLayout.virtualNativeLibraryDir,
+            supplementaryGroups = supplementaryGroups
         )
     }
 }

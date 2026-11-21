@@ -7,7 +7,7 @@ import android.util.Log
  * Target apps commonly decide whether they are running in their main process
  * with `packageName == Application.getProcessName()`. Inside the container the
  * real OS process is NestSpace, so that check fails and apps skip most of their
- * startup (AMap, for example, never initializes its module/map services).
+ * startup.
  *
  * ActivityThread.currentProcessName() returns
  * ActivityThread.mBoundApplication.processName. Make it report the virtual

@@ -128,9 +128,9 @@ class ContainerServiceManager(
             return
         }
         // Real Android services bind asynchronously: onBind runs after
-        // bindService returns. Bilibili's KDownloadService.onBind resolves a
-        // lazy producer that itself calls bindService for the same service;
-        // calling onBind inline recurses until the stack overflows.
+        // bindService returns. A target service can resolve a lazy dependency
+        // that calls bindService for the same service, so calling onBind inline
+        // can recurse until the stack overflows.
         val shouldBind = synchronized(this) {
             if (record.bindPending) {
                 false

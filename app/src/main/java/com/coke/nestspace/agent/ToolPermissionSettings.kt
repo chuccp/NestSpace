@@ -8,7 +8,8 @@ enum class ToolPermissionLevel(val storageValue: String) {
     STRICT("strict"),
     STANDARD("standard"),
     LOOSE("loose"),
-    CUSTOM("custom");
+    CUSTOM("custom"),
+    DEVELOPER("developer");
 
     val label: String
         get() = when (this) {
@@ -16,6 +17,7 @@ enum class ToolPermissionLevel(val storageValue: String) {
             STANDARD -> AppLanguage.tr("标准", "Standard")
             LOOSE -> AppLanguage.tr("宽松", "Loose")
             CUSTOM -> AppLanguage.tr("自定义", "Custom")
+            DEVELOPER -> AppLanguage.tr("开发", "Developer")
         }
 
     val description: String
@@ -37,6 +39,10 @@ enum class ToolPermissionLevel(val storageValue: String) {
             CUSTOM -> AppLanguage.tr(
                 "由你选择哪些操作需要确认。",
                 "Choose which actions need confirmation."
+            )
+            DEVELOPER -> AppLanguage.tr(
+                "所有确认均关闭，适合临时调试和自动化开发。",
+                "Disable every confirmation for temporary debugging and automation development."
             )
         }
 }
@@ -142,6 +148,7 @@ object ToolPermissionSettings {
             )
             ToolPermissionLevel.LOOSE -> setOf(ToolConfirmationCategory.MONEY)
             ToolPermissionLevel.CUSTOM -> customCategories(context)
+            ToolPermissionLevel.DEVELOPER -> emptySet()
         }
 
     fun shouldConfirm(context: Context, category: ToolConfirmationCategory): Boolean =
@@ -151,6 +158,7 @@ object ToolPermissionSettings {
                 category == ToolConfirmationCategory.MONEY
             ToolPermissionLevel.LOOSE -> category == ToolConfirmationCategory.MONEY
             ToolPermissionLevel.CUSTOM -> category in customCategories(context)
+            ToolPermissionLevel.DEVELOPER -> false
         }
 
     /**

@@ -77,6 +77,8 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     private final VirtualPackageRegistry virtualPackages;
     private final ContainerPermissions permissions;
     private final String targetSignatureDigest;
+    private final java.util.concurrent.atomic.AtomicBoolean signatureQueryLogged =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     public ContainerPackageManager(
             Context hostContext,
@@ -99,7 +101,8 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         this.permissions = permissions;
         this.targetSignatureDigest = signatureDigest(targetPackageInfo);
         Log.d(TAG, "target " + targetPackage + " version "
-                + targetPackageInfo.versionName + " (" + targetPackageInfo.versionCode + ")");
+                + targetPackageInfo.versionName + " (" + targetPackageInfo.versionCode + ")"
+                + " signature=" + targetSignatureDigest);
     }
 
     /**
@@ -272,15 +275,26 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     }
 
     @Override
+    public int[] getPackageGids(String packageName) throws NameNotFoundException {
+        if (isTarget(packageName)) return targetPackageGids();
+        if (isVirtualPackage(packageName)) return new int[0];
+        return super.getPackageGids(packageName);
+    }
+
+    @Override
     public int[] getPackageGids(String packageName, int flags) throws NameNotFoundException {
-        if (isTarget(packageName) || isVirtualPackage(packageName)) {
-            try {
-                return super.getPackageGids(hostPackage, flags);
-            } catch (NameNotFoundException e) {
-                return new int[0];
-            }
-        }
+        if (isTarget(packageName)) return targetPackageGids();
+        if (isVirtualPackage(packageName)) return new int[0];
         return super.getPackageGids(packageName, flags);
+    }
+
+    private int[] targetPackageGids() {
+        List<Integer> gids = spec.getPackageGids();
+        int[] result = new int[gids.size()];
+        for (int index = 0; index < gids.size(); index++) {
+            result[index] = gids.get(index);
+        }
+        return result;
     }
 
     @Override
@@ -1377,6 +1391,21 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         PackageInfoCopy result = shallowPackageInfoCopy(targetPackageInfo);
         ApplicationInfo app = copyApplicationInfo(flags);
         applyPackageInfoFlags(result.value, app, flags, result.alreadyDeepCopied);
+        if (hasFlag(
+                flags,
+                PackageManager.GET_SIGNATURES |
+                        PackageManager.GET_SIGNING_CERTIFICATES) &&
+                signatureQueryLogged.compareAndSet(false, true)) {
+            int signatureCount = result.value.signatures == null
+                    ? 0 : result.value.signatures.length;
+            Log.d(
+                    TAG,
+                    "target signature query flags=" + flags
+                            + " legacy=" + signatureCount
+                            + " signingInfo=" + (result.value.signingInfo != null)
+                            + " digest=" + signatureDigest(result.value)
+            );
+        }
         return result.value;
     }
 

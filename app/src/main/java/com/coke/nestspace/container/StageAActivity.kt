@@ -825,8 +825,8 @@ open class StageAActivity : Activity() {
     }
 
     /**
-     * Target Application.onCreate can take many seconds (Bilibili spends 10s+
-     * in Gripper before it returns). Running it from onCreate keeps the host
+     * Target Application.onCreate can take many seconds. Running it from
+     * onCreate keeps the host
      * window from drawing and Android's activity launch timeout then force
      * finishes the container. Draw a placeholder first, then start the target
      * from the next main-loop turn so the host is considered launched.
@@ -992,8 +992,8 @@ open class StageAActivity : Activity() {
     private fun showLaunchPlaceholder(frame: FrameLayout) {
         RuntimeHostHooks.setOverlayHidden?.invoke(this, launchOverlayReason(), true)
         // Do not let the loading window receive focus. Target startup can hold
-        // the main thread for several seconds (Bilibili opens 35 dex files and
-        // runs Gripper before its Application.onCreate returns); if the window
+        // the main thread for several seconds while opening many dex files; if
+        // the window
         // is focusable Android reports an input-dispatch ANR before the target
         // ever gets a chance to draw. Focus is restored as soon as the target
         // view is attached in openActivity().
@@ -1606,10 +1606,9 @@ open class StageAActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         val target = current ?: return
-        // Result Parcelables were created by the target's class loader (for
-        // example Bilibili's RouteVertexSource). Without this, Bundle reads
-        // them through the host loader and throws ClassNotFoundException while
-        // the target handles the result (normally while navigating back).
+        // Result Parcelables were created by the target's class loader.
+        // Without this, Bundle reads them through the host loader and throws
+        // ClassNotFoundException while the target handles the result.
         session?.loader?.let { data?.setExtrasClassLoader(it) }
         withTargetLoader {
             runCatching {
@@ -1673,8 +1672,7 @@ open class StageAActivity : Activity() {
     /**
      * Slot activities opt out of OnBackInvoked in the manifest, so Android
      * delivers the back key to this host's onBackPressed even when the target
-     * registers its own overlay callback (Pinduoduo does this for its
-     * double-press exit, and previously swallowed every later press). The
+     * registers its own overlay callback. The
      * target's own OnBackPressedDispatcher callbacks still run through
      * [handleBack]; if a base Activity/ComponentActivity implementation
      * handles back but fails to finish the host, finish it here.
@@ -2028,7 +2026,16 @@ open class StageAActivity : Activity() {
                 session.loader,
                 session.context
             )
-        if (root?.post(open) == true) {
+        val startupDelay = com.coke.nestspace.container.runtime
+            .NativeEnvironmentBridge.readPropertyForDiagnostics(
+                "debug.nestspace.first_activity_delay_ms"
+            )?.toLongOrNull()?.coerceIn(0L, 3000L) ?: 0L
+        if ((if (startupDelay > 0L) {
+                root?.postDelayed(open, startupDelay)
+            } else {
+                root?.post(open)
+            }) == true
+        ) {
             Log.d(TAG, "first activity queued after startup coordinator")
         } else {
             open()
@@ -2067,18 +2074,20 @@ open class StageAActivity : Activity() {
             targetAttached = false
 
             // A target may create its own SurfaceView in its constructor.
-            // Detach the host launch surface first so both renderers never
-            // race over the same process-wide graphics state.
+            // Keep the launch surface attached until the target Activity has
+            // been created. Removing the last child first leaves the host
+            // ViewRoot briefly empty while a queued insets transaction may
+            // still reference its SurfaceControl.
             val frame = mirrorRoot ?: root ?: return
             stopLaunchRendering(frame)
-            frame.removeAllViews()
-            if (mirrorMode) addMirrorSnapshotBackground(frame)
             val target = session.createActivity(
                 this,
                 className,
                 targetIntent,
                 effectiveState
             )
+            frame.removeAllViews()
+            if (mirrorMode) addMirrorSnapshotBackground(frame)
             current = target
             currentPackageName = session.spec.packageName
             dispatchTargetApplicationLifecycle("dispatchActivityCreated", target)

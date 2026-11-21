@@ -33,10 +33,126 @@ namespace {
 
 constexpr char kLogTag[] = "NativeHooks";
 
+#ifndef DT_ANDROID_RELA
+#define DT_ANDROID_RELA 0x60000011
+#endif
+#ifndef DT_ANDROID_RELASZ
+#define DT_ANDROID_RELASZ 0x60000012
+#endif
+
 struct PatchedSlot {
     void** address;
     void* original;
 };
+
+bool decode_sleb128(
+    const uint8_t** cursor,
+    const uint8_t* end,
+    int64_t* value
+) {
+    uint64_t result = 0;
+    unsigned int shift = 0;
+    uint8_t byte = 0;
+    do {
+        if (*cursor >= end || shift >= 64) return false;
+        byte = *(*cursor)++;
+        result |= static_cast<uint64_t>(byte & 0x7f) << shift;
+        shift += 7;
+    } while ((byte & 0x80) != 0);
+    if (shift < 64 && (byte & 0x40) != 0) {
+        result |= (~uint64_t{0}) << shift;
+    }
+    *value = static_cast<int64_t>(result);
+    return true;
+}
+
+bool decode_android_rela(
+    const void* packed,
+    size_t packed_size,
+    std::vector<ElfW(Rela)>* output
+) {
+    if (packed == nullptr ||
+        packed_size < 4 ||
+        memcmp(packed, "APS2", 4) != 0) {
+        return false;
+    }
+    const auto* cursor = static_cast<const uint8_t*>(packed) + 4;
+    const auto* end = static_cast<const uint8_t*>(packed) + packed_size;
+    int64_t total_count = 0;
+    int64_t current_offset = 0;
+    uint64_t current_info = 0;
+    int64_t current_addend = 0;
+    if (!decode_sleb128(&cursor, end, &total_count) ||
+        !decode_sleb128(&cursor, end, &current_offset) ||
+        total_count < 0 ||
+        total_count > 1'000'000) {
+        return false;
+    }
+    output->reserve(static_cast<size_t>(total_count));
+    for (int64_t processed = 0; processed < total_count;) {
+        int64_t group_size = 0;
+        int64_t group_flags = 0;
+        if (!decode_sleb128(&cursor, end, &group_size) ||
+            !decode_sleb128(&cursor, end, &group_flags) ||
+            group_size < 0 ||
+            group_size > total_count - processed) {
+            return false;
+        }
+        constexpr int64_t kGroupedByInfo = 1;
+        constexpr int64_t kGroupedByOffset = 2;
+        constexpr int64_t kGroupedByAddend = 4;
+        constexpr int64_t kHasAddend = 8;
+        int64_t grouped_offset = 0;
+        if ((group_flags & kGroupedByOffset) != 0 &&
+            !decode_sleb128(&cursor, end, &grouped_offset)) {
+            return false;
+        }
+        if ((group_flags & kGroupedByInfo) != 0) {
+            int64_t info = 0;
+            if (!decode_sleb128(&cursor, end, &info)) return false;
+            current_info = static_cast<uint64_t>(info);
+        }
+        const int64_t addend_mode =
+            group_flags & (kHasAddend | kGroupedByAddend);
+        if (addend_mode == (kHasAddend | kGroupedByAddend)) {
+            int64_t addend_delta = 0;
+            if (!decode_sleb128(&cursor, end, &addend_delta)) return false;
+            current_addend += addend_delta;
+        } else if (addend_mode != kHasAddend) {
+            current_addend = 0;
+        }
+        for (int64_t index = 0; index < group_size; ++index) {
+            if ((group_flags & kGroupedByOffset) != 0) {
+                current_offset += grouped_offset;
+            } else {
+                int64_t offset_delta = 0;
+                if (!decode_sleb128(&cursor, end, &offset_delta)) return false;
+                current_offset += offset_delta;
+            }
+            if ((group_flags & kGroupedByInfo) == 0) {
+                int64_t info = 0;
+                if (!decode_sleb128(&cursor, end, &info)) return false;
+                current_info = static_cast<uint64_t>(info);
+            }
+            if (addend_mode == kHasAddend) {
+                int64_t addend_delta = 0;
+                if (!decode_sleb128(&cursor, end, &addend_delta)) return false;
+                current_addend += addend_delta;
+            }
+            ElfW(Rela) relocation {};
+            relocation.r_offset = static_cast<ElfW(Addr)>(current_offset);
+            relocation.r_info = static_cast<ElfW(Xword)>(current_info);
+            relocation.r_addend =
+                static_cast<ElfW(Sxword)>(current_addend);
+            output->push_back(relocation);
+        }
+        processed += group_size;
+    }
+    if (!output->empty()) {
+        return true;
+    }
+    return total_count == 0;
+}
 
 struct ModuleKey {
     uintptr_t base;
@@ -74,6 +190,8 @@ std::condition_variable g_refresh_queue_ready;
 bool g_refresh_requested = false;
 bool g_refresh_worker_started = false;
 
+std::string read_file_bytes(const char* path);
+
 ModuleKey module_key(const dl_phdr_info& info) {
     const std::string_view name = info.dlpi_name == nullptr
         ? std::string_view{}
@@ -107,6 +225,15 @@ bool target_object(const char* name) {
     const std::string_view basename = slash == std::string_view::npos
         ? path
         : path.substr(slash + 1);
+    // Framework file/database bridges execute inside system native libraries.
+    // Their PLT must be virtualized even though the libraries themselves are
+    // not packaged with the target APK.
+    if (basename == "libjavacore.so" ||
+        basename == "libandroid_runtime.so" ||
+        basename == "libsqlite.so" ||
+        basename == "libsqlcipher.so") {
+        return true;
+    }
     // TLS/crypto libraries use their own fork and entropy checks. Rewriting
     // libc/property entry points inside these modules can turn RAND_bytes into
     // a process abort, while they do not need virtual package identity.
@@ -151,17 +278,17 @@ uint16_t native_machine() {
 bool is_hook_relocation(uint16_t machine, ElfW(Xword) type) {
     switch (machine) {
         case EM_AARCH64:
-            // R_AARCH64_GLOB_DAT / R_AARCH64_JUMP_SLOT.
-            return type == 1025 || type == 1026;
+            // R_AARCH64_ABS64 / GLOB_DAT / JUMP_SLOT.
+            return type == 257 || type == 1025 || type == 1026;
         case EM_ARM:
-            // R_ARM_GLOB_DAT / R_ARM_JUMP_SLOT.
-            return type == 21 || type == 22;
+            // R_ARM_ABS32 / GLOB_DAT / JUMP_SLOT.
+            return type == 2 || type == 21 || type == 22;
         case EM_X86_64:
-            // R_X86_64_GLOB_DAT / R_X86_64_JUMP_SLOT.
-            return type == 6 || type == 7;
+            // R_X86_64_64 / GLOB_DAT / JUMP_SLOT.
+            return type == 1 || type == 6 || type == 7;
         case EM_386:
-            // R_386_GLOB_DAT / R_386_JMP_SLOT.
-            return type == 6 || type == 7;
+            // R_386_32 / GLOB_DAT / JMP_SLOT.
+            return type == 1 || type == 6 || type == 7;
         default:
             return false;
     }
@@ -283,9 +410,11 @@ void patch_relocations(
     size_t size,
     const ElfW(Sym)* symbols,
     const char* strings,
-    bool loader_only
+    bool loader_only,
+    const char* module_path
 ) {
     if (relocations == nullptr || symbols == nullptr || strings == nullptr) return;
+    (void)module_path;
     const size_t count = size / sizeof(Relocation);
     for (size_t index = 0; index < count; ++index) {
         const auto& relocation = relocations[index];
@@ -324,6 +453,8 @@ bool hook_object(const dl_phdr_info& info, bool loader_only) {
     const char* strings = nullptr;
     const void* jmprel = nullptr;
     size_t jmprel_size = 0;
+    const void* android_rela = nullptr;
+    size_t android_rela_size = 0;
     const ElfW(Rel)* rel = nullptr;
     size_t rel_size = 0;
     const ElfW(Rela)* rela = nullptr;
@@ -364,6 +495,14 @@ bool hook_object(const dl_phdr_info& info, bool loader_only) {
             case DT_RELASZ:
                 rela_size = entry->d_un.d_val;
                 break;
+            case DT_ANDROID_RELA:
+                android_rela = reinterpret_cast<const void*>(
+                    runtime_address(info, entry->d_un.d_ptr)
+                );
+                break;
+            case DT_ANDROID_RELASZ:
+                android_rela_size = entry->d_un.d_val;
+                break;
             default:
                 break;
         }
@@ -379,7 +518,8 @@ bool hook_object(const dl_phdr_info& info, bool loader_only) {
             jmprel_size,
             symbols,
             strings,
-            loader_only
+            loader_only,
+            info.dlpi_name
         );
 #else
         patch_relocations(
@@ -389,7 +529,8 @@ bool hook_object(const dl_phdr_info& info, bool loader_only) {
             jmprel_size,
             symbols,
             strings,
-            loader_only
+            loader_only,
+            info.dlpi_name
         );
 #endif
     }
@@ -400,7 +541,8 @@ bool hook_object(const dl_phdr_info& info, bool loader_only) {
         rel_size,
         symbols,
         strings,
-        loader_only
+        loader_only,
+        info.dlpi_name
     );
     patch_relocations(
         info.dlpi_addr,
@@ -409,8 +551,29 @@ bool hook_object(const dl_phdr_info& info, bool loader_only) {
         rela_size,
         symbols,
         strings,
-        loader_only
+        loader_only,
+        info.dlpi_name
     );
+    if (android_rela != nullptr && android_rela_size > 0) {
+        std::vector<ElfW(Rela)> decoded;
+        decode_android_rela(
+                android_rela,
+                android_rela_size,
+                &decoded
+            );
+        if (!decoded.empty()) {
+            patch_relocations(
+                info.dlpi_addr,
+                native_machine(),
+                decoded.data(),
+                decoded.size() * sizeof(ElfW(Rela)),
+                symbols,
+                strings,
+                loader_only,
+                info.dlpi_name
+            );
+        }
+    }
     return g_patched_slots.size() > before;
 }
 
@@ -599,7 +762,8 @@ bool hook_elf_file(const std::string& path, uintptr_t base) {
                 jmprel_size,
                 symbols,
                 strings,
-                false
+                false,
+                path.c_str()
             );
         } else if (plt_kind == DT_REL) {
             patch_relocations(
@@ -609,7 +773,8 @@ bool hook_elf_file(const std::string& path, uintptr_t base) {
                 jmprel_size,
                 symbols,
                 strings,
-                false
+                false,
+                path.c_str()
             );
         }
     }
@@ -620,7 +785,8 @@ bool hook_elf_file(const std::string& path, uintptr_t base) {
         rel_size,
         symbols,
         strings,
-        false
+        false,
+        path.c_str()
     );
     patch_relocations(
         base,
@@ -629,7 +795,8 @@ bool hook_elf_file(const std::string& path, uintptr_t base) {
         rela_size,
         symbols,
         strings,
-        false
+        false,
+        path.c_str()
     );
     return g_patched_slots.size() > before;
 }
@@ -637,13 +804,6 @@ bool hook_elf_file(const std::string& path, uintptr_t base) {
 void scan_maps_for_target_modules() {
     static bool logged_read = false;
     static bool logged_paths = false;
-    static auto last_scan = std::chrono::steady_clock::time_point{};
-    const auto now = std::chrono::steady_clock::now();
-    if (last_scan != std::chrono::steady_clock::time_point{} &&
-        now - last_scan < std::chrono::milliseconds(500)) {
-        return;
-    }
-    last_scan = now;
     const std::string maps = read_file_bytes("/proc/self/maps");
     if (!logged_read) {
         logged_read = true;
@@ -796,7 +956,12 @@ HookState refresh_hooks(bool scan_elf_fallback) {
     install_property_hooks();
     std::lock_guard<std::mutex> guard(g_hook_lock);
     dl_iterate_phdr(hook_callback, nullptr);
-    if (scan_elf_fallback) scan_maps_for_target_modules();
+    // The file-backed maps fallback cannot safely patch every hardened
+    // module. Only use it when the normal linker enumeration missed the
+    // target entirely.
+    if (scan_elf_fallback && g_target_modules.empty()) {
+        scan_maps_for_target_modules();
+    }
     return snapshot_locked();
 }
 

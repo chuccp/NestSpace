@@ -20,6 +20,7 @@ class RuntimeDexPathClassLoader(
     parent: ClassLoader?,
     private val dataRoot: File,
     private val optimizedDirectory: File,
+    private val entryApplicationAlias: String? = null,
 ) : PathClassLoader(dexPath, librarySearchPath, parent) {
     private val lock = Any()
     private val resolvingFallback = ThreadLocal<Boolean>()
@@ -27,6 +28,19 @@ class RuntimeDexPathClassLoader(
     private var fallbackDexLoader: ClassLoader? = null
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        if (name == "entryRunApplication") {
+            entryApplicationAlias?.let { alias ->
+                runCatching {
+                    return super.loadClass(alias, resolve)
+                }.onFailure {
+                    Log.w(
+                        TAG,
+                        "packer application alias unavailable: $alias",
+                        it
+                    )
+                }
+            }
+        }
         if (resolvingFallback.get() == true) {
             return super.loadClass(name, resolve)
         }
@@ -34,12 +48,30 @@ class RuntimeDexPathClassLoader(
             super.loadClass(name, resolve)
         } catch (missing: ClassNotFoundException) {
             val fallback = installGeneratedDex()
-                ?: throw missing
+                ?: run {
+                    if (name.contains("Application", ignoreCase = true)) {
+                        Log.w(
+                            TAG,
+                            "application class missing name=$name " +
+                                "generatedDex=${generatedDexFiles().size}",
+                            missing
+                        )
+                    }
+                    throw missing
+                }
             try {
                 resolvingFallback.set(true)
                 runCatching { super.loadClass(name, resolve) }
                     .getOrElse { fallback.loadClass(name) }
             } catch (fallbackMissing: ClassNotFoundException) {
+                if (name.contains("Application", ignoreCase = true)) {
+                    Log.w(
+                        TAG,
+                        "application class fallback missing name=$name " +
+                            "generatedDex=${generatedDexFiles().size}",
+                        fallbackMissing
+                    )
+                }
                 fallbackMissing.addSuppressed(missing)
                 throw fallbackMissing
             } finally {

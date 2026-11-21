@@ -50,12 +50,13 @@ internal fun mcpConfigToolSpecs(context: Context): List<ToolSpec> {
                 description = "Read or set the assistant confirmation policy. Actions: get, " +
                     "set. Levels: strict (confirm everything), standard (default: loose " +
                     "plus install/uninstall), loose (only money actions), custom (use confirmations). " +
+                    "developer (disable every confirmation). " +
                     "confirmations is an array of install, permission, download, risky, " +
                     "money, external " +
                     "and only applies to custom.",
                 inputSchema = objectSchema(
                     "action" to stringProp("get or set"),
-                    "level" to stringProp("strict, standard, loose or custom"),
+                    "level" to stringProp("strict, standard, loose, custom or developer"),
                     "confirmations" to arrayProp("custom categories to confirm")
                 )
             ) { args, _ ->
@@ -66,7 +67,7 @@ internal fun mcpConfigToolSpecs(context: Context): List<ToolSpec> {
                     "set" -> {
                         val level = ToolPermissionSettings.parse(args.optString("level"))
                             ?: return@ToolSpec invalid(
-                                "level must be strict, standard, loose or custom"
+                                "level must be strict, standard, loose, custom or developer"
                             )
                         val confirmations = args.optJSONArray("confirmations")
                         if (level == ToolPermissionLevel.CUSTOM || confirmations != null) {

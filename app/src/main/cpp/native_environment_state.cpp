@@ -32,6 +32,14 @@
 namespace nestspace {
 namespace {
 
+struct LinuxDirent64 {
+    uint64_t inode;
+    int64_t offset;
+    unsigned short record_length;
+    unsigned char type;
+    char name[];
+};
+
 std::atomic<const Environment*> g_environment{nullptr};
 std::mutex g_environment_publish_lock;
 std::vector<std::unique_ptr<Environment>> g_environment_history;
@@ -43,7 +51,7 @@ constexpr auto kVirtualProcCacheTtl = std::chrono::milliseconds(200);
 
 struct VirtualProcCacheEntry {
     const Environment* environment = nullptr;
-    const char* path = nullptr;
+    std::string path;
     std::string content;
     std::chrono::steady_clock::time_point sampled_at{};
 };
@@ -68,12 +76,72 @@ std::string process_thread_name(const Environment* environment) {
 }
 
 std::vector<std::pair<pid_t, std::string>> virtual_task_threads(
-    const Environment* environment
+    const Environment* environment,
+    pid_t process_pid = getpid()
 ) {
     std::vector<std::pair<pid_t, std::string>> result;
     if (environment == nullptr) return result;
     const std::string process_name = process_thread_name(environment);
-    const pid_t base = getpid();
+    const pid_t base = process_pid;
+    const std::string task_root =
+        "/proc/" + std::to_string(base) + "/task";
+    const int directory_fd = static_cast<int>(syscall(
+        SYS_openat,
+        AT_FDCWD,
+        task_root.c_str(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC,
+        0
+    ));
+    std::vector<pid_t> actual_tasks;
+    if (directory_fd >= 0) {
+        std::array<char, 8192> buffer{};
+        for (;;) {
+            const long count = syscall(
+                SYS_getdents64,
+                directory_fd,
+                buffer.data(),
+                buffer.size()
+            );
+            if (count <= 0) break;
+            size_t offset = 0;
+            while (offset < static_cast<size_t>(count)) {
+                auto* entry = reinterpret_cast<LinuxDirent64*>(
+                    buffer.data() + offset
+                );
+                char* end = nullptr;
+                const long task_id = strtol(entry->name, &end, 10);
+                if (end != entry->name &&
+                    *end == '\0' &&
+                    task_id > 0) {
+                    actual_tasks.push_back(static_cast<pid_t>(task_id));
+                }
+                if (entry->record_length == 0) break;
+                offset += entry->record_length;
+            }
+        }
+        close(directory_fd);
+    }
+    std::sort(actual_tasks.begin(), actual_tasks.end());
+    if (!actual_tasks.empty()) {
+        for (size_t index = 0; index < actual_tasks.size(); ++index) {
+            const pid_t task_id = actual_tasks[index];
+            std::string name;
+            if (index == 0) {
+                name = process_name;
+            } else {
+                const std::string path =
+                    "/proc/" + std::to_string(base) +
+                    "/task/" + std::to_string(task_id) + "/comm";
+                name = read_text_file(path.c_str());
+                while (!name.empty() &&
+                       (name.back() == '\n' || name.back() == '\r')) {
+                    name.pop_back();
+                }
+            }
+            result.emplace_back(task_id, name);
+        }
+        return result;
+    }
     const std::string binder_prefix =
         "binder:" + std::to_string(base) + "_";
     const std::string names[] = {
@@ -130,6 +198,24 @@ std::string virtual_task_comm(pid_t task_id) {
     return found == g_thread_view_names.end() ? std::string{} : found->second;
 }
 
+std::string target_task_comm(
+    const Environment* environment,
+    pid_t process_pid,
+    pid_t task_id
+) {
+    if (task_id == process_pid) return process_thread_name(environment);
+    const std::string path =
+        "/proc/" + std::to_string(process_pid) +
+        "/task/" + std::to_string(task_id) + "/comm";
+    std::string name = read_text_file(path.c_str());
+    while (!name.empty() &&
+           (name.back() == '\n' || name.back() == '\r')) {
+        name.pop_back();
+    }
+    if (!name.empty()) return name;
+    return virtual_task_comm(task_id);
+}
+
 bool starts_with_prefix(const char* path, const std::string& prefix) {
     if (path == nullptr || prefix.empty()) return false;
     const size_t length = prefix.size();
@@ -145,21 +231,32 @@ std::string data_alias_path(const std::string& path) {
 
 bool virtual_task_suffix(
     const char* path,
+    pid_t* process_pid,
     pid_t* tid,
     const char** suffix
 ) {
-    if (path == nullptr || tid == nullptr || suffix == nullptr) return false;
+    if (path == nullptr ||
+        process_pid == nullptr ||
+        tid == nullptr ||
+        suffix == nullptr) {
+        return false;
+    }
     const char* cursor = nullptr;
     if (strncmp(path, "/proc/self/task/", 16) == 0) {
+        *process_pid = getpid();
         cursor = path + 16;
+    } else if (strncmp(path, "/proc/thread-self/task/", 23) == 0) {
+        *process_pid = getpid();
+        cursor = path + 23;
     } else if (strncmp(path, "/proc/", 6) == 0) {
         char* pid_end = nullptr;
         const long pid = strtol(path + 6, &pid_end, 10);
-        if (pid != getpid() ||
+        if ((pid != getpid() && pid != getppid()) ||
             pid_end == path + 6 ||
             strncmp(pid_end, "/task/", 6) != 0) {
             return false;
         }
+        *process_pid = static_cast<pid_t>(pid);
         cursor = pid_end + 6;
     } else {
         return false;
@@ -177,25 +274,104 @@ bool virtual_task_suffix(
 bool is_task_directory(const char* path) {
     if (path == nullptr) return false;
     if (strcmp(path, "/proc/self/task") == 0) return true;
+    if (strcmp(path, "/proc/thread-self/task") == 0) return true;
     if (strncmp(path, "/proc/", 6) != 0) return false;
     char* end = nullptr;
     const long pid = strtol(path + 6, &end, 10);
-    return pid == getpid() && end != path + 6 &&
+    return (pid == getpid() || pid == getppid()) &&
+        end != path + 6 &&
         strcmp(end, "/task") == 0;
+}
+
+pid_t task_directory_pid(const char* path) {
+    if (path == nullptr) return -1;
+    if (strcmp(path, "/proc/self/task") == 0) return getpid();
+    if (strcmp(path, "/proc/thread-self/task") == 0) return getpid();
+    if (strncmp(path, "/proc/", 6) != 0) return -1;
+    char* end = nullptr;
+    const long pid = strtol(path + 6, &end, 10);
+    if ((pid == getpid() || pid == getppid()) &&
+        end != path + 6 &&
+        strcmp(end, "/task") == 0) {
+        return static_cast<pid_t>(pid);
+    }
+    return -1;
 }
 
 const char* virtual_proc_path(const char* path) {
     if (path == nullptr) return nullptr;
     if (strcmp(path, "/proc/self/status") == 0) return "/proc/self/status";
     if (strcmp(path, "/proc/self/cmdline") == 0) return "/proc/self/cmdline";
+    if (strcmp(path, "/proc/self/comm") == 0) return "/proc/self/comm";
     if (strcmp(path, "/proc/self/maps") == 0) return "/proc/self/maps";
+    if (strcmp(path, "/proc/self/smaps") == 0) return "/proc/self/smaps";
+    if (strcmp(path, "/proc/self/stat") == 0) return "/proc/self/stat";
+    if (strcmp(path, "/proc/self/statm") == 0) return "/proc/self/statm";
+    if (strcmp(path, "/proc/self/sched") == 0) return "/proc/self/sched";
     if (strcmp(path, "/proc/self/mountinfo") == 0) return "/proc/self/mountinfo";
+    if (strcmp(path, "/proc/self/cgroup") == 0) return "/proc/self/cgroup";
+    if (strcmp(path, "/proc/self/attr/current") == 0) {
+        return "/proc/self/attr/current";
+    }
+    if (strcmp(path, "/proc/self/attr/prev") == 0) {
+        return "/proc/self/attr/prev";
+    }
+    if (strcmp(path, "/proc/thread-self/status") == 0) {
+        return "/proc/self/status";
+    }
+    if (strcmp(path, "/proc/thread-self/cmdline") == 0) {
+        return "/proc/self/cmdline";
+    }
+    if (strcmp(path, "/proc/thread-self/comm") == 0) {
+        return "/proc/self/comm";
+    }
+    if (strcmp(path, "/proc/thread-self/maps") == 0) {
+        return "/proc/self/maps";
+    }
+    if (strcmp(path, "/proc/thread-self/smaps") == 0) {
+        return "/proc/self/smaps";
+    }
+    if (strcmp(path, "/proc/thread-self/stat") == 0) {
+        return "/proc/self/stat";
+    }
+    if (strcmp(path, "/proc/thread-self/statm") == 0) {
+        return "/proc/self/statm";
+    }
+    if (strcmp(path, "/proc/thread-self/sched") == 0) {
+        return "/proc/self/sched";
+    }
+    if (strcmp(path, "/proc/thread-self/mountinfo") == 0) {
+        return "/proc/self/mountinfo";
+    }
+    if (strcmp(path, "/proc/thread-self/cgroup") == 0) {
+        return "/proc/self/cgroup";
+    }
+    if (strcmp(path, "/proc/thread-self/attr/current") == 0) {
+        return "/proc/self/attr/current";
+    }
+    if (strcmp(path, "/proc/thread-self/attr/prev") == 0) {
+        return "/proc/self/attr/prev";
+    }
     if (is_task_directory(path)) return "/proc/self/task";
+    pid_t process_pid = 0;
     pid_t tid = 0;
     const char* task_suffix = nullptr;
-    if (virtual_task_suffix(path, &tid, &task_suffix)) {
+    if (virtual_task_suffix(
+            path,
+            &process_pid,
+            &tid,
+            &task_suffix
+        )) {
+        (void)process_pid;
         if (strcmp(task_suffix, "/comm") == 0 ||
-            strcmp(task_suffix, "/status") == 0) {
+            strcmp(task_suffix, "/status") == 0 ||
+            strcmp(task_suffix, "/stat") == 0 ||
+            strcmp(task_suffix, "/statm") == 0 ||
+            strcmp(task_suffix, "/sched") == 0 ||
+            strcmp(task_suffix, "/schedstat") == 0 ||
+            strcmp(task_suffix, "/cgroup") == 0 ||
+            strcmp(task_suffix, "/attr/current") == 0 ||
+            strcmp(task_suffix, "/attr/prev") == 0) {
             return "/proc/self/task";
         }
     }
@@ -208,8 +384,16 @@ const char* virtual_proc_path(const char* path) {
     }
     if (strcmp(end, "/status") == 0) return "/proc/self/status";
     if (strcmp(end, "/cmdline") == 0) return "/proc/self/cmdline";
+    if (strcmp(end, "/comm") == 0) return "/proc/self/comm";
     if (strcmp(end, "/maps") == 0) return "/proc/self/maps";
+    if (strcmp(end, "/smaps") == 0) return "/proc/self/smaps";
+    if (strcmp(end, "/stat") == 0) return "/proc/self/stat";
+    if (strcmp(end, "/statm") == 0) return "/proc/self/statm";
+    if (strcmp(end, "/sched") == 0) return "/proc/self/sched";
     if (strcmp(end, "/mountinfo") == 0) return "/proc/self/mountinfo";
+    if (strcmp(end, "/cgroup") == 0) return "/proc/self/cgroup";
+    if (strcmp(end, "/attr/current") == 0) return "/proc/self/attr/current";
+    if (strcmp(end, "/attr/prev") == 0) return "/proc/self/attr/prev";
     return nullptr;
 }
 
@@ -237,16 +421,31 @@ void record_fd_path(int fd, const char* path) {
 }
 
 std::string read_text_file(const char* path) {
-    FILE* file = fopen(path, "re");
-    if (file == nullptr) return {};
+    // This is the container's source reader for the real /proc view. Using
+    // fopen/open here re-enters the target proc hooks and makes thread names
+    // read back as the virtual process name. Call the saved libc open function
+    // directly so /proc/<pid>/task/<tid>/comm keeps its real thread name.
+    const long opened = g_real.syscall
+        ? g_real.syscall(
+            SYS_openat,
+            AT_FDCWD,
+            path,
+            O_RDONLY | O_CLOEXEC,
+            0
+        )
+        : -1;
+    if (opened < 0) return {};
+    const int fd = static_cast<int>(opened);
     std::string result;
     std::array<char, 8192> buffer{};
     while (true) {
-        const size_t read = fread(buffer.data(), 1, buffer.size(), file);
-        if (read > 0) result.append(buffer.data(), read);
-        if (read < buffer.size()) break;
+        const long count = g_real.syscall
+            ? g_real.syscall(SYS_read, fd, buffer.data(), buffer.size())
+            : -1;
+        if (count > 0) result.append(buffer.data(), static_cast<size_t>(count));
+        if (count <= 0) break;
     }
-    fclose(file);
+    close(fd);
     return result;
 }
 
@@ -324,6 +523,7 @@ std::string virtualized_status(
     virtual_value.reserve(real.size() + 64);
     size_t offset = 0;
     while (offset < real.size()) {
+        bool omit_line_break = false;
         const size_t end = real.find('\n', offset);
         const size_t length = end == std::string::npos ? real.size() - offset
                                                        : end - offset;
@@ -339,6 +539,36 @@ std::string virtualized_status(
         } else if (line.rfind("Uid:", 0) == 0) {
             const std::string uid = std::to_string(environment->observed_uid);
             virtual_value += "Uid:\t" + uid + "\t" + uid + "\t" + uid + "\t" + uid;
+        } else if (line.rfind("Gid:", 0) == 0) {
+            const std::string gid = std::to_string(environment->observed_uid);
+            virtual_value += "Gid:\t" + gid + "\t" + gid + "\t" + gid + "\t" + gid;
+        } else if (line.rfind("Groups:", 0) == 0) {
+            virtual_value += "Groups:\t";
+            if (environment->supplementary_groups.empty()) {
+                virtual_value += "9997 " +
+                    std::to_string(environment->observed_uid + 10000) + " " +
+                    std::to_string(environment->observed_uid + 40000) + " ";
+            } else {
+                for (size_t index = 0;
+                     index < environment->supplementary_groups.size();
+                     ++index) {
+                    if (index != 0) virtual_value.push_back(' ');
+                    virtual_value += std::to_string(
+                        environment->supplementary_groups[index]
+                    );
+                }
+                virtual_value.push_back(' ');
+            }
+        } else if (
+            line.rfind("CapInh:", 0) == 0 ||
+            line.rfind("CapPrm:", 0) == 0 ||
+            line.rfind("CapEff:", 0) == 0 ||
+            line.rfind("CapBnd:", 0) == 0 ||
+            line.rfind("CapAmb:", 0) == 0
+        ) {
+            virtual_value += line;
+        } else if (line.rfind("FDSize:", 0) == 0) {
+            virtual_value += "FDSize:\t256";
         } else if (reported_pid > 0 &&
                    (line.rfind("Pid:", 0) == 0 ||
                     line.rfind("NSpid:", 0) == 0)) {
@@ -351,13 +581,16 @@ std::string virtualized_status(
         } else if (line.rfind("Seccomp_filters:", 0) == 0) {
             virtual_value += "Seccomp_filters:\t1";
         } else if (line.rfind("Threads:", 0) == 0) {
-            const size_t count = virtual_task_threads(environment).size();
+            const size_t count = virtual_task_threads(
+                environment,
+                pid
+            ).size();
             virtual_value += "Threads:\t" + std::to_string(count);
         } else {
             virtual_value += line;
         }
         if (end == std::string::npos) break;
-        virtual_value.push_back('\n');
+        if (!omit_line_break) virtual_value.push_back('\n');
         offset = end + 1;
     }
     return virtual_value;
@@ -549,6 +782,46 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
     const Environment* environment = current_environment();
     if (environment == nullptr) return false;
 
+    if (!environment->host_base_apk_path.empty()) {
+        const std::string base_prefix = environment->host_base_apk_path + "!";
+        if (starts_with_prefix(path, base_prefix)) {
+            const std::string suffix =
+                path + environment->host_base_apk_path.size();
+            if (suffix.find("/libjiagu_64.so") != std::string::npos) {
+                *rewritten = environment->data_root +
+                    "/.jiagu/libjiagu_64.so";
+                return true;
+            }
+            if (suffix.find("/libjiagu.so") != std::string::npos) {
+                *rewritten = environment->data_root + "/.jiagu/libjiagu.so";
+                return true;
+            }
+            *rewritten = environment->actual_base_apk_path + suffix;
+            return true;
+        }
+        if (strcmp(path, environment->host_base_apk_path.c_str()) == 0) {
+            *rewritten = environment->actual_base_apk_path;
+            return true;
+        }
+    }
+    if (!environment->host_native_library_dir.empty() &&
+        environment->host_native_library_dir !=
+            environment->native_library_dir &&
+        starts_with_prefix(
+            path,
+            environment->host_native_library_dir
+        )) {
+        const std::string suffix =
+            path + environment->host_native_library_dir.size();
+        if (suffix == "/libjiagu_64.so") {
+            *rewritten = environment->data_root + "/.jiagu/libjiagu_64.so";
+        } else if (suffix == "/libjiagu.so") {
+            *rewritten = environment->data_root + "/.jiagu/libjiagu.so";
+        } else {
+            *rewritten = environment->native_library_dir + suffix;
+        }
+        return true;
+    }
     if (!environment->virtual_base_apk_path.empty() &&
         strcmp(path, environment->virtual_base_apk_path.c_str()) == 0) {
         *rewritten = environment->actual_base_apk_path;
@@ -587,6 +860,21 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
             (path + environment->target_data_alias.size());
         return true;
     }
+    const std::string host_data_root =
+        "/data/user/0/" + environment->host_package_name;
+    const std::string host_data_alias =
+        "/data/data/" + environment->host_package_name;
+    const std::string packer_suffix = "/.jiagu";
+    if (starts_with_prefix(path, host_data_root + packer_suffix)) {
+        *rewritten = environment->data_root + packer_suffix +
+            (path + host_data_root.size() + packer_suffix.size());
+        return true;
+    }
+    if (starts_with_prefix(path, host_data_alias + packer_suffix)) {
+        *rewritten = environment->data_root + packer_suffix +
+            (path + host_data_alias.size() + packer_suffix.size());
+        return true;
+    }
     if (starts_with_prefix(path, environment->target_device_root)) {
         *rewritten = environment->actual_device_root +
             (path + environment->target_device_root.size());
@@ -604,48 +892,156 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
             (path + environment->target_external_alias.size());
         return true;
     }
+    if (!environment->external_data_root.empty()) {
+        const std::string target_obb =
+            "/storage/emulated/0/Android/obb/" + environment->package_name;
+        const std::string target_obb_alias =
+            "/sdcard/Android/obb/" + environment->package_name;
+        if (starts_with_prefix(path, target_obb)) {
+            *rewritten = environment->external_data_root + "/obb" +
+                (path + target_obb.size());
+            return true;
+        }
+        if (starts_with_prefix(path, target_obb_alias)) {
+            *rewritten = environment->external_data_root + "/obb" +
+                (path + target_obb_alias.size());
+            return true;
+        }
+        const std::string target_media =
+            "/storage/emulated/0/Android/media/" + environment->package_name;
+        const std::string target_media_alias =
+            "/sdcard/Android/media/" + environment->package_name;
+        if (starts_with_prefix(path, target_media)) {
+            *rewritten = environment->external_data_root + "/media" +
+                (path + target_media.size());
+            return true;
+        }
+        if (starts_with_prefix(path, target_media_alias)) {
+            *rewritten = environment->external_data_root + "/media" +
+                (path + target_media_alias.size());
+            return true;
+        }
+    }
     return false;
 }
 
 namespace {
 
-bool is_target_install_file(
+bool is_target_runtime_path(
     const char* path,
     const Environment* environment
 ) {
     if (path == nullptr || environment == nullptr) return false;
-    return strcmp(path, environment->actual_base_apk_path.c_str()) == 0 ||
-        std::any_of(
-            environment->actual_split_apk_paths.begin(),
-            environment->actual_split_apk_paths.end(),
-            [path](const std::string& split) {
-                return strcmp(path, split.c_str()) == 0;
-            }
-        ) ||
-        (!environment->native_library_dir.empty() &&
-            starts_with_prefix(path, environment->native_library_dir));
+    return starts_with_prefix(path, environment->data_root) ||
+        (!environment->data_root_alias.empty() &&
+            starts_with_prefix(path, environment->data_root_alias)) ||
+        starts_with_prefix(path, environment->actual_device_root) ||
+        (!environment->external_data_root.empty() &&
+            starts_with_prefix(path, environment->external_data_root));
+}
+
+bool is_current_proc_path(const char* path) {
+    if (path == nullptr) return false;
+    if (strcmp(path, "/proc/self") == 0 ||
+        strncmp(path, "/proc/self/", 11) == 0 ||
+        strcmp(path, "/proc/thread-self") == 0 ||
+        strncmp(path, "/proc/thread-self/", 18) == 0) {
+        return true;
+    }
+    if (strncmp(path, "/proc/", 6) != 0) return false;
+    char* end = nullptr;
+    const long pid = strtol(path + 6, &end, 10);
+    return (pid == getpid() || pid == getppid()) &&
+        (*end == '\0' || *end == '/');
+}
+
+bool is_virtual_native_library_path(
+    const char* actual,
+    const Environment* environment
+) {
+    return actual != nullptr &&
+        environment != nullptr &&
+        !environment->native_library_dir.empty() &&
+        environment->native_library_dir !=
+            environment->virtual_native_library_dir &&
+        starts_with_prefix(actual, environment->native_library_dir);
 }
 
 }  // namespace
 
 void virtualize_target_file_stat(const char* actual, struct stat* value) {
     const Environment* environment = current_environment();
-    if (value == nullptr ||
-        !is_target_install_file(actual, environment)) {
+    if (value == nullptr || environment == nullptr) {
         return;
     }
+    if (is_virtual_native_library_path(actual, environment)) {
+        value->st_uid = 1000;
+        value->st_gid = 1000;
+        value->st_mode = (value->st_mode & S_IFMT) | 0755;
+        return;
+    }
+    const bool target_runtime = is_target_runtime_path(actual, environment);
+    const bool process_owned_by_host =
+        is_current_proc_path(actual) &&
+        value->st_uid == static_cast<uid_t>(environment->host_uid);
+    if (!target_runtime && !process_owned_by_host) return;
     value->st_uid = static_cast<uid_t>(environment->observed_uid);
-    value->st_gid = static_cast<gid_t>(environment->observed_uid);
+    if (!environment->external_data_root.empty() &&
+        starts_with_prefix(actual, environment->external_data_root)) {
+        const std::string obb_prefix =
+            environment->external_data_root + "/obb";
+        value->st_gid = starts_with_prefix(actual, obb_prefix) ? 1079 : 1078;
+    } else {
+        const std::string cache_prefix = environment->data_root + "/cache";
+        const std::string code_cache_prefix =
+            environment->data_root + "/code_cache";
+        const bool cache_path =
+            strcmp(actual, cache_prefix.c_str()) == 0 ||
+            starts_with_prefix(actual, cache_prefix) ||
+            strcmp(actual, code_cache_prefix.c_str()) == 0 ||
+            starts_with_prefix(actual, code_cache_prefix);
+        value->st_gid = cache_path
+            ? static_cast<gid_t>(environment->observed_uid + 10000)
+            : static_cast<gid_t>(environment->observed_uid);
+    }
 }
 
 void virtualize_target_statx(const char* actual, struct statx* value) {
     const Environment* environment = current_environment();
-    if (value == nullptr ||
-        !is_target_install_file(actual, environment)) {
+    if (value == nullptr || environment == nullptr) {
         return;
     }
+    if (is_virtual_native_library_path(actual, environment)) {
+        value->stx_uid = 1000;
+        value->stx_gid = 1000;
+        value->stx_mode =
+            (value->stx_mode & S_IFMT) | 0755;
+        return;
+    }
+    const bool target_runtime = is_target_runtime_path(actual, environment);
+    const bool process_owned_by_host =
+        is_current_proc_path(actual) &&
+        value->stx_uid == static_cast<uid_t>(environment->host_uid);
+    if (!target_runtime && !process_owned_by_host) return;
     value->stx_uid = static_cast<uid_t>(environment->observed_uid);
-    value->stx_gid = static_cast<gid_t>(environment->observed_uid);
+    if (!environment->external_data_root.empty() &&
+        starts_with_prefix(actual, environment->external_data_root)) {
+        const std::string obb_prefix =
+            environment->external_data_root + "/obb";
+        value->stx_gid = starts_with_prefix(actual, obb_prefix) ? 1079 : 1078;
+    } else {
+        const std::string cache_prefix = environment->data_root + "/cache";
+        const std::string code_cache_prefix =
+            environment->data_root + "/code_cache";
+        const bool cache_path =
+            strcmp(actual, cache_prefix.c_str()) == 0 ||
+            starts_with_prefix(actual, cache_prefix) ||
+            strcmp(actual, code_cache_prefix.c_str()) == 0 ||
+            starts_with_prefix(actual, code_cache_prefix);
+        value->stx_gid = cache_path
+            ? static_cast<gid_t>(environment->observed_uid + 10000)
+            : static_cast<gid_t>(environment->observed_uid);
+    }
 }
 
 bool virtual_path_from_actual(
@@ -720,17 +1116,56 @@ bool virtual_path_from_actual(
         rewrite(environment->external_data_root, environment->target_external_root)) {
         return true;
     }
+    if (!environment->external_data_root.empty()) {
+        const std::string target_obb =
+            "/storage/emulated/0/Android/obb/" + environment->package_name;
+        const std::string target_media =
+            "/storage/emulated/0/Android/media/" + environment->package_name;
+        if (rewrite(
+                environment->external_data_root + "/obb",
+                target_obb
+            )) {
+            return true;
+        }
+        if (rewrite(
+                environment->external_data_root + "/media",
+                target_media
+            )) {
+            return true;
+        }
+    }
     return false;
 }
 
-std::string virtualized_proc_content(const char* path) {
+std::string virtualized_proc_content(
+    const char* path,
+    pid_t self_pid
+) {
     const Environment* environment = current_environment();
     if (environment == nullptr || !proc_readable(path)) return {};
+    const bool thread_self =
+        strncmp(path, "/proc/thread-self/", 18) == 0;
+    std::string normalized_path;
+    if (thread_self) {
+        normalized_path = std::string("/proc/self/") + (path + 18);
+        path = normalized_path.c_str();
+    }
+    pid_t process_pid = 0;
     pid_t task_id = 0;
     const char* task_suffix = nullptr;
-    if (virtual_task_suffix(path, &task_id, &task_suffix)) {
+    const pid_t pid = self_pid > 0 ? self_pid : getpid();
+    if (virtual_task_suffix(
+            path,
+            &process_pid,
+            &task_id,
+            &task_suffix
+        )) {
         if (strcmp(task_suffix, "/comm") == 0) {
-            std::string value = virtual_task_comm(task_id);
+            std::string value = target_task_comm(
+                environment,
+                process_pid,
+                task_id
+            );
             if (value.empty()) return {};
             __android_log_print(
                 ANDROID_LOG_DEBUG,
@@ -743,35 +1178,195 @@ std::string virtualized_proc_content(const char* path) {
             return value;
         }
         if (strcmp(task_suffix, "/status") == 0) {
-            const std::string thread_name = virtual_task_comm(task_id);
+            const std::string thread_name = target_task_comm(
+                environment,
+                process_pid,
+                task_id
+            );
             if (thread_name.empty()) return {};
             return virtualized_status(
                 environment,
-                getpid(),
+                process_pid,
                 task_id,
                 thread_name
             );
         }
+        const std::string task_path =
+            "/proc/" + std::to_string(process_pid) + "/task/" +
+            std::to_string(task_id) + task_suffix;
+        if (strcmp(task_suffix, "/attr/current") == 0 ||
+            strcmp(task_suffix, "/attr/prev") == 0) {
+            const int category = environment->observed_uid - 10000;
+            if (category > 0) {
+                std::string value = "u:r:untrusted_app:s0:c" +
+                    std::to_string(category) +
+                    ",c256,c512,c768";
+                value.push_back('\0');
+                return value;
+            }
+            return std::string(
+                "u:r:untrusted_app:s0",
+                sizeof("u:r:untrusted_app:s0")
+            );
+        }
+        if (strcmp(task_suffix, "/cgroup") == 0) {
+            std::string cgroup = read_text_file(task_path.c_str());
+            replace_all(
+                &cgroup,
+                "uid_" + std::to_string(environment->host_uid),
+                "uid_" + std::to_string(environment->observed_uid)
+            );
+            return cgroup;
+        }
+        if (strcmp(task_suffix, "/stat") == 0) {
+            std::string stat = read_text_file(task_path.c_str());
+            const size_t open = stat.find('(');
+            const size_t close = stat.find(')', open == std::string::npos
+                ? 0
+                : open + 1);
+            if (open != std::string::npos && close != std::string::npos) {
+                stat.replace(
+                    open + 1,
+                    close - open - 1,
+                    process_thread_name(environment)
+                );
+            }
+            return stat;
+        }
+        if (strcmp(task_suffix, "/statm") == 0 ||
+            strcmp(task_suffix, "/sched") == 0 ||
+            strcmp(task_suffix, "/schedstat") == 0) {
+            return read_text_file(task_path.c_str());
+        }
     }
-    pid_t pid = getpid();
+    if (thread_self) {
+        const pid_t tid = static_cast<pid_t>(syscall(SYS_gettid));
+        const std::string thread_name = target_task_comm(
+            environment,
+            pid,
+            tid
+        );
+        if (proc_suffix(path, "/status")) {
+            return virtualized_status(
+                environment,
+                pid,
+                tid,
+                thread_name
+            );
+        }
+        if (proc_suffix(path, "/comm")) {
+            return thread_name + "\n";
+        }
+    }
+    pid_t process_id = pid;
     if (strncmp(path, "/proc/self/", 11) != 0) {
         char* end = nullptr;
         const long parsed = strtol(path + 6, &end, 10);
         if (parsed <= 0 ||
-            (parsed != getpid() && parsed != getppid())) {
+            (parsed != pid && parsed != getppid())) {
             return {};
         }
-        pid = static_cast<pid_t>(parsed);
+        process_id = static_cast<pid_t>(parsed);
+    }
+    if (proc_suffix(path, "/attr/current") ||
+        proc_suffix(path, "/attr/prev")) {
+        const int category = environment->observed_uid - 10000;
+        if (category > 0) {
+            std::string value = "u:r:untrusted_app:s0:c" +
+                std::to_string(category) +
+                ",c256,c512,c768";
+            value.push_back('\0');
+            return value;
+        }
+        return std::string(
+            "u:r:untrusted_app:s0",
+            sizeof("u:r:untrusted_app:s0")
+        );
+    }
+    if (proc_suffix(path, "/cgroup")) {
+        std::string cgroup = read_text_file(
+            proc_path(process_id, "cgroup").c_str()
+        );
+        replace_all(
+            &cgroup,
+            "uid_" + std::to_string(environment->host_uid),
+            "uid_" + std::to_string(environment->observed_uid)
+        );
+        return cgroup;
     }
     if (proc_suffix(path, "/status")) {
-        return virtualized_status(environment, pid);
+        return virtualized_status(environment, process_id);
     }
     if (proc_suffix(path, "/cmdline")) {
         return environment->process_name + '\0';
     }
+    if (proc_suffix(path, "/comm")) {
+        return process_thread_name(environment) + "\n";
+    }
+    if (proc_suffix(path, "/stat") ||
+        proc_suffix(path, "/statm") ||
+        proc_suffix(path, "/sched")) {
+        const char* name = proc_suffix(path, "/stat")
+            ? "stat"
+            : (proc_suffix(path, "/statm") ? "statm" : "sched");
+        return read_text_file(proc_path(process_id, name).c_str());
+    }
+    if (proc_suffix(path, "/smaps")) {
+        const std::string proc_smaps = proc_path(process_id, "smaps");
+        std::string value = read_text_file(proc_smaps.c_str());
+        replace_all(
+            &value,
+            environment->data_root + "/.jiagu",
+            environment->target_data_alias + "/.jiagu"
+        );
+        replace_all(
+            &value,
+            environment->data_root_alias + "/.jiagu",
+            environment->target_data_alias + "/.jiagu"
+        );
+        replace_all(
+            &value,
+            environment->actual_base_apk_path,
+            environment->virtual_base_apk_path
+        );
+        replace_all(
+            &value,
+            data_alias_path(environment->actual_base_apk_path),
+            environment->virtual_base_apk_path
+        );
+        if (!environment->native_library_dir.empty() &&
+            !environment->virtual_native_library_dir.empty()) {
+            replace_all(
+                &value,
+                environment->native_library_dir,
+                environment->virtual_native_library_dir
+            );
+        }
+        replace_all(
+            &value,
+            environment->data_root,
+            environment->target_data_root
+        );
+        replace_all(
+            &value,
+            environment->data_root_alias,
+            environment->target_data_alias
+        );
+        return filter_host_runtime_lines(value, environment);
+    }
     if (proc_suffix(path, "/maps")) {
-        const std::string proc_maps = proc_path(pid, "maps");
+        const std::string proc_maps = proc_path(process_id, "maps");
         std::string value = read_text_file(proc_maps.c_str());
+        replace_all(
+            &value,
+            environment->data_root + "/.jiagu",
+            environment->target_data_alias + "/.jiagu"
+        );
+        replace_all(
+            &value,
+            environment->data_root_alias + "/.jiagu",
+            environment->target_data_alias + "/.jiagu"
+        );
         replace_all(
             &value,
             environment->actual_base_apk_path,
@@ -815,8 +1410,21 @@ std::string virtualized_proc_content(const char* path) {
         return filter_host_runtime_lines(value, environment);
     }
     if (proc_suffix(path, "/mountinfo")) {
-        const std::string proc_mountinfo = proc_path(pid, "mountinfo");
+        const std::string proc_mountinfo = proc_path(
+            process_id,
+            "mountinfo"
+        );
         std::string value = read_text_file(proc_mountinfo.c_str());
+        replace_all(
+            &value,
+            environment->data_root + "/.jiagu",
+            environment->target_data_alias + "/.jiagu"
+        );
+        replace_all(
+            &value,
+            environment->data_root_alias + "/.jiagu",
+            environment->target_data_alias + "/.jiagu"
+        );
         replace_all(
             &value,
             environment->actual_base_apk_path,
@@ -847,6 +1455,14 @@ std::string virtualized_proc_content(const char* path) {
 }
 
 int open_virtual_proc(const char* path, int flags) {
+    return open_virtual_proc_for_pid(path, flags, getpid());
+}
+
+int open_virtual_proc_for_pid(
+    const char* path,
+    int flags,
+    pid_t process_id
+) {
     if ((flags & O_ACCMODE) == O_WRONLY || (flags & O_ACCMODE) == O_RDWR) {
         return -1;
     }
@@ -856,7 +1472,14 @@ int open_virtual_proc(const char* path, int flags) {
     if (environment == nullptr) return -1;
     record_hook_event(kHookEventProc);
     if (is_task_directory(path)) {
-        const std::string root = ensure_thread_view(environment);
+        const pid_t process_pid = task_directory_pid(path);
+        std::string root;
+        if (process_pid > 0) {
+            root = "/proc/" + std::to_string(process_pid) + "/task";
+        }
+        if (root.empty() || access(root.c_str(), R_OK) != 0) {
+            root = ensure_thread_view(environment);
+        }
         if (root.empty()) return -1;
         const int fd = open(
             root.c_str(),
@@ -868,11 +1491,12 @@ int open_virtual_proc(const char* path, int flags) {
     }
     std::string content;
     const auto now = std::chrono::steady_clock::now();
-    {
+    const bool use_cache = process_id == getpid();
+    if (use_cache) {
         std::lock_guard<std::mutex> guard(g_virtual_proc_cache_lock);
         for (const auto& cached : g_virtual_proc_cache) {
             if (cached.environment == environment &&
-                cached.path == virtual_path &&
+                cached.path == path &&
                 now - cached.sampled_at <= kVirtualProcCacheTtl) {
                 content = cached.content;
                 break;
@@ -880,21 +1504,46 @@ int open_virtual_proc(const char* path, int flags) {
         }
     }
     if (content.empty()) {
-        content = virtualized_proc_content(path);
+        content = virtualized_proc_content(path, process_id);
     }
     if (content.empty()) return -1;
-    {
+    char debug_maps[PROP_VALUE_MAX] = {};
+    __system_property_get("debug.nestspace.debug_virtual_maps", debug_maps);
+    if (strcmp(debug_maps, "1") == 0 &&
+        strcmp(path, "/proc/self/maps") == 0) {
+        static std::atomic<int> map_dump_count{0};
+        const int dump_index =
+            map_dump_count.fetch_add(1, std::memory_order_relaxed);
+        if (dump_index < 4) {
+            constexpr size_t kChunk = 3000;
+            for (size_t offset = 0; offset < content.size(); offset += kChunk) {
+                const size_t length = std::min(
+                    kChunk,
+                    content.size() - offset
+                );
+                const std::string chunk = content.substr(offset, length);
+                __android_log_print(
+                    ANDROID_LOG_DEBUG,
+                    "NestSpaceNative",
+                    "virtual-maps-chunk index=%d %s",
+                    dump_index,
+                    chunk.c_str()
+                );
+            }
+        }
+    }
+    if (use_cache) {
         std::lock_guard<std::mutex> guard(g_virtual_proc_cache_lock);
         auto* slot = &g_virtual_proc_cache.front();
         for (auto& cached : g_virtual_proc_cache) {
-            if (cached.path == virtual_path && cached.environment == environment) {
+            if (cached.path == path && cached.environment == environment) {
                 slot = &cached;
                 break;
             }
-            if (cached.path == nullptr) slot = &cached;
+            if (cached.path.empty()) slot = &cached;
         }
         slot->environment = environment;
-        slot->path = virtual_path;
+        slot->path = path;
         slot->content = content;
         slot->sampled_at = now;
     }

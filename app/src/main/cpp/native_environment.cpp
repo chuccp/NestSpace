@@ -1,5 +1,6 @@
 #include "native_environment_internal.h"
 
+#include <android/log.h>
 #include <sys/syscall.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
@@ -13,7 +14,9 @@
 #include <utility>
 
 extern "C" void install_native_crash_trace(const char* path);
+extern "C" void set_native_packer_guard(bool enabled);
 extern "C" bool install_native_kill_guard();
+extern "C" bool install_native_syscall_gateway();
 
 namespace {
 
@@ -57,6 +60,22 @@ std::vector<std::string> to_strings(JNIEnv* env, jobjectArray values) {
         const std::string content = to_string(env, value);
         if (value != nullptr) env->DeleteLocalRef(value);
         if (!content.empty()) result.push_back(content);
+    }
+    return result;
+}
+
+std::vector<int> to_ints(JNIEnv* env, jintArray values) {
+    std::vector<int> result;
+    if (values == nullptr) return result;
+    const jsize length = env->GetArrayLength(values);
+    result.resize(static_cast<size_t>(length));
+    if (length > 0) {
+        env->GetIntArrayRegion(
+            values,
+            0,
+            length,
+            result.data()
+        );
     }
     return result;
 }
@@ -108,6 +127,49 @@ void property_callback_probe(
     }
 }
 
+jint virtual_binder_calling_uid(JNIEnv*, jclass) {
+    const nestspace::Environment* environment =
+        nestspace::current_environment();
+    return environment == nullptr ? static_cast<jint>(getuid())
+                                  : environment->observed_uid;
+}
+
+jint virtual_binder_calling_pid(JNIEnv*, jclass) {
+    return static_cast<jint>(getpid());
+}
+
+void install_identity_jni_hooks(JNIEnv* env) {
+    static std::once_flag once;
+    std::call_once(once, [env] {
+        jclass binder = env->FindClass("android/os/Binder");
+        if (binder == nullptr) return;
+        JNINativeMethod methods[] = {
+            {
+                const_cast<char*>("getCallingUid"),
+                const_cast<char*>("()I"),
+                reinterpret_cast<void*>(virtual_binder_calling_uid)
+            },
+            {
+                const_cast<char*>("getCallingPid"),
+                const_cast<char*>("()I"),
+                reinterpret_cast<void*>(virtual_binder_calling_pid)
+            },
+        };
+        const jint result = env->RegisterNatives(
+            binder,
+            methods,
+            static_cast<jint>(sizeof(methods) / sizeof(methods[0]))
+        );
+        env->DeleteLocalRef(binder);
+        __android_log_print(
+            result == JNI_OK ? ANDROID_LOG_DEBUG : ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "Binder identity natives installed result=%d",
+            result
+        );
+    });
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -120,6 +182,8 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     jstring data_root,
     jstring external_data_root,
     jstring process_name,
+    jstring host_base_apk_path,
+    jstring host_native_library_dir,
     jstring native_library_dir,
     jstring virtual_native_library_dir,
     jstring actual_base_apk_path,
@@ -127,6 +191,7 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     jobjectArray actual_split_apk_paths,
     jobjectArray virtual_split_apk_paths,
     jobjectArray properties,
+    jintArray supplementary_groups,
     jint host_uid,
     jint observed_uid,
     jint virtual_pid,
@@ -140,6 +205,11 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     environment->data_root = to_string(env, data_root);
     environment->external_data_root = to_string(env, external_data_root);
     environment->process_name = to_string(env, process_name);
+    environment->host_base_apk_path = to_string(env, host_base_apk_path);
+    environment->host_native_library_dir = to_string(
+        env,
+        host_native_library_dir
+    );
     environment->native_library_dir = to_string(env, native_library_dir);
     environment->virtual_native_library_dir = to_string(
         env,
@@ -154,6 +224,10 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     environment->virtual_split_apk_paths = to_strings(
         env,
         virtual_split_apk_paths
+    );
+    environment->supplementary_groups = to_ints(
+        env,
+        supplementary_groups
     );
     environment->target_data_root =
         "/data/user/0/" + environment->package_name;
@@ -181,6 +255,8 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
 
     nestspace::restore_hooks();
     nestspace::publish_environment(std::move(environment));
+    install_identity_jni_hooks(env);
+    nestspace::install_jni_registration_hook(env);
     nestspace::refresh_hooks(false);
     static std::mutex watcher_lock;
     static bool watcher_started = false;
@@ -419,12 +495,29 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstallC
     install_native_crash_trace(content.c_str());
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeSetPackerGuard(
+    JNIEnv*,
+    jclass,
+    jboolean enabled
+) {
+    set_native_packer_guard(enabled == JNI_TRUE);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstallKillGuard(
     JNIEnv*,
     jobject
 ) {
     return install_native_kill_guard() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstallSyscallGateway(
+    JNIEnv*,
+    jclass
+) {
+    return install_native_syscall_gateway() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL

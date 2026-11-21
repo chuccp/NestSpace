@@ -89,6 +89,12 @@ object NativeEnvironmentBridge {
         }
     }
 
+    fun setPackerGuard(enabled: Boolean) {
+        if (!ensureLoaded()) return
+        runCatching { nativeSetPackerGuard(enabled) }
+            .onFailure { Log.w(TAG, "set packer guard failed", it) }
+    }
+
     fun installKillGuard() {
         if (!ensureLoaded()) return
         runCatching { nativeInstallKillGuard() }
@@ -96,10 +102,20 @@ object NativeEnvironmentBridge {
             .onFailure { Log.w(TAG, "install kill guard failed", it) }
     }
 
+    fun installSyscallGateway(): Boolean {
+        if (!ensureLoaded()) return false
+        return runCatching { nativeInstallSyscallGateway() }
+            .onSuccess { Log.d(TAG, "syscall gateway=$it") }
+            .onFailure { Log.w(TAG, "install syscall gateway failed", it) }
+            .getOrDefault(false)
+    }
+
     fun install(
         environment: VirtualEnvironment,
         identity: VirtualIdentitySnapshot,
-        hostPackageName: String
+        hostPackageName: String,
+        hostBaseApkPath: String,
+        hostNativeLibraryDir: String
     ): Boolean {
         if (!ensureLoaded()) return false
         return runCatching {
@@ -110,6 +126,8 @@ object NativeEnvironmentBridge {
                 environment.dataRoot,
                 environment.externalDataRoot.orEmpty(),
                 environment.processName,
+                hostBaseApkPath,
+                hostNativeLibraryDir,
                 environment.nativeLibraryDir.orEmpty(),
                 environment.virtualNativeLibraryDir.orEmpty(),
                 environment.apkPaths.firstOrNull().orEmpty(),
@@ -118,6 +136,7 @@ object NativeEnvironmentBridge {
                 environment.virtualSplitApkPaths.toTypedArray(),
                 environment.properties.flatMap { (key, value) -> listOf(key, value) }
                     .toTypedArray(),
+                environment.supplementaryGroups.toIntArray(),
                 environment.hostUid,
                 environment.observedUid,
                 environment.virtualPid,
@@ -274,6 +293,8 @@ object NativeEnvironmentBridge {
         dataRoot: String,
         externalDataRoot: String,
         processName: String,
+        hostBaseApkPath: String,
+        hostNativeLibraryDir: String,
         nativeLibraryDir: String,
         virtualNativeLibraryDir: String,
         actualBaseApkPath: String,
@@ -281,6 +302,7 @@ object NativeEnvironmentBridge {
         actualSplitApkPaths: Array<String>,
         virtualSplitApkPaths: Array<String>,
         properties: Array<String>,
+        supplementaryGroups: IntArray,
         hostUid: Int,
         observedUid: Int,
         virtualPid: Int,
@@ -307,7 +329,13 @@ object NativeEnvironmentBridge {
     private external fun nativeInstallCrashTrace(path: String)
 
     @JvmStatic
+    private external fun nativeSetPackerGuard(enabled: Boolean)
+
+    @JvmStatic
     private external fun nativeInstallKillGuard(): Boolean
+
+    @JvmStatic
+    private external fun nativeInstallSyscallGateway(): Boolean
 
     @JvmStatic
     private external fun nativeRewritePath(path: String): String?

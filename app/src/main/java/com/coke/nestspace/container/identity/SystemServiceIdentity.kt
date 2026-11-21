@@ -672,7 +672,13 @@ object SystemServiceIdentity {
                     else -> null
                 }
             }
-            val rewrittenArgs = args?.map(::rewriteArgument)?.toTypedArray()
+            val rewrittenArgs = args?.map { value ->
+                if (method.name == "getPackageGids") {
+                    value
+                } else {
+                    rewriteArgument(value)
+                }
+            }?.toTypedArray()
             val result = invokeDelegate(delegate, method, rewrittenArgs)
             return rewriteResult(result)
         }
@@ -1055,6 +1061,18 @@ object SystemServiceIdentity {
             )
 
             return when (name) {
+                "getPackageInfo" -> {
+                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
+                    if (!isContainerPackage(pkg)) return NOT_ROUTED
+                    val flags = intFlags(args.getOrNull(1))
+                    viaPmNullable { pm.getPackageInfo(pkg, flags) }
+                }
+                "getApplicationInfo" -> {
+                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
+                    if (!isContainerPackage(pkg)) return NOT_ROUTED
+                    val flags = intFlags(args.getOrNull(1))
+                    viaPmNullable { pm.getApplicationInfo(pkg, flags) }
+                }
                 "getActivityInfo", "getReceiverInfo", "getServiceInfo", "getProviderInfo" -> {
                     val component = args.getOrNull(0) as? ComponentName ?: return NOT_ROUTED
                     if (!isContainerPackage(component.packageName)) return NOT_ROUTED

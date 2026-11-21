@@ -34,11 +34,13 @@ data class ContainerLaunchSpec(
     val receiverFilters: Map<String, List<ContainerIntentFilter>>,
     val packageInfo: PackageInfo,
     val applicationInfo: ApplicationInfo,
+    val targetUid: Int,
     val dataDir: String,
     val activityTheme: Int,
     val applicationTheme: Int,
     val installedNativeLibraryDir: String? = null,
-    val nativeAbis: Set<String> = emptySet()
+    val nativeAbis: Set<String> = emptySet(),
+    val packageGids: List<Int> = emptyList()
 )
 
 object ContainerLaunchRegistry {

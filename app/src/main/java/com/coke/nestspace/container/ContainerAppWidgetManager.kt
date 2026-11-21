@@ -8,8 +8,7 @@ import java.lang.reflect.Proxy
  * Virtual apps run under the host UID, but AppWidgetManager binds widgets to
  * the calling package. The system service rejects a target package it cannot
  * associate with the host UID ("Package X does not belong to <hostUid>"), and
- * apps that install widgets (AMap, for example) hit that from a background
- * thread and crash.
+ * apps that install widgets can hit that from a background thread and crash.
  *
  * Widgets are a launcher-level feature that a virtual app cannot meaningfully
  * own anyway. Give each target context an AppWidgetManager backed by a no-op

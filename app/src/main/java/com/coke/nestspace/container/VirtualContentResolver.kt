@@ -23,10 +23,9 @@ import java.security.MessageDigest
  * Change notifications are different: ContentResolver.notifyChange() always
  * calls IContentService, and system_server rejects authorities that do not
  * belong to the installed host package ("Failed to find provider ... for user
- * 0"). Bilibili's XprefProvider writes a preference on the main thread and
- * notifies its authority immediately, which used to crash the target. Swallow
- * notifications for virtual authorities; SharedPreferences listeners used by
- * the app are unaffected.
+ * 0"). Targets commonly notify virtual authorities immediately after writing
+ * a preference, which would otherwise crash their main thread. Swallow
+ * notifications for virtual authorities; app-local listeners are unaffected.
  */
 @Suppress("DEPRECATION")
 @SuppressLint("BlockedPrivateApi")

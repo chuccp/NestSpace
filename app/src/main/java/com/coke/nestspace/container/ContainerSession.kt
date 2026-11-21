@@ -19,6 +19,7 @@ import com.coke.nestspace.container.loader.SharedLibraries
 import com.coke.nestspace.container.loader.withContainerClassLoader
 import com.coke.nestspace.container.remote.ContainerProcessBrokerClient
 import com.coke.nestspace.container.application.TargetApplicationFactory
+import com.coke.nestspace.container.application.HardenedStubBootstrap
 import com.coke.nestspace.container.application.toRuntimeApplicationSpec
 import com.coke.nestspace.runtime.plugin.RuntimeProfile
 import com.coke.nestspace.runtime.plugin.RuntimeProfiles
@@ -57,6 +58,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.AssetManager
 import android.content.res.Resources
+import dalvik.system.DexClassLoader
 import dalvik.system.PathClassLoader
 import android.os.Bundle
 import android.os.IBinder
@@ -809,8 +811,8 @@ class ContainerSession private constructor(
      * and pass its ClassLoader to their split-install machinery. While the
      * field still points at the host Application, those splits are injected
      * into the host PathClassLoader, which has no target base APK, so plugin
-     * classes referencing patched base classes fail with NoClassDefFoundError
-     * (Taobao's Flexa plugins, Ele.me tab included, do exactly this).
+     * classes referencing patched base classes fail with
+     * NoClassDefFoundError.
      */
     private fun publishAsProcessApplication() {
         val threadClass = Class.forName("android.app.ActivityThread")
@@ -973,6 +975,15 @@ class ContainerSession private constructor(
         val activityClass = fallbackActivityClass
             ?: (info.targetActivity?.takeIf { it.isNotBlank() } ?: info.name)
         val targetClass = loader.loadClass(activityClass).asSubclass(Activity::class.java)
+        if (info.screenOrientation !=
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        ) {
+            runCatching {
+                host.requestedOrientation = info.screenOrientation
+            }.onFailure {
+                Log.w(TAG, "target orientation apply failed: ${info.name}", it)
+            }
+        }
         runtimeProfile?.beforeTargetActivity(
             applicationSpec,
             loader,
@@ -980,13 +991,27 @@ class ContainerSession private constructor(
             targetClass
         )
         Log.d(TAG, "activity class=${targetClass.name}")
-        val target = targetClass.getDeclaredConstructor().newInstance()
 
         val theme = resources.newTheme().apply {
             applyStyle(resolveTheme(info), true)
         }
         val intent = Intent(sourceIntent ?: Intent())
             .setClassName(spec.packageName, info.name)
+        launchActivityThroughFramework(
+            host = host,
+            info = info,
+            intent = intent,
+            savedState = savedState
+        )?.let { target ->
+            targetHosts[target] = host
+            logJniSurface(target)
+            Log.d(
+                TAG,
+                "target created through ActivityThread ${target.javaClass.name}"
+            )
+            return target
+        }
+        val target = targetClass.getDeclaredConstructor().newInstance()
 
         val attach = Activity::class.java.declaredMethods
             .firstOrNull { it.name == "attach" }
@@ -1087,6 +1112,105 @@ class ContainerSession private constructor(
         return target
     }
 
+    private fun launchActivityThroughFramework(
+        host: StageAActivity,
+        info: ActivityInfo,
+        intent: Intent,
+        savedState: Bundle?
+    ): Activity? {
+        if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                "debug.nestspace.framework_activity_launch"
+            ) != "1"
+        ) {
+            return null
+        }
+        return runCatching {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val thread = activityThreadClass
+                .getMethod("currentActivityThread")
+                .invoke(null)
+            val method = activityThreadClass.declaredMethods.firstOrNull {
+                it.name == "startActivityNow" && it.parameterCount == 9
+            } ?: error("ActivityThread.startActivityNow not found")
+            method.isAccessible = true
+            val launchInfo = ActivityInfo(info).apply {
+                applicationInfo = context.applicationInfo
+            }
+            val compatibilityClass = Class.forName(
+                "android.content.res.CompatibilityInfo"
+            )
+            val compatibility = compatibilityClass
+                .getField("DEFAULT_COMPATIBILITY_INFO")
+                .get(null)
+            val loadedApkClass = Class.forName("android.app.LoadedApk")
+            val loadedApkConstructor = loadedApkClass
+                .getDeclaredConstructor(
+                    activityThreadClass,
+                    ApplicationInfo::class.java,
+                    compatibilityClass,
+                    ClassLoader::class.java,
+                    Boolean::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType
+                )
+                .apply { isAccessible = true }
+            val targetLoadedApk = loadedApkConstructor.newInstance(
+                thread,
+                context.applicationInfo,
+                compatibility,
+                loader,
+                false,
+                true,
+                false
+            )
+            val packagesField = activityThreadClass
+                .getDeclaredField("mPackages")
+                .apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val packages = packagesField.get(thread)
+                as MutableMap<String, Any>
+            packages[spec.packageName] = java.lang.ref.WeakReference(
+                targetLoadedApk
+            )
+            val assistToken = activityTokenField(host, "mAssistToken")
+            val shareableToken = activityTokenField(
+                host,
+                "mShareableActivityToken"
+            )
+            Log.d(
+                TAG,
+                "framework activity launch target=${info.name} " +
+                    "uid=${launchInfo.applicationInfo.uid} " +
+                    "loadedApk=${targetLoadedApk.javaClass.name} " +
+                    "parameters=${method.parameterTypes.joinToString { it.name }}"
+            )
+            method.invoke(
+                thread,
+                null,
+                null,
+                intent,
+                launchInfo,
+                hostToken(host),
+                savedState,
+                null,
+                assistToken,
+                shareableToken
+            ) as? Activity
+        }.onFailure {
+            Log.w(TAG, "framework activity launch failed: ${info.name}", it)
+        }.getOrNull()
+    }
+
+    private fun activityTokenField(
+        source: Activity,
+        name: String
+    ): IBinder? = runCatching {
+        Activity::class.java
+            .getDeclaredField(name)
+            .apply { isAccessible = true }
+            .get(source) as? IBinder
+    }.getOrNull()
+
     fun hostFor(target: Activity): StageAActivity? = targetHosts[target]
 
     fun detach(target: Activity) {
@@ -1132,6 +1256,12 @@ class ContainerSession private constructor(
             // handed to the host: the host PM cannot launch the target package.
             return targetPackage == spec.packageName
         }
+        Log.d(
+            TAG,
+            "target activity intent class=${info.name} action=${intent.action} " +
+                "flags=0x${intent.flags.toString(16)} " +
+                "extras=${intent.extras?.keySet().orEmpty()}"
+        )
 
         // Build the component from the host ActivityRecord instead of
         // Intent(host, ...): the container replaces the process package
@@ -1522,10 +1652,10 @@ class ContainerSession private constructor(
     /**
      * A target Activity is attached with the host's real activity token, so
      * framework `Activity.isTaskRoot()` asks about the host record. Launcher
-     * entry points such as Bilibili's MainActivityV2 deliberately call
-     * finish() when they are not the task root (the "don't open a second copy
-     * from a notification" path). Inside the container every virtual Activity
-     * is the root of its own virtual task, so present that view to the target.
+     * entry points deliberately call finish() when they are not the task root
+     * (the "don't open a second copy from a notification" path). Inside the
+     * container every virtual Activity is the root of its own virtual task, so
+     * present that view to the target.
      *
      * Activity.isTaskRoot() delegates to its private WindowControllerCallback;
      * replace only that callback and forward everything else to the original.
@@ -1611,6 +1741,7 @@ class ContainerSession private constructor(
                 processName = spec.targetProcessName
             )
             File(dataRoot, "code_cache").apply { mkdirs() }
+            File(dataRoot, ".jiagu").apply { mkdirs() }
             val apkPaths = listOf(spec.baseApkPath) + spec.splitApkPaths
             val sharedLibraryPaths = SharedLibraries.classPathEntries(
                 host.applicationContext,
@@ -1671,32 +1802,56 @@ class ContainerSession private constructor(
                 spec,
                 actualNativeLibraryDir = nativeLibs?.absolutePath,
                 nativeAbi = nativeAbi
-            )
-            val runtimeNativeLibs = installLayout.virtualNativeLibraryDir
-                ?.let(::File)
-                ?.takeIf { dir ->
-                    dir.isDirectory &&
-                        dir.listFiles()?.any {
-                            it.isFile && it.name.endsWith(".so") && it.canRead()
-                        } == true
-                }
-                ?: nativeLibs
+            ).let { layout ->
+                layout.copy(
+                    virtualNativeLibraryDir =
+                        spec.installedNativeLibraryDir
+                            ?: layout.virtualNativeLibraryDir
+                )
+            }
+            val runtimeNativeLibs = nativeLibs
+            val exposedNativeLibraryDir =
+                installLayout.virtualNativeLibraryDir ?: runtimeNativeLibs?.absolutePath
 
-            val nativeSearchPath = (listOfNotNull(runtimeNativeLibs?.absolutePath) +
-                pluginMount.nativeLibraryDirs)
+            val nativeSearchPath = (
+                listOfNotNull(runtimeNativeLibs?.absolutePath) +
+                    File(dataRoot, ".jiagu").absolutePath +
+                    pluginMount.nativeLibraryDirs
+                )
                 .distinct()
                 .joinToString(File.pathSeparator)
                 .ifBlank { null }
-            var loader: ClassLoader = RuntimeDexPathClassLoader(
-                classPath,
-                nativeSearchPath,
-                ClassLoader.getSystemClassLoader().parent,
+            val cachedHardenedEntry = HardenedStubBootstrap.cachedEntryName(
                 dataRoot,
-                File(dataRoot, "code_cache")
+                spec.baseApkPath
+            )
+            val useDirectHardenedLoader =
+                spec.applicationInfo.className == "com.stub.StubApp" &&
+                    cachedHardenedEntry != null
+            var loader: ClassLoader = if (useDirectHardenedLoader) {
+                PathClassLoader(
+                    classPath,
+                    nativeSearchPath,
+                    ClassLoader.getSystemClassLoader().parent
+                )
+            } else {
+                RuntimeDexPathClassLoader(
+                    classPath,
+                    nativeSearchPath,
+                    ClassLoader.getSystemClassLoader().parent,
+                    dataRoot,
+                    File(dataRoot, "code_cache"),
+                    cachedHardenedEntry
+                )
+            }
+            Log.d(
+                TAG,
+                "initial class loader=${loader.javaClass.name} " +
+                    "directHardened=$useDirectHardenedLoader"
             )
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_CODE)
             val appInfo = spec.applicationInfo
-            appInfo.dataDir = dataRoot.absolutePath
+            appInfo.dataDir = "/data/user/0/${spec.packageName}"
             appInfo.sourceDir = installLayout.virtualBaseApkPath
             appInfo.publicSourceDir = installLayout.virtualBaseApkPath
             appInfo.uid = android.os.Process.myUid()
@@ -1733,7 +1888,7 @@ class ContainerSession private constructor(
                 }
             }
             if (runtimeNativeLibs != null) {
-                appInfo.nativeLibraryDir = runtimeNativeLibs.absolutePath
+                appInfo.nativeLibraryDir = exposedNativeLibraryDir
             }
             runCatching {
                 appInfo.javaClass
@@ -1751,11 +1906,17 @@ class ContainerSession private constructor(
             // the Activity attachment path uses framework-private fields.
             HiddenApiCompat.ensure(force = true)
             Log.d(TAG, "session class loader: ${loader.javaClass.name}")
-            val resources = createResources(
-                host,
-                apkPaths + pluginMount.apkPaths,
-                loader
-            )
+            val resources = runCatching {
+                host.packageManager.getResourcesForApplication(spec.packageName)
+            }.onSuccess {
+                Log.d(TAG, "using package resources for ${spec.packageName}")
+            }.getOrElse {
+                createResources(
+                    host,
+                    apkPaths + pluginMount.apkPaths,
+                    loader
+                )
+            }
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_RESOURCES)
             Log.d(TAG, "resources ready classLoader=${loader.javaClass.simpleName}")
             startupCoordinator.mark(
@@ -1854,7 +2015,12 @@ class ContainerSession private constructor(
                 instanceId = spec.instanceId
             )
 
-            val storageProbe = VirtualStorageProbe.probe(context, dataRoot)
+            val storageProbe = VirtualStorageProbe.probe(
+                context,
+                dataRoot,
+                spec.packageName,
+                spec.instanceId
+            )
             val capabilityReport = RuntimeCapabilityProbe.probe(
                 availableSubprocessSlots = ContainerProcessPool.slotLimit(host.applicationContext),
                 storage = storageProbe,
@@ -1865,18 +2031,43 @@ class ContainerSession private constructor(
                 spec = spec,
                 nativeLibraryDir = runtimeNativeLibs?.absolutePath,
                 runtimeCapabilities = capabilityReport,
-                installLayout = installLayout
+                installLayout = installLayout,
+                packageGids = spec.packageGids
             )
             context.virtualEnvironment = virtualEnvironment
             VirtualEnvironmentRegistry.install(virtualEnvironment)
+            appInfo.uid = virtualEnvironment.observedUid
             NativeEnvironmentBridge.install(
                 virtualEnvironment,
                 VirtualEnvironmentRegistry.identitySnapshot(),
-                HostIdentity.packageName
+                HostIdentity.packageName,
+                HostIdentity.application
+                    ?.applicationInfo
+                    ?.sourceDir
+                    .orEmpty(),
+                HostIdentity.application
+                    ?.applicationInfo
+                    ?.nativeLibraryDir
+                    .orEmpty()
             )
+            if (com.coke.nestspace.BuildConfig.DEBUG) {
+                runCatching {
+                    File(dataRoot, "native-maps.txt").writeText(
+                        NativeEnvironmentBridge.readVirtualProcForDiagnostics(
+                            "/proc/self/maps"
+                        ).orEmpty()
+                    )
+                    File(dataRoot, "native-status.txt").writeText(
+                        NativeEnvironmentBridge.readVirtualProcForDiagnostics(
+                            "/proc/self/status"
+                        ).orEmpty()
+                    )
+                }
+            }
             // Packer checks run during Application class loading. Install the
             // process guard before attachBaseContext, not only before the
             // first target Activity is created.
+            NativeEnvironmentBridge.setPackerGuard(false)
             NativeEnvironmentBridge.installCrashTrace(spec.dataDir)
             NativeEnvironmentBridge.snapshot()?.let { native ->
                 Log.d(
@@ -1897,9 +2088,9 @@ class ContainerSession private constructor(
             )
             capabilityReport.issues.forEach { Log.w(TAG, "runtime capability: $it") }
 
-            // Hand target code a real ApplicationPackageManager: some SDKs
-            // (Pinduoduo's libpdd_secure) read its mPM field from JNI and abort
-            // when the object is any other PackageManager implementation.
+            // Hand target code a real ApplicationPackageManager: some security
+            // SDKs read its mPM field from JNI and reject arbitrary
+            // PackageManager implementations.
             val packageManager = host.applicationContext.packageManager
             context.targetPackageManager = packageManager
             // Application.attachBaseContext may read Settings.Secure before
@@ -1950,7 +2141,7 @@ class ContainerSession private constructor(
             // package whose code path and PackageManager metadata disagree.
             appInfo.sourceDir = spec.baseApkPath
             appInfo.publicSourceDir = spec.baseApkPath
-            appInfo.nativeLibraryDir = runtimeNativeLibs?.absolutePath
+            appInfo.nativeLibraryDir = exposedNativeLibraryDir
             runCatching {
                 appInfo.javaClass
                     .getField("splitSourceDirs")
@@ -1964,6 +2155,12 @@ class ContainerSession private constructor(
             // virtual identity first, otherwise those checks see the host
             // package and abort with NameNotFoundException.
             publishVirtualIdentity(activityThread, context, loader)
+            if (com.coke.nestspace.BuildConfig.DEBUG) {
+                com.coke.nestspace.container.runtime.RuntimeEnvironmentProbe.log(
+                    "after-virtual-identity",
+                    context
+                )
+            }
             TargetWebViewIdentityHook.install(context)
             val runtimeSpec = spec.toRuntimeApplicationSpec()
             val runtimeProfile = RuntimeProfiles.resolve(
@@ -1981,11 +2178,17 @@ class ContainerSession private constructor(
                 loader,
                 context
             )
+            NativeEnvironmentBridge.installSyscallGateway()
             ContainerLaunchProgress.advance(LaunchProgressStage.ATTACHING_APPLICATION)
             val applicationAttachStartedAt = SystemClock.elapsedRealtime()
             val application = ProcessNameCompat.withProcessName(spec.targetProcessName) {
                 withContainerClassLoader(loader) {
-                    attachApplication(spec, loader, context)
+                    attachApplication(
+                        spec,
+                        loader,
+                        context,
+                        host.applicationContext
+                    )
                 }
             }
             startupCoordinator.mark(
@@ -2058,7 +2261,6 @@ class ContainerSession private constructor(
             loader: ClassLoader
         ) {
             val threadClass = Class.forName("android.app.ActivityThread")
-
             runCatching {
                 val boundField = threadClass.getDeclaredField("mBoundApplication")
                     .apply { isAccessible = true }
@@ -2217,7 +2419,8 @@ class ContainerSession private constructor(
         private fun attachApplication(
             spec: ContainerLaunchSpec,
             loader: ClassLoader,
-            context: Context
+            context: Context,
+            hardenedAttachContext: Context
         ): Application {
             val applicationSpec = RuntimeApplicationSpec(
                 packageName = spec.packageName,
@@ -2225,13 +2428,250 @@ class ContainerSession private constructor(
                 baseApkPath = spec.baseApkPath,
                 splitApkPaths = spec.splitApkPaths
             )
-            val application = TargetApplicationFactory.create(
-                applicationSpec,
-                loader,
-                context
-            )
+            val savedContextFields = mutableListOf<
+                Triple<java.lang.reflect.Field, Any, Any?>
+            >()
+            val attachContextImpl = runCatching {
+                var current: Any = hardenedAttachContext
+                while (current is android.content.ContextWrapper) {
+                    val baseField = android.content.ContextWrapper::class.java
+                        .getDeclaredField("mBase")
+                        .apply { isAccessible = true }
+                    current = baseField.get(current) ?: break
+                }
+                current
+            }.getOrDefault(hardenedAttachContext)
+            if (hardenedAttachContext.javaClass.name == "com.coke.nestspace.NestSpaceApp") {
+                runCatching {
+                    val bound = Class.forName("android.app.ActivityThread")
+                        .let { threadClass ->
+                            val thread = threadClass
+                                .getMethod("currentActivityThread")
+                                .invoke(null)
+                            threadClass.getDeclaredField("mBoundApplication")
+                                .apply { isAccessible = true }
+                                .get(thread)
+                        }
+                    val loadedApk = bound?.javaClass
+                        ?.getDeclaredField("info")
+                        ?.apply { isAccessible = true }
+                        ?.get(bound)
+                    val virtualDataRoot = File("/data/user/0/${spec.packageName}")
+                    val loadedApkValues = linkedMapOf<String, Any?>(
+                        "mAppDir" to spec.baseApkPath,
+                        "mResDir" to spec.baseApkPath,
+                        "mDataDir" to virtualDataRoot.absolutePath,
+                        "mPackageName" to spec.packageName,
+                        "mApplicationInfo" to context.applicationInfo,
+                        "mClassLoader" to loader,
+                    )
+                    if (loadedApk != null) {
+                        loadedApkValues.forEach { (name, value) ->
+                            val field = findField(loadedApk.javaClass, name)
+                                ?: return@forEach
+                            savedContextFields.add(
+                                Triple(
+                                    field,
+                                    loadedApk,
+                                    field.get(loadedApk)
+                                )
+                            )
+                            field.set(loadedApk, value)
+                        }
+                    }
+                    val values = linkedMapOf<String, Any?>(
+                        "mPackageInfo" to loadedApk,
+                        "mFilesDir" to File(virtualDataRoot, "files"),
+                        "mCacheDir" to File(virtualDataRoot, "cache"),
+                        "mNoBackupFilesDir" to File(virtualDataRoot, "no_backup"),
+                        "mCodeCacheDir" to File(virtualDataRoot, "code_cache"),
+                        "mResources" to context.resources,
+                    )
+                    values.forEach { (name, value) ->
+                        val field = findField(attachContextImpl.javaClass, name)
+                            ?: return@forEach
+                        savedContextFields += Triple(
+                            field,
+                            attachContextImpl,
+                            field.get(attachContextImpl)
+                        )
+                        field.set(attachContextImpl, value)
+                    }
+                    Log.d(
+                        TAG,
+                        "prepared hardened ContextImpl dataDir=${context.filesDir}"
+                    )
+                }.onFailure {
+                    Log.w(TAG, "prepare hardened ContextImpl failed", it)
+                }
+            }
+            if (applicationSpec.applicationInfo.className == "com.stub.StubApp") {
+                runCatching {
+                    val stub = Class.forName("com.stub.StubApp", false, loader)
+                    stub.getDeclaredField("d")
+                        .apply { isAccessible = true }
+                        .set(null, context)
+                    val extract = stub.getDeclaredMethod(
+                        "a",
+                        String::class.java,
+                        Boolean::class.javaPrimitiveType,
+                        Boolean::class.javaPrimitiveType
+                    ).apply { isAccessible = true }
+                    val packerDir = File(spec.dataDir, ".jiagu").absolutePath
+                    val runtimeName = extract.invoke(
+                        null,
+                        packerDir,
+                        true,
+                        false
+                    ) as? String
+                    val compatibilityName = extract.invoke(
+                        null,
+                        packerDir,
+                        false,
+                        false
+                    ) as? String
+                    var extracted = false
+                    var isX86 = false
+                    if (!runtimeName.isNullOrBlank()) {
+                        val runtimeLibrary = File(packerDir, runtimeName)
+                        val assetName = when {
+                            runtimeName.contains("_64") -> "libjiagu_a64.so"
+                            runtimeName.contains("_x64") -> "libjiagu_x64.so"
+                            else -> "libjiagu.so"
+                        }
+                        val extractAsset = Class.forName(
+                            "com.tianyu.util.a",
+                            false,
+                            loader
+                        ).getDeclaredMethod(
+                            "a",
+                            Context::class.java,
+                            String::class.java,
+                            String::class.java,
+                            String::class.java
+                        ).apply { isAccessible = true }
+                        extracted = extractAsset.invoke(
+                            null,
+                            context,
+                            assetName,
+                            packerDir,
+                            runtimeName
+                        ) as? Boolean ?: false
+                        isX86 = runCatching {
+                            Class.forName("com.tianyu.util.a", false, loader)
+                                .getDeclaredMethod("a")
+                                .apply { isAccessible = true }
+                                .invoke(null) as? Boolean ?: false
+                        }.getOrDefault(false)
+                        val compatibilityLibrary = File(
+                            packerDir,
+                            compatibilityName ?: "libjiagu.so"
+                        )
+                        if (runtimeLibrary.isFile &&
+                            !compatibilityLibrary.exists()
+                        ) {
+                            runtimeLibrary.copyTo(
+                                compatibilityLibrary,
+                                overwrite = false
+                            )
+                        }
+                        if (compatibilityLibrary.isFile) {
+                            compatibilityLibrary.setReadable(true, true)
+                            compatibilityLibrary.setExecutable(true, true)
+                            compatibilityLibrary.setWritable(false, false)
+                        }
+                    }
+                    Log.d(
+                        TAG,
+                        "prepared packer libraries runtime=$runtimeName " +
+                                "compatibility=$compatibilityName " +
+                                "extracted=$extracted isX86=$isX86 " +
+                                "abi=${android.os.Build.CPU_ABI}/" +
+                                "${android.os.Build.CPU_ABI2} dir=$packerDir"
+                    )
+                }.onFailure {
+                    Log.w(TAG, "prepare packer libraries failed", it)
+                }
+            }
+            if (applicationSpec.applicationInfo.className == "com.stub.StubApp") {
+                val hardenedApplication = try {
+                    HardenedStubBootstrap.attach(
+                        loader,
+                        attachContextImpl as? Context ?: hardenedAttachContext,
+                        File(spec.dataDir, ".jiagu")
+                    )
+                } finally {
+                    savedContextFields.asReversed().forEach { (field, target, value) ->
+                        runCatching { field.set(target, value) }
+                    }
+                }
+                hardenedApplication?.let { application ->
+                    if (context is ContainerContext) {
+                        context.targetApplication = application
+                        runCatching {
+                            val baseField = android.content.ContextWrapper::class.java
+                                .getDeclaredField("mBase")
+                                .apply { isAccessible = true }
+                            baseField.set(application, context)
+                            HardenedStubBootstrap.lastRealApplication?.let { real ->
+                                baseField.set(real, context)
+                            }
+                            val stub = Class.forName(
+                                "com.stub.StubApp",
+                                false,
+                                loader
+                            )
+                            stub.getDeclaredField("d")
+                                .apply { isAccessible = true }
+                                .set(null, context)
+                        }.onFailure {
+                            Log.w(
+                                TAG,
+                                "restore hardened container context failed",
+                                it
+                            )
+                        }
+                    }
+                    NativeEnvironmentBridge.installKillGuard()
+                    return application
+                }
+            }
+            val application = try {
+                TargetApplicationFactory.create(
+                    applicationSpec,
+                    loader,
+                    context,
+                    attachContextImpl as? Context ?: hardenedAttachContext
+                )
+            } finally {
+                savedContextFields.asReversed().forEach { (field, target, value) ->
+                    runCatching { field.set(target, value) }
+                }
+            }
             if (context is ContainerContext) {
                 context.targetApplication = application
+                if (application.javaClass.name == "com.stub.StubApp") {
+                    runCatching {
+                        val baseField = android.content.ContextWrapper::class.java
+                            .getDeclaredField("mBase")
+                            .apply { isAccessible = true }
+                        baseField.set(application, context)
+                    }.onFailure {
+                        Log.w(TAG, "restore hardened application base context failed", it)
+                    }
+                    runCatching {
+                        val stub = Class.forName(
+                            "com.stub.StubApp",
+                            false,
+                            loader
+                        )
+                        stub.getDeclaredField("d")
+                            .apply { isAccessible = true }
+                            .set(null, context)
+                    }.onFailure {
+                        Log.w(TAG, "replace hardened context reference failed", it)
+                    }
+                }
             }
             Log.d(
                 TAG,
@@ -2246,6 +2686,12 @@ class ContainerSession private constructor(
             paths: List<String>,
             classLoader: ClassLoader
         ): Resources {
+            Log.d(
+                TAG,
+                "create target resources paths=${
+                    paths.joinToString(File.pathSeparator)
+                }"
+            )
             val assetManager = AssetManager::class.java
                 .getDeclaredConstructor()
                 .newInstance()
@@ -2263,6 +2709,11 @@ class ContainerSession private constructor(
                         }
                     )
                 }
+                Log.d(
+                    TAG,
+                    "target AssetManager.addAssetPath index=$index " +
+                        "cookie=$cookie path=$path"
+                )
             }
 
             val base = Resources(

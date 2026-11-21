@@ -7,6 +7,7 @@ import com.coke.nestspace.container.loader.ApkMetadataCache
 
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import com.coke.nestspace.container.loader.NativeLibs
@@ -65,6 +66,22 @@ internal object ContainerSpecFactory {
             ?.nativeAbis
             ?: NativeLibs.abisOf(listOf(app.baseApkPath) + app.splitApkPaths)
         val installed = installedPackage(context, packageName, importedDescriptor)
+        val packageGids = runCatching {
+            val manager = context.packageManager
+            val method = manager.javaClass.methods.firstOrNull {
+                it.name == "getPackageGids" &&
+                    it.parameterTypes.contentEquals(arrayOf(String::class.java))
+            } ?: return@runCatching emptyList()
+            (method.invoke(manager, packageName) as? IntArray)
+                ?.toList()
+                .orEmpty()
+        }.onFailure {
+            android.util.Log.w(
+                "ContainerSpecFactory",
+                "package gids unavailable for $packageName",
+                it
+            )
+        }.getOrDefault(emptyList())
         val descriptor = installed?.descriptor ?: importedDescriptor
         val baseApkPath = installed?.baseApkPath ?: app.baseApkPath
         val splitApkPaths = installed?.splitApkPaths ?: app.splitApkPaths
@@ -112,17 +129,20 @@ internal object ContainerSpecFactory {
         val dataDir = File(File(root, "data"), sanitize(packageName))
             .resolve(sanitize(instanceId))
         dataDir.mkdirs()
-        listOf(
-            "files",
-            "cache",
-            "code_cache",
-            "no_backup",
-            "databases",
-            "shared_prefs",
-            "obb",
+        mapOf(
+            "files" to 0x1f9,
+            "cache" to 0x5f9,
+            "code_cache" to 0x5f9,
+            "no_backup" to 0x1f9,
             com.coke.nestspace.container.runtime.VirtualStorageLayout.DEVICE_PROTECTED_DIRECTORY
-        )
-            .forEach { File(dataDir, it).mkdirs() }
+                to 0x1f9
+        ).forEach { (name, mode) ->
+            val directory = File(dataDir, name)
+            directory.mkdirs()
+            runCatching {
+                android.system.Os.chmod(directory.absolutePath, mode)
+            }
+        }
 
         return ContainerLaunchSpec(
             sessionId = sessionId,
@@ -146,12 +166,14 @@ internal object ContainerSpecFactory {
                 firstInstallTime = packageFirstInstallTime
                 lastUpdateTime = packageLastUpdateTime
             },
-            applicationInfo = descriptor.applicationInfo,
+            applicationInfo = installed?.applicationInfo ?: descriptor.applicationInfo,
+            targetUid = installed?.uid ?: descriptor.applicationInfo.uid,
             dataDir = dataDir.absolutePath,
             activityTheme = activity.theme,
             applicationTheme = descriptor.applicationInfo.theme,
             installedNativeLibraryDir = installed?.nativeLibraryDir,
-            nativeAbis = nativeAbis
+            nativeAbis = nativeAbis,
+            packageGids = packageGids
         )
     }
 
@@ -160,6 +182,8 @@ internal object ContainerSpecFactory {
         val baseApkPath: String,
         val splitApkPaths: List<String>,
         val nativeLibraryDir: String?,
+        val uid: Int,
+        val applicationInfo: ApplicationInfo,
         val launcherActivityInfo: ActivityInfo?,
         val firstInstallTime: Long,
         val lastUpdateTime: Long
@@ -184,7 +208,7 @@ internal object ContainerSpecFactory {
         }
         val info = context.packageManager.getPackageInfo(
             packageName,
-            signatureFlag
+            signatureFlag or PackageManager.GET_META_DATA
         )
         val installedVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             info.longVersionCode
@@ -195,6 +219,9 @@ internal object ContainerSpecFactory {
         if (installedVersionCode != imported.versionCode) return@runCatching null
 
         val appInfo = info.applicationInfo ?: return@runCatching null
+        if (appInfo.metaData == null) {
+            appInfo.metaData = imported.applicationInfo.metaData
+        }
         val baseApkPath = appInfo.sourceDir ?: return@runCatching null
         if (!File(baseApkPath).canRead()) return@runCatching null
 
@@ -231,6 +258,8 @@ internal object ContainerSpecFactory {
             baseApkPath = baseApkPath,
             splitApkPaths = splitApkPaths,
             nativeLibraryDir = nativeLibraryDir,
+            uid = appInfo.uid,
+            applicationInfo = appInfo,
             launcherActivityInfo = launcherActivityInfo,
             firstInstallTime = info.firstInstallTime,
             lastUpdateTime = info.lastUpdateTime

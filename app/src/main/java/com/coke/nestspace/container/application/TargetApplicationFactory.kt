@@ -19,7 +19,8 @@ object TargetApplicationFactory {
     fun create(
         spec: RuntimeApplicationSpec,
         loader: ClassLoader,
-        containerContext: Context
+        containerContext: Context,
+        hardenedAttachContext: Context = containerContext
     ): Application {
         val bootstrap = runCatching {
             ApplicationBootstrapResolver.resolve(spec, loader)
@@ -82,7 +83,15 @@ object TargetApplicationFactory {
                         bootstrap.reason
                 )
             ApplicationBootstrap.ManifestApplication ->
-                attachRegularApplication(spec, loader, containerContext)
+                attachRegularApplication(
+                    spec,
+                    loader,
+                    if (spec.applicationInfo.className == "com.stub.StubApp") {
+                        hardenedAttachContext
+                    } else {
+                        containerContext
+                    }
+                )
         }
     }
 
@@ -183,7 +192,9 @@ object TargetApplicationFactory {
                 Log.d(
                     TAG,
                     "attachBaseContext start application=${application.javaClass.name} " +
-                        "context=${context.javaClass.name} package=${context.packageName}"
+                        "context=${context.javaClass.name} package=${context.packageName} " +
+                        "files=${context.filesDir} data=${context.applicationInfo.dataDir} " +
+                        "loader=${context.classLoader.javaClass.name}"
                 )
                 attachBase.invoke(application, context)
                 Log.d(

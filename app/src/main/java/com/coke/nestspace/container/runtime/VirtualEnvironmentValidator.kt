@@ -65,16 +65,18 @@ object VirtualEnvironmentValidator {
                 "Process PID ${facts.processPid} != snapshot ${environment.virtualPid}"
             )
         }
-        if (facts.contextDataDir != environment.dataRoot) {
+        val expectedDataDir = "/data/user/0/${environment.packageName}"
+        val expectedDeviceDataDir = "/data/user_de/0/${environment.packageName}"
+        if (facts.contextDataDir != expectedDataDir) {
             issues += error(
                 "CONTEXT_DATA_DIR_MISMATCH",
-                "Context dataDir ${facts.contextDataDir} != ${environment.dataRoot}"
+                "Context dataDir ${facts.contextDataDir} != $expectedDataDir"
             )
         }
-        if (facts.applicationDataDir != environment.dataRoot) {
+        if (facts.applicationDataDir != expectedDataDir) {
             issues += error(
                 "APPLICATION_DATA_DIR_MISMATCH",
-                "Application dataDir ${facts.applicationDataDir} != ${environment.dataRoot}"
+                "Application dataDir ${facts.applicationDataDir} != $expectedDataDir"
             )
         }
         if (!facts.contextIsDeviceProtected) {
@@ -83,11 +85,11 @@ object VirtualEnvironmentValidator {
                 "Derived context does not report device-protected storage"
             )
         }
-        if (facts.deviceProtectedDataDir != environment.deviceProtectedDataRoot) {
+        if (facts.deviceProtectedDataDir != expectedDeviceDataDir) {
             issues += error(
                 "DEVICE_PROTECTED_DATA_DIR_MISMATCH",
                 "Device-protected dataDir ${facts.deviceProtectedDataDir} != " +
-                    environment.deviceProtectedDataRoot
+                    expectedDeviceDataDir
             )
         }
 

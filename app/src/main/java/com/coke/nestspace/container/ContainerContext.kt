@@ -123,6 +123,7 @@ class ContainerContext(
 
     private var locationManager: android.location.LocationManager? = null
     private var locationManagerReady = false
+    private val sharedPreferences = mutableMapOf<String, SharedPreferences>()
 
     private val activeDataRoot: File
         get() = if (deviceProtected) {
@@ -130,6 +131,12 @@ class ContainerContext(
         } else {
             dataRoot
         }
+
+    private val visibleDataRoot: File
+        get() = File(
+            if (deviceProtected) "/data/user_de/0" else "/data/user/0",
+            targetPackage
+        )
 
     @Synchronized
     private fun virtualLocationManager(): android.location.LocationManager? {
@@ -367,8 +374,24 @@ class ContainerContext(
         else -> 2
     }
 
-    private fun dir(name: String): File =
-        File(activeDataRoot, name).apply { if (!exists()) mkdirs() }
+    private fun dir(name: String): File {
+        ensureBackingDirectory(File(activeDataRoot, name))
+        return File(visibleDataRoot, name)
+    }
+
+    private fun ensureBackingDirectory(directory: File) {
+        if (!directory.isDirectory) directory.mkdirs()
+        val mode = when (directory.name) {
+            "cache", "code_cache" -> 0x5f9
+            "files", "no_backup", "databases", "shared_prefs", "obb" -> 0x1f9
+            else -> null
+        }
+        if (mode != null) {
+            runCatching {
+                android.system.Os.chmod(directory.absolutePath, mode)
+            }
+        }
+    }
 
     override fun getPackageName(): String =
         if (calledFromToast()) HostIdentity.packageName else targetPackage
@@ -392,15 +415,66 @@ class ContainerContext(
     }
 
     /**
-     * Attribution (AppOps, IME, connectivity, notification) is checked against
-     * the real UID. Target packages are not installed for the host UID, so
-     * reporting them here makes framework services reject the call (for
-     * example InputMethodManagerService refuses the input client). The host
-     * package is the attribution the system can actually verify.
+     * Attribution (AppOps, IME, connectivity, notification, storage) is
+     * validated against the real kernel UID. The host package is the value
+     * system_server can verify, so this method intentionally remains host
+     * scoped even though the target's other package-facing APIs are virtual.
      */
-    override fun getOpPackageName(): String = super.getOpPackageName()
+    override fun getOpPackageName(): String = when {
+        calledFromToast() -> HostIdentity.packageName
+        calledFromFrameworkAttribution() -> HostIdentity.packageName
+        else -> targetPackage
+    }
 
-    override fun getDataDir(): File = activeDataRoot.apply { if (!exists()) mkdirs() }
+    private fun calledFromFrameworkAttribution(): Boolean {
+        val frames = Throwable().stackTrace
+        for (index in 1 until frames.size) {
+            val name = frames[index].className
+            if (name == ContextWrapper::class.java.name ||
+                name == ContainerContext::class.java.name) {
+                continue
+            }
+            if (name == "android.app.ActivityThread" &&
+                frames[index].methodName == "currentOpPackageName") {
+                return activityThreadOpPackageUsesHost(frames, index)
+            }
+            return name.startsWith("android.") ||
+                name.startsWith("com.android.")
+        }
+        return true
+    }
+
+    /**
+     * ActivityThread.currentOpPackageName() reads the application context, so
+     * an app calling it would otherwise hit the framework-attribution branch
+     * above and receive the host package. Keep system services host-scoped,
+     * while preserving the target package when the target app or JNI called
+     * the static helper directly.
+     */
+    private fun activityThreadOpPackageUsesHost(
+        frames: Array<StackTraceElement>,
+        activityThreadFrame: Int
+    ): Boolean {
+        for (index in activityThreadFrame + 1 until frames.size) {
+            val name = frames[index].className
+            if (name == ContextWrapper::class.java.name ||
+                name == ContainerContext::class.java.name ||
+                name == "android.app.ActivityThread") {
+                continue
+            }
+            return name.startsWith("android.") ||
+                name.startsWith("com.android.")
+        }
+        // A JNI caller has no Java frame beyond ActivityThread. Direct installs
+        // normally hit hidden-API denial here; when the container exposes the
+        // method, its value should still describe the target process.
+        return false
+    }
+
+    override fun getDataDir(): File {
+        ensureBackingDirectory(activeDataRoot)
+        return visibleDataRoot
+    }
 
     override fun isDeviceProtectedStorage(): Boolean = deviceProtected
 
@@ -418,14 +492,14 @@ class ContainerContext(
     override fun getDir(name: String, mode: Int): File = dir("app_$name")
 
     override fun getDatabasePath(name: String): File =
-        File(dir("databases"), name).apply { parentFile?.mkdirs() }
+        File(dir("databases"), name)
 
     override fun openFileInput(name: String): FileInputStream =
         FileInputStream(File(getFilesDir(), name))
 
     override fun openFileOutput(name: String, mode: Int): FileOutputStream {
         val file = File(getFilesDir(), name)
-        file.parentFile?.mkdirs()
+        ensureBackingDirectory(File(activeDataRoot, "files"))
         return FileOutputStream(file, mode and Context.MODE_APPEND != 0)
     }
 
@@ -435,63 +509,69 @@ class ContainerContext(
 
     override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences {
         val prefName = name ?: "default"
-        val storagePrefix = if (deviceProtected) "ns_device_" else "ns_"
-        return super.getSharedPreferences(
-            prefKey(targetPackage, instanceId, prefName, storagePrefix),
-            mode
-        )
+        val directory = File(activeDataRoot, "shared_prefs")
+        ensureBackingDirectory(directory)
+        val key = "$deviceProtected:$prefName"
+        synchronized(sharedPreferences) {
+            sharedPreferences[key]?.let { return it }
+            val file = File(directory, "$prefName.xml")
+            val backup = File(directory, "$prefName.bak")
+            val local = runCatching {
+                val type = Class.forName("android.app.SharedPreferencesImpl")
+                val constructor = type.constructors.firstOrNull { candidate ->
+                    candidate.parameterTypes.contentEquals(
+                        arrayOf(File::class.java, File::class.java, Int::class.javaPrimitiveType)
+                    )
+                }
+                val instance = constructor?.newInstance(file, backup, mode)
+                    ?: type.getDeclaredConstructor(
+                        File::class.java,
+                        Int::class.javaPrimitiveType
+                    ).apply { isAccessible = true }.newInstance(file, mode)
+                instance as SharedPreferences
+            }.getOrElse {
+                android.util.Log.w(
+                    "ContainerContext",
+                    "instance SharedPreferences fallback name=$prefName",
+                    it
+                )
+                val storagePrefix = if (deviceProtected) "ns_device_" else "ns_"
+                return super.getSharedPreferences(
+                    prefKey(targetPackage, instanceId, prefName, storagePrefix),
+                    mode
+                )
+            }
+            sharedPreferences[key] = local
+            return local
+        }
     }
 
     override fun getExternalFilesDir(type: String?): File? {
-        val hostRoot = hostExternalFilesRoot() ?: return null
-        val root = File(File(hostRoot, "vspace"), instanceKey)
-        val result = if (type.isNullOrBlank()) {
-            File(root, "files")
+        val suffix = if (type.isNullOrBlank()) {
+            "files"
         } else {
-            File(File(root, "files"), type.substringAfterLast('/'))
+            "files/${type.substringAfterLast('/')}"
         }
-        return result.takeIf(::ensureWritableDirectory)
+        return externalDirectory(suffix)
     }
 
     override fun getExternalCacheDir(): File? {
-        val hostRoot = hostExternalCacheRoot() ?: return null
-        return File(File(File(hostRoot, "vspace"), instanceKey), "cache")
-            .takeIf(::ensureWritableDirectory)
+        return externalDirectory("cache")
     }
 
     private fun externalStorageDir(): File =
         android.os.Environment.getExternalStorageDirectory()
 
-    /**
-     * Do not use super.getExternalFilesDir(): the base Context can carry the
-     * target package identity, and StorageManager rejects that path under the
-     * host UID. The host package's own external directory is always writable.
-     */
-    private fun hostExternalFilesRoot(): File? {
-        // Never ask a Context at this point: both the wrapper and Application
-        // ContextImpl may carry target package identity after a session starts.
-        // HostIdentity froze the real host directory before that rewrite.
-        val frameworkRoot = HostIdentity.externalFilesDir
-        val explicitRoot = File(
-            externalStorageDir(),
-            "Android/data/${HostIdentity.packageName}/files"
+    private fun externalDirectory(suffix: String): File? {
+        val actual = File(
+            VirtualStorageLayout.externalInstanceRoot(targetPackage, instanceId),
+            suffix
         )
-        return sequenceOf(frameworkRoot, explicitRoot)
-            .filterNotNull()
-            .distinctBy { it.absolutePath }
-            .firstOrNull { it.isDirectory || it.mkdirs() }
-    }
-
-    private fun hostExternalCacheRoot(): File? {
-        val frameworkRoot = HostIdentity.externalCacheDir
-        val explicitRoot = File(
-            externalStorageDir(),
-            "Android/data/${HostIdentity.packageName}/cache"
+        if (!ensureWritableDirectory(actual)) return null
+        return File(
+            File(externalStorageDir(), "Android/data/$targetPackage"),
+            suffix
         )
-        return sequenceOf(frameworkRoot, explicitRoot)
-            .filterNotNull()
-            .distinctBy { it.absolutePath }
-            .firstOrNull { it.isDirectory || it.mkdirs() }
     }
 
     private fun ensureWritableDirectory(directory: File): Boolean = runCatching {
@@ -500,7 +580,17 @@ class ContainerContext(
         probe.delete()
     }.getOrDefault(false)
 
-    override fun getObbDir(): File = dir("obb")
+    override fun getObbDir(): File {
+        val actual = File(
+            VirtualStorageLayout.externalInstanceRoot(targetPackage, instanceId),
+            "obb"
+        )
+        ensureWritableDirectory(actual)
+        return File(
+            File(externalStorageDir(), "Android/obb"),
+            targetPackage
+        )
+    }
 
     override fun getObbDirs(): Array<File?> = arrayOf(getObbDir())
 
@@ -510,8 +600,16 @@ class ContainerContext(
     override fun getExternalCacheDirs(): Array<File?> =
         arrayOf(getExternalCacheDir())
 
-    override fun getExternalMediaDirs(): Array<File?> =
-        arrayOf(dir("external-media"))
+    override fun getExternalMediaDirs(): Array<File?> {
+        val actual = File(
+            VirtualStorageLayout.externalInstanceRoot(targetPackage, instanceId),
+            "media"
+        )
+        ensureWritableDirectory(actual)
+        return arrayOf(
+            File(File(externalStorageDir(), "Android/media"), targetPackage)
+        )
+    }
 
     override fun createPackageContext(packageName: String, flags: Int): Context =
         if (packageName == targetPackage) this else super.createPackageContext(packageName, flags)
@@ -533,9 +631,9 @@ class ContainerContext(
     override fun getTheme(): Resources.Theme = targetTheme ?: super.getTheme()
 
     /**
-     * AMap's Wing/PageSupportActivity rewrites its base context through
-     * createConfigurationContext (locale handling). The stock implementation
-     * returns a ContextImpl backed by the HOST resources, which makes the
+     * Some Activities rewrite their base context through
+     * createConfigurationContext for locale handling. The stock implementation
+     * returns a ContextImpl backed by the host resources, which makes the
      * target's drawable IDs disappear. Re-wrap the new configuration around
      * the target APK's AssetManager instead.
      */

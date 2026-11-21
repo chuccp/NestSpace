@@ -246,8 +246,8 @@ class VirtualPackageRegistry(
     }
 
     // Unscoped implicit-Intent resolution intentionally does not scan every
-    // installed virtual app: parsing large APKs (Zhihu/NetEase are 100MB+)
-    // inside a startup PM query blocks the container's main thread. Only an
+    // installed virtual app: parsing very large APKs inside a startup PM query
+    // blocks the container's main thread. Only an
     // Intent explicitly scoped to a virtual package (component or setPackage)
     // is answered; cross-app lookups stay cheap and predictable.
     fun queryActivities(intent: Intent?, flags: Int): List<ResolveInfo> {

@@ -1,5 +1,6 @@
 package com.coke.nestspace.proxy
 
+import android.app.Application
 import android.content.Context
 import android.util.Log
 import com.coke.nestspace.browser.BrowserProxyManager
@@ -201,6 +202,7 @@ object AppProxyManager {
     }
 
     private fun syncBrowserProxy(context: Context) {
+        if (Application.getProcessName() != context.packageName) return
         runCatching {
             BrowserProxyManager.apply(context.applicationContext)
         }.onFailure {

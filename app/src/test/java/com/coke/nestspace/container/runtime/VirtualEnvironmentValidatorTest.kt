@@ -41,10 +41,10 @@ class VirtualEnvironmentValidatorTest {
         applicationUid = environment.observedUid,
         processUid = environment.hostUid,
         processPid = environment.virtualPid,
-        contextDataDir = environment.dataRoot,
-        applicationDataDir = environment.dataRoot,
+        contextDataDir = "/data/user/0/${environment.packageName}",
+        applicationDataDir = "/data/user/0/${environment.packageName}",
         contextIsDeviceProtected = true,
-        deviceProtectedDataDir = environment.deviceProtectedDataRoot,
+        deviceProtectedDataDir = "/data/user_de/0/${environment.packageName}",
         nativeSnapshot = native
     )
 

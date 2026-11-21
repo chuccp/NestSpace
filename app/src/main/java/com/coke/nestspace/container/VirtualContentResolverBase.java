@@ -9,8 +9,8 @@ import android.content.IContentProvider;
  *
  * ContentResolver is abstract in the platform, but the hooks are hidden from
  * the public SDK stubs, so a Kotlin subclass compiles to an abstract class and
- * throws AbstractMethodError when Bilibili reaches acquireProvider through a
- * path that does not consult mWrapped. The signatures below are the framework
+ * throws AbstractMethodError when target code reaches acquireProvider through
+ * a path that does not consult mWrapped. The signatures below are the framework
  * ones; android.content.IContentProvider is resolved from the boot class
  * loader at runtime. mWrapped handles normal data operations.
  */
