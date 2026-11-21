@@ -29,11 +29,17 @@ import java.util.Locale;
  */
 public class HookProbeActivity extends Activity {
     private static final String TAG = "HookProbe";
+    private Throwable nativeLoadError;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        NativeProbe.ensureLoaded();
+        try {
+            NativeProbe.ensureLoaded();
+        } catch (Throwable error) {
+            nativeLoadError = error;
+            Log.w(TAG, "native probe unavailable", error);
+        }
         String report = buildReport();
         TextView text = new TextView(this);
         text.setText(report);
@@ -118,6 +124,7 @@ public class HookProbeActivity extends Activity {
         add(lines, "os.geteuid", safe(Os::geteuid));
         add(lines, "os.getgid", safe(Os::getgid));
         add(lines, "os.getegid", safe(Os::getegid));
+        add(lines, "os.readlink.symlink", readlinkSymlinkProbe());
         add(lines, "os.stat.procSelf", safe(() -> Os.lstat("/proc/self").toString()));
         add(lines, "os.stat.dataDir", safe(() -> Os.lstat(getDataDir().getAbsolutePath()).toString()));
         add(lines, "os.stat.apk", safe(() -> Os.lstat(info.sourceDir).toString()));
@@ -178,6 +185,13 @@ public class HookProbeActivity extends Activity {
             addPathProbe(lines, String.valueOf(entry[0]), String.valueOf(entry[1]));
         }
 
+        add(lines, "native.load", nativeLoadError == null
+            ? "ok"
+            : describe(nativeLoadError));
+        if (nativeLoadError != null) {
+            lines.add("---- native unavailable ----");
+            return String.join("\n", lines);
+        }
         String nativeReport = NativeProbe.nativeHookProbe(
             getDataDir().getAbsolutePath(),
             info.sourceDir,
@@ -260,6 +274,28 @@ public class HookProbeActivity extends Activity {
         }
     }
 
+    private String readlinkSymlinkProbe() {
+        File target = new File(getFilesDir(), "readlink-probe-target");
+        File link = new File(
+            getFilesDir(),
+            "readlink-probe-link-" + System.nanoTime()
+        );
+        String stage = "start";
+        try {
+            stage = "delete";
+            link.delete();
+            stage = "symlink";
+            Os.symlink(target.getAbsolutePath(), link.getAbsolutePath());
+            stage = "readlink";
+            return Os.readlink(link.getAbsolutePath());
+        } catch (Throwable error) {
+            return stage + ": " + describe(error);
+        } finally {
+            link.delete();
+            target.delete();
+        }
+    }
+
     private void writeReport(String report) {
         try (FileWriter writer = new FileWriter(new File(getFilesDir(), "hook-probe.txt"))) {
             writer.write(report);
@@ -290,6 +326,14 @@ public class HookProbeActivity extends Activity {
             }
             return "error:" + error.getClass().getSimpleName();
         }
+    }
+
+    private static String describe(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getClass().getName() + ": " + String.valueOf(cause.getMessage());
     }
 
     private interface Supplier {

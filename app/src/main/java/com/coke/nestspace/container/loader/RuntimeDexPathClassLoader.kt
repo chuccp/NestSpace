@@ -16,7 +16,7 @@ import java.nio.ByteBuffer
  */
 class RuntimeDexPathClassLoader(
     dexPath: String,
-    librarySearchPath: String?,
+    private val librarySearchPath: String?,
     parent: ClassLoader?,
     private val dataRoot: File,
     private val optimizedDirectory: File,
@@ -26,6 +26,32 @@ class RuntimeDexPathClassLoader(
     private val resolvingFallback = ThreadLocal<Boolean>()
     private var mergedDexSignature: String? = null
     private var fallbackDexLoader: ClassLoader? = null
+
+    override fun findLibrary(name: String): String? {
+        val resolved = super.findLibrary(name)
+        val fallback = if (resolved == null) {
+            findLibraryOnSearchPath(name)
+        } else {
+            null
+        }
+        Log.d(
+            TAG,
+            "find library name=$name path=${resolved ?: fallback ?: "<null>"}"
+        )
+        return resolved ?: fallback
+    }
+
+    private fun findLibraryOnSearchPath(name: String): String? {
+        val fileName = System.mapLibraryName(name)
+        return librarySearchPath
+            .orEmpty()
+            .split(File.pathSeparatorChar)
+            .asSequence()
+            .filter(String::isNotBlank)
+            .map { File(it, fileName) }
+            .firstOrNull(File::isFile)
+            ?.absolutePath
+    }
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
         if (name == "entryRunApplication") {

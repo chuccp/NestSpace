@@ -266,7 +266,11 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public int getPackageUid(String packageName, int flags) throws NameNotFoundException {
-        if (isTarget(packageName)) return Process.myUid();
+        if (isTarget(packageName)) {
+            return spec.getTargetUid() > 0
+                    ? spec.getTargetUid()
+                    : Process.myUid();
+        }
         if (isVirtualPackage(packageName)) {
             Integer uid = virtualPackages.packageUid(packageName);
             if (uid != null) return uid;
@@ -299,7 +303,10 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public String[] getPackagesForUid(int uid) {
-        if (uid == Process.myUid()) return new String[]{targetPackage};
+        if (uid == Process.myUid() ||
+                (spec.getTargetUid() > 0 && uid == spec.getTargetUid())) {
+            return new String[]{targetPackage};
+        }
         String packageForUid = virtualPackages.packageForUid(uid);
         if (packageForUid != null) return new String[]{packageForUid};
         return super.getPackagesForUid(uid);
@@ -307,7 +314,10 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public String getNameForUid(int uid) {
-        if (uid == Process.myUid()) return targetPackage;
+        if (uid == Process.myUid() ||
+                (spec.getTargetUid() > 0 && uid == spec.getTargetUid())) {
+            return targetPackage;
+        }
         String packageForUid = virtualPackages.packageForUid(uid);
         if (packageForUid != null) return packageForUid;
         return super.getNameForUid(uid);
@@ -1411,7 +1421,9 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     private ApplicationInfo copyApplicationInfo(int flags) {
         ApplicationInfo copy = cloneParcelable(targetAppInfo, ApplicationInfo.CREATOR);
-        copy.uid = Process.myUid();
+        copy.uid = spec.getTargetUid() > 0
+                ? spec.getTargetUid()
+                : Process.myUid();
         if (copy.sourceDir == null) copy.sourceDir = spec.getBaseApkPath();
         if (copy.publicSourceDir == null) copy.publicSourceDir = spec.getBaseApkPath();
         applyApplicationInfoFlags(copy, flags);

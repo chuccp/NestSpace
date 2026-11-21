@@ -1,5 +1,7 @@
 #pragma once
 
+// Shared internal contract for the native runtime modules.
+
 #include <android/dlext.h>
 #include <dirent.h>
 #include <dlfcn.h>
@@ -165,6 +167,8 @@ using StatxFunction = int (*)(
 );
 using ReadlinkFunction = ssize_t (*)(const char*, char*, size_t);
 using ReadlinkatFunction = ssize_t (*)(int, const char*, char*, size_t);
+using SymlinkFunction = int (*)(const char*, const char*);
+using SymlinkatFunction = int (*)(const char*, int, const char*);
 using OpendirFunction = DIR* (*)(const char*);
 using MkdirFunction = int (*)(const char*, mode_t);
 using MkdiratFunction = int (*)(int, const char*, mode_t);
@@ -277,6 +281,8 @@ struct RealFunctions {
     StatxFunction statx = nullptr;
     ReadlinkFunction readlink = nullptr;
     ReadlinkatFunction readlinkat = nullptr;
+    SymlinkFunction symlink = nullptr;
+    SymlinkatFunction symlinkat = nullptr;
     OpendirFunction opendir = nullptr;
     MkdirFunction mkdir = nullptr;
     MkdiratFunction mkdirat = nullptr;

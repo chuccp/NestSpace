@@ -5,11 +5,17 @@ project(nestspace_runtime LANGUAGES CXX)
 add_library(
     nestspace_runtime
     SHARED
-    native_environment.cpp
-    native_environment_state.cpp
-    native_libc_hooks.cpp
-    native_elf_hooks.cpp
-    native_crash_trace.cpp
+    core/native_environment.cpp
+    core/native_environment_state.cpp
+    hooks/libc/native_libc_hooks.cpp
+    hooks/elf/native_elf_hooks.cpp
+    crash/native_crash_trace.cpp
+)
+
+target_include_directories(
+    nestspace_runtime
+    PRIVATE
+    core/include
 )
 
 target_compile_features(nestspace_runtime PRIVATE cxx_std_17)

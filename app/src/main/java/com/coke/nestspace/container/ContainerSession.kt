@@ -1834,6 +1834,21 @@ class ContainerSession private constructor(
             val runtimeNativeLibs = nativeLibs
             val exposedNativeLibraryDir =
                 installLayout.virtualNativeLibraryDir ?: runtimeNativeLibs?.absolutePath
+            val activityThread = Class.forName("android.app.ActivityThread")
+                .getMethod("currentActivityThread")
+                .invoke(null)
+            val appInfo = spec.applicationInfo
+            appInfo.dataDir = "/data/user/0/${spec.packageName}"
+            appInfo.sourceDir = spec.baseApkPath
+            appInfo.publicSourceDir = spec.baseApkPath
+            appInfo.nativeLibraryDir = exposedNativeLibraryDir
+            appInfo.uid = spec.targetUid.takeIf { it > 0 }
+                ?: android.os.Process.myUid()
+            publishApplicationMetadata(
+                activityThread,
+                appInfo,
+                spec.packageName
+            )
 
             val nativeSearchPath = (
                 listOfNotNull(runtimeNativeLibs?.absolutePath) +
@@ -1875,11 +1890,11 @@ class ContainerSession private constructor(
                     "directExternal=$useDirectExternalLoader"
             )
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_CODE)
-            val appInfo = spec.applicationInfo
             appInfo.dataDir = "/data/user/0/${spec.packageName}"
             appInfo.sourceDir = installLayout.virtualBaseApkPath
             appInfo.publicSourceDir = installLayout.virtualBaseApkPath
-            appInfo.uid = android.os.Process.myUid()
+            appInfo.uid = spec.targetUid.takeIf { it > 0 }
+                ?: android.os.Process.myUid()
             // Slot activities opt out of predictive back in the host manifest.
             // If the target ApplicationInfo keeps enableOnBackInvokedCallback
             // enabled, ViewRootImpl's compat callback re-injects back key
@@ -2159,9 +2174,6 @@ class ContainerSession private constructor(
                     Log.d(TAG, "virtual identity revision=1 androidId=present")
                 }
 
-            val activityThread = Class.forName("android.app.ActivityThread")
-                .getMethod("currentActivityThread")
-                .invoke(null)
             // Resources and the runtime class loader are already bound to the
             // imported files. From this point on, expose the stable installed-
             // app path to the target so packers cannot observe a half-virtual
@@ -2369,6 +2381,40 @@ class ContainerSession private constructor(
                     "prepublished system context: pmFields=$pmFields appInfoFields=$appInfoFields"
                 )
             }.onFailure { Log.w(TAG, "prepublish system context failed", it) }
+        }
+
+        private fun publishApplicationMetadata(
+            activityThread: Any,
+            appInfo: ApplicationInfo,
+            packageName: String
+        ) {
+            val threadClass = Class.forName("android.app.ActivityThread")
+            runCatching {
+                val bound = threadClass.getDeclaredField("mBoundApplication")
+                    .apply { isAccessible = true }
+                    .get(activityThread)
+                    ?: return@runCatching
+                bound.javaClass.getDeclaredField("appInfo")
+                    .apply { isAccessible = true }
+                    .set(bound, appInfo)
+                val loadedApk = bound.javaClass.getDeclaredField("info")
+                    .apply { isAccessible = true }
+                    .get(bound)
+                    ?: return@runCatching
+                val loadedApkClass = Class.forName("android.app.LoadedApk")
+                loadedApkClass.getDeclaredField("mApplicationInfo")
+                    .apply { isAccessible = true }
+                    .set(loadedApk, appInfo)
+                loadedApkClass.getDeclaredField("mPackageName")
+                    .apply { isAccessible = true }
+                    .set(loadedApk, packageName)
+                loadedApkClass.getDeclaredField("mDataDir")
+                    .apply { isAccessible = true }
+                    .set(loadedApk, appInfo.dataDir)
+                Log.d(TAG, "published target application metadata before class loader")
+            }.onFailure {
+                Log.w(TAG, "publish target application metadata failed", it)
+            }
         }
 
         private fun exposeVirtualClassPath(
