@@ -44,6 +44,7 @@ struct ChildProcProbe {
     int seccomp_filters = -1;
     long raw_uid = -1;
     int raw_self_status_open = 0;
+    int parent_dumpable = -1;
     char parent_comm[64] = {};
     char first_tasks[512] = {};
     char task_details[2048] = {};
@@ -487,6 +488,51 @@ std::string raw_syscall_summary(const char* data_root) {
         self_task_errno = static_cast<int>(-self_task_fd);
     }
 
+    const long real_pid = raw_syscall6(
+        SYS_getpid,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    char own_task_path[96] = {};
+    snprintf(
+        own_task_path,
+        sizeof(own_task_path),
+        "/proc/%ld/task",
+        real_pid
+    );
+    const long own_task_fd = raw_syscall6(
+        SYS_openat,
+        AT_FDCWD,
+        reinterpret_cast<long>(own_task_path),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC,
+        0,
+        0,
+        0
+    );
+    long own_task_entries = 0;
+    int own_task_errno = 0;
+    if (own_task_fd >= 0) {
+        std::array<char, 4096> entries {};
+        errno = 0;
+        own_task_entries = raw_syscall6(
+            SYS_getdents64,
+            own_task_fd,
+            reinterpret_cast<long>(entries.data()),
+            entries.size(),
+            0,
+            0,
+            0
+        );
+        if (own_task_entries < 0) own_task_errno = errno;
+        raw_syscall6(SYS_close, own_task_fd, 0, 0, 0, 0, 0);
+    } else {
+        own_task_errno = static_cast<int>(-own_task_fd);
+    }
+
     return "raw.syscall.supported=1"
         "\nraw.syscall.getuid=" + std::to_string(uid) +
         "\nraw.syscall.geteuid=" + std::to_string(euid) +
@@ -515,7 +561,12 @@ std::string raw_syscall_summary(const char* data_root) {
         "\nraw.syscall.selfTask=" + (self_task_fd >= 0
             ? "getdents=" + std::to_string(self_task_entries) +
                 " errno=" + std::to_string(self_task_errno)
-            : "open_error=" + std::to_string(self_task_errno));
+            : "open_error=" + std::to_string(self_task_errno)) +
+        "\nraw.syscall.ownTaskPid=" + std::to_string(real_pid) +
+        "\nraw.syscall.ownTask=" + (own_task_fd >= 0
+            ? "getdents=" + std::to_string(own_task_entries) +
+                " errno=" + std::to_string(own_task_errno)
+            : "open_error=" + std::to_string(own_task_errno));
 #else
     (void)data_root;
     return "raw.syscall.supported=0";
@@ -611,10 +662,13 @@ void run_child_proc_probe(std::string* report) {
         *report += "\nchild-proc=pipe-error=" + std::to_string(errno);
         return;
     }
+    const int previous_dumpable = prctl(PR_GET_DUMPABLE);
+    prctl(PR_SET_DUMPABLE, 1);
     const pid_t child_pid = fork();
     if (child_pid == 0) {
         close(pipe_fds[0]);
         ChildProcProbe probe;
+        probe.parent_dumpable = previous_dumpable;
         probe.parent_pid = static_cast<int>(raw_syscall6(
             SYS_getppid,
             0,
@@ -829,6 +883,7 @@ void run_child_proc_probe(std::string* report) {
         int status = 0;
         waitpid(child_pid, &status, 0);
     }
+    prctl(PR_SET_DUMPABLE, previous_dumpable);
     if (received != sizeof(probe)) {
         *report += "\nchild-proc=incomplete=" +
             std::to_string(received);
@@ -870,6 +925,8 @@ void run_child_proc_probe(std::string* report) {
             std::to_string(probe.raw_uid) +
         "\nchild-proc.raw_self_status_open=" +
             std::to_string(probe.raw_self_status_open) +
+        "\nchild-proc.parent_dumpable=" +
+            std::to_string(probe.parent_dumpable) +
         "\nchild-proc.parent_task_ids=" + probe.first_tasks +
         "\nchild-proc.parent_task_details=" + probe.task_details +
         "\nchild-proc.parent_comm=" + probe.parent_comm +
