@@ -13,9 +13,10 @@ import java.lang.reflect.Modifier
  * Resolves an APK's effective process Application without binding the
  * container core to individual app package names.
  *
- * NIS wrappers are identified by the packer namespace, then the app's own DEX
- * is searched for the real Application. Tinker wrappers are identified by
- * their framework hierarchy. Non-standard ApplicationLike/RealApplication
+ * External wrappers are discovered from the manifest Application and the
+ * target's own DEX is searched for the effective Application. Delegating
+ * wrappers are identified by field and method shapes. Non-standard
+ * ApplicationLike/RealApplication
  * chains are discovered from constructor relationships rather than hardcoded
  * app-specific class names.
  */
@@ -25,7 +26,7 @@ internal sealed interface ApplicationBootstrap {
         val allowManifestFallback: Boolean
     ) : ApplicationBootstrap
 
-    data class TinkerApplication(
+    data class DelegatingApplication(
         val wrapperClass: Class<out Application>,
         val allowManifestFallback: Boolean = true
     ) : ApplicationBootstrap
@@ -100,9 +101,6 @@ internal object BootstrapClassNamePolicy {
 internal object ApplicationBootstrapResolver {
 
     private const val TAG = "AppBootstrapResolver"
-    private const val TINKER_APPLICATION_LIKE = "ApplicationLike"
-    private val tinkerWrapperTypes = setOf("TinkerApplication", "MuteApplication")
-
     private data class LikeCandidate(
         val type: Class<*>,
         val constructor: Constructor<*>,
@@ -130,8 +128,8 @@ internal object ApplicationBootstrapResolver {
                 "external Application wrapper has no embedded target: $manifestClass"
             )
         }
-        tinkerWrapper(spec, loader)
-            ?.let { return ApplicationBootstrap.TinkerApplication(it) }
+        delegatingWrapper(spec, loader)
+            ?.let { return ApplicationBootstrap.DelegatingApplication(it) }
         Log.d(TAG, "using manifest Application: ${manifestClass ?: "<default>"}")
         return ApplicationBootstrap.ManifestApplication
     }
@@ -198,7 +196,7 @@ internal object ApplicationBootstrapResolver {
             !parameterTypes[1].isPrimitive &&
             parameterTypes[1].isAssignableFrom(likeClass)
 
-    internal fun hasTinkerDelegateField(fieldTypes: List<Class<*>>): Boolean =
+    internal fun hasApplicationDelegateField(fieldTypes: List<Class<*>>): Boolean =
         fieldTypes.any(Application::class.java::isAssignableFrom)
 
     private fun findEmbeddedApplication(
@@ -230,7 +228,7 @@ internal object ApplicationBootstrapResolver {
         return null
     }
 
-    private fun tinkerWrapper(
+    private fun delegatingWrapper(
         spec: RuntimeApplicationSpec,
         loader: ClassLoader
     ): Class<out Application>? {
@@ -241,16 +239,19 @@ internal object ApplicationBootstrapResolver {
             ?.takeIf { Application::class.java.isAssignableFrom(it) }
             ?.asSubclass(Application::class.java)
             ?: return null
-        val matches = generateSequence(wrapper as Class<*>?) { it.superclass }
-            .any { type ->
-                type.simpleName in tinkerWrapperTypes
-            }
+        if (!BootstrapClassNamePolicy.isExternalApplicationClass(
+                wrapper.name,
+                spec.packageName
+            )
+        ) {
+            return null
+        }
         val hasDelegateField = generateSequence(wrapper as Class<*>?) { it.superclass }
             .any { type ->
-                hasTinkerDelegateField(type.declaredFields.map { it.type })
+                hasApplicationDelegateField(type.declaredFields.map { it.type })
             }
-        if (!matches || !hasDelegateField) return null
-        Log.d(TAG, "Tinker wrapper Application: ${wrapper.name}")
+        if (!hasDelegateField) return null
+        Log.d(TAG, "delegating wrapper Application: ${wrapper.name}")
         return wrapper
     }
 
@@ -274,7 +275,6 @@ internal object ApplicationBootstrapResolver {
                         spec.packageName
                     )
                     if (score < 0) return@runCatching null
-                    if (hierarchyContains(type, TINKER_APPLICATION_LIKE)) score += 120
                     score += inheritanceDepth(type).coerceAtMost(8) * 5
                     LikeCandidate(type, constructor, score)
                 }.getOrNull()

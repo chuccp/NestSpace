@@ -600,7 +600,7 @@ void packer_relocation_handler(
         }
     }
     if (g_trace_fd >= 0 && context != nullptr) {
-        static constexpr char kHeader[] = "packer-fault\n";
+        static constexpr char kHeader[] = "runtime-fault\n";
         write(g_trace_fd, kHeader, sizeof(kHeader) - 1);
         write_hex(static_cast<uintptr_t>(signal_number));
         write_hex(
@@ -638,17 +638,17 @@ void packer_relocation_handler(
         const uintptr_t pc =
             static_cast<uintptr_t>(context->uc_mcontext.pc);
         if (pc >= 0x100) {
-            write_process_memory("packer-code-before", pc - 0x100, 0x300);
+            write_process_memory("runtime-code-before", pc - 0x100, 0x300);
         }
         write_process_memory(
-            "packer-code-at",
+            "runtime-code-at",
             pc,
             0x100
         );
         const uintptr_t caller =
             static_cast<uintptr_t>(context->uc_mcontext.regs[30]);
         if (caller >= 0x100) {
-            write_process_memory("packer-caller", caller - 0x100, 0x300);
+            write_process_memory("runtime-caller", caller - 0x100, 0x300);
         }
         Dl_info module{};
         if (dladdr(
@@ -656,26 +656,7 @@ void packer_relocation_handler(
                 &module
             ) != 0 &&
             module.dli_fbase != nullptr) {
-            const uintptr_t base =
-                reinterpret_cast<uintptr_t>(module.dli_fbase);
-            const uintptr_t runtime_base = base + 0x140000;
-            write_module("packer", context->uc_mcontext.pc);
-            write_process_memory("packer-init", runtime_base + 0x6313c, 0x100);
-            write_process_memory(
-                "packer-singleton",
-                runtime_base + 0x62ca8,
-                0x100
-            );
-            write_process_memory(
-                "packer-crash-fn",
-                runtime_base + 0x3d5ec,
-                0x100
-            );
-            write_process_memory(
-                "packer-singleton-slot",
-                runtime_base + 0x1bb558,
-                0x10
-            );
+            write_module("runtime", context->uc_mcontext.pc);
         }
         write_maps();
         fsync(g_trace_fd);
@@ -1932,18 +1913,18 @@ bool install_openat_gateway_filter() {
             environment->actual_base_apk_path,
             O_RDONLY | O_CLOEXEC | O_PATH
         );
-        add_gateway_fd_template(
-            environment->data_root + "/.jiagu",
-            O_RDONLY | O_CLOEXEC | O_PATH
-        );
-        add_gateway_fd_template(
-            environment->data_root + "/.jiagu/libjiagu_64.so",
-            O_RDONLY | O_CLOEXEC
-        );
-        add_gateway_fd_template(
-            environment->data_root + "/.jiagu/libjiagu.so",
-            O_RDONLY | O_CLOEXEC
-        );
+        for (const auto& directory : environment->runtime_library_dirs) {
+            add_gateway_fd_template(
+                directory,
+                O_RDONLY | O_CLOEXEC | O_PATH
+            );
+        }
+        for (const auto& library : environment->runtime_library_paths) {
+            add_gateway_fd_template(
+                library,
+                O_RDONLY | O_CLOEXEC
+            );
+        }
     }
     if (g_self_mem_fd < 0) {
         g_self_mem_fd = static_cast<int>(syscall(

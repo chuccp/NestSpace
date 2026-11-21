@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Forwards target Activity lifecycle events to a wrapped Application.
  *
- * Tinker-style apps install a wrapper Application whose lifecycle callbacks
+ * Delegating apps may install a wrapper Application whose lifecycle callbacks
  * are delegated to an inner Application instance. The framework dispatches
  * Activity lifecycle only to the wrapper (`Activity.getApplication()`), while
  * `registerActivityLifecycleCallbacks` was forwarded to the inner instance.

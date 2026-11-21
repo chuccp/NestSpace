@@ -62,7 +62,7 @@ class KnowledgeStore private constructor(private val entries: List<KnowledgeEntr
         }
     }
 
-    /** Most specific domain wins, so `search.bilibili.com` matches `bilibili.com`. */
+    /** Most specific domain wins, so `search.example.com` matches `example.com`. */
     fun forHost(host: String): KnowledgeEntry? {
         val h = host.trim().lowercase().removePrefix("www.")
         if (h.isEmpty()) return null

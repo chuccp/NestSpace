@@ -11,7 +11,7 @@ import android.content.ContextWrapper
  * contexts; AndroidX WindowManager forwards the Activity to
  * `WindowLayoutComponentImpl`, which throws
  * "Context must be a UI Context with display association" before the target
- * can draw (DeepSeek 2.7.4 does this during startup).
+ * can draw during some startup paths.
  *
  * `getAssociatedDisplayId()` is a hidden framework method, so it cannot be
  * declared with `override`, but the JVM dispatches calls on this wrapper to it

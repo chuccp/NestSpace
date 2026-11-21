@@ -186,6 +186,8 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     jstring host_native_library_dir,
     jstring native_library_dir,
     jstring virtual_native_library_dir,
+    jobjectArray runtime_library_dirs,
+    jobjectArray runtime_library_paths,
     jstring actual_base_apk_path,
     jstring virtual_base_apk_path,
     jobjectArray actual_split_apk_paths,
@@ -215,6 +217,14 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
         env,
         virtual_native_library_dir
     );
+    environment->runtime_library_dirs = to_strings(
+        env,
+        runtime_library_dirs
+    );
+    environment->runtime_library_paths = to_strings(
+        env,
+        runtime_library_paths
+    );
     environment->actual_base_apk_path = to_string(env, actual_base_apk_path);
     environment->virtual_base_apk_path = to_string(env, virtual_base_apk_path);
     environment->actual_split_apk_paths = to_strings(
@@ -239,6 +249,34 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
         "/storage/emulated/0/Android/data/" + environment->package_name;
     environment->target_external_alias =
         "/sdcard/Android/data/" + environment->package_name;
+    environment->virtual_runtime_library_dirs.clear();
+    environment->virtual_runtime_library_dirs.reserve(
+        environment->runtime_library_dirs.size()
+    );
+    for (const auto& directory : environment->runtime_library_dirs) {
+        if (directory.rfind(environment->data_root, 0) == 0) {
+            environment->virtual_runtime_library_dirs.push_back(
+                environment->target_data_root +
+                    directory.substr(environment->data_root.size())
+            );
+        } else {
+            environment->virtual_runtime_library_dirs.push_back(directory);
+        }
+    }
+    environment->virtual_runtime_library_paths.clear();
+    environment->virtual_runtime_library_paths.reserve(
+        environment->runtime_library_paths.size()
+    );
+    for (const auto& path : environment->runtime_library_paths) {
+        if (path.rfind(environment->data_root, 0) == 0) {
+            environment->virtual_runtime_library_paths.push_back(
+                environment->target_data_root +
+                    path.substr(environment->data_root.size())
+            );
+        } else {
+            environment->virtual_runtime_library_paths.push_back(path);
+        }
+    }
     environment->actual_device_root =
         environment->data_root + "/device_protected";
     environment->native_library_dir_alias =

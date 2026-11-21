@@ -124,7 +124,7 @@ object ContainerCompat {
         return candidate
     }
 
-    /** Keep the Tinker ApplicationLike until the session context is wired. */
+    /** Keep an embedded ApplicationLike until the session context is wired. */
     fun rememberAppLike(application: Application, like: Any) {
         synchronized(appLikes) { appLikes[application] = like }
     }

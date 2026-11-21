@@ -174,21 +174,16 @@ class RuntimeDexPathClassLoader(
     }
 
     private fun generatedDexFiles(): List<File> {
-        val roots = listOf(
-            File(dataRoot, ".jiagu"),
-            File(dataRoot, "files/.jiagu"),
-            File(dataRoot, "code_cache")
-        )
-        return roots.asSequence()
-            .filter(File::isDirectory)
-            .flatMap { root ->
-                root.walkTopDown()
-                    .maxDepth(3)
-                    .filter { file ->
-                        file.isFile &&
-                            file.extension.equals("dex", ignoreCase = true) &&
-                            file.length() > 0L
-                    }
+        return dataRoot.walkTopDown()
+            .maxDepth(5)
+            .onEnter { directory ->
+                directory.name != "cache" &&
+                    directory.name != "no_backup"
+            }
+            .filter { file ->
+                file.isFile &&
+                    file.extension.equals("dex", ignoreCase = true) &&
+                    file.length() > 0L
             }
             .distinctBy(File::getAbsolutePath)
             .sortedBy(File::getAbsolutePath)

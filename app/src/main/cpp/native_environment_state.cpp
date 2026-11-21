@@ -223,6 +223,28 @@ bool starts_with_prefix(const char* path, const std::string& prefix) {
         (path[length] == '\0' || path[length] == '/');
 }
 
+std::string path_basename(const char* path) {
+    if (path == nullptr) return {};
+    const char* separator = strrchr(path, '/');
+    return separator == nullptr ? std::string(path) : std::string(separator + 1);
+}
+
+const std::string* runtime_library_for_basename(
+    const Environment* environment,
+    const char* path
+) {
+    if (environment == nullptr || path == nullptr) return nullptr;
+    const std::string basename = path_basename(path);
+    if (basename.size() <= 3 ||
+        basename.compare(basename.size() - 3, 3, ".so") != 0) {
+        return nullptr;
+    }
+    for (const auto& candidate : environment->runtime_library_paths) {
+        if (path_basename(candidate.c_str()) == basename) return &candidate;
+    }
+    return nullptr;
+}
+
 std::string data_alias_path(const std::string& path) {
     constexpr std::string_view kUserPrefix = "/data/user/0/";
     if (path.compare(0, kUserPrefix.size(), kUserPrefix) != 0) return {};
@@ -787,13 +809,10 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
         if (starts_with_prefix(path, base_prefix)) {
             const std::string suffix =
                 path + environment->host_base_apk_path.size();
-            if (suffix.find("/libjiagu_64.so") != std::string::npos) {
-                *rewritten = environment->data_root +
-                    "/.jiagu/libjiagu_64.so";
-                return true;
-            }
-            if (suffix.find("/libjiagu.so") != std::string::npos) {
-                *rewritten = environment->data_root + "/.jiagu/libjiagu.so";
+            const std::string* runtime_library =
+                runtime_library_for_basename(environment, suffix.c_str());
+            if (runtime_library != nullptr) {
+                *rewritten = *runtime_library;
                 return true;
             }
             *rewritten = environment->actual_base_apk_path + suffix;
@@ -813,10 +832,10 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
         )) {
         const std::string suffix =
             path + environment->host_native_library_dir.size();
-        if (suffix == "/libjiagu_64.so") {
-            *rewritten = environment->data_root + "/.jiagu/libjiagu_64.so";
-        } else if (suffix == "/libjiagu.so") {
-            *rewritten = environment->data_root + "/.jiagu/libjiagu.so";
+        const std::string* runtime_library =
+            runtime_library_for_basename(environment, suffix.c_str());
+        if (runtime_library != nullptr) {
+            *rewritten = *runtime_library;
         } else {
             *rewritten = environment->native_library_dir + suffix;
         }
@@ -864,15 +883,14 @@ bool rewrite_target_path(const char* path, std::string* rewritten) {
         "/data/user/0/" + environment->host_package_name;
     const std::string host_data_alias =
         "/data/data/" + environment->host_package_name;
-    const std::string packer_suffix = "/.jiagu";
-    if (starts_with_prefix(path, host_data_root + packer_suffix)) {
-        *rewritten = environment->data_root + packer_suffix +
-            (path + host_data_root.size() + packer_suffix.size());
+    if (starts_with_prefix(path, host_data_root)) {
+        *rewritten = environment->data_root +
+            (path + host_data_root.size());
         return true;
     }
-    if (starts_with_prefix(path, host_data_alias + packer_suffix)) {
-        *rewritten = environment->data_root + packer_suffix +
-            (path + host_data_alias.size() + packer_suffix.size());
+    if (starts_with_prefix(path, host_data_alias)) {
+        *rewritten = environment->data_root +
+            (path + host_data_alias.size());
         return true;
     }
     if (starts_with_prefix(path, environment->target_device_root)) {
@@ -959,12 +977,20 @@ bool is_virtual_native_library_path(
     const char* actual,
     const Environment* environment
 ) {
-    return actual != nullptr &&
-        environment != nullptr &&
-        !environment->native_library_dir.empty() &&
+    if (actual == nullptr || environment == nullptr) return false;
+    if (!environment->native_library_dir.empty() &&
         environment->native_library_dir !=
             environment->virtual_native_library_dir &&
-        starts_with_prefix(actual, environment->native_library_dir);
+        starts_with_prefix(actual, environment->native_library_dir)) {
+        return true;
+    }
+    return std::any_of(
+        environment->runtime_library_dirs.begin(),
+        environment->runtime_library_dirs.end(),
+        [actual](const std::string& directory) {
+            return starts_with_prefix(actual, directory);
+        }
+    );
 }
 
 }  // namespace
@@ -1316,16 +1342,6 @@ std::string virtualized_proc_content(
         std::string value = read_text_file(proc_smaps.c_str());
         replace_all(
             &value,
-            environment->data_root + "/.jiagu",
-            environment->target_data_alias + "/.jiagu"
-        );
-        replace_all(
-            &value,
-            environment->data_root_alias + "/.jiagu",
-            environment->target_data_alias + "/.jiagu"
-        );
-        replace_all(
-            &value,
             environment->actual_base_apk_path,
             environment->virtual_base_apk_path
         );
@@ -1340,6 +1356,17 @@ std::string virtualized_proc_content(
                 &value,
                 environment->native_library_dir,
                 environment->virtual_native_library_dir
+            );
+        }
+        const size_t runtime_count = std::min(
+            environment->runtime_library_dirs.size(),
+            environment->virtual_runtime_library_dirs.size()
+        );
+        for (size_t index = 0; index < runtime_count; ++index) {
+            replace_all(
+                &value,
+                environment->runtime_library_dirs[index],
+                environment->virtual_runtime_library_dirs[index]
             );
         }
         replace_all(
@@ -1357,16 +1384,6 @@ std::string virtualized_proc_content(
     if (proc_suffix(path, "/maps")) {
         const std::string proc_maps = proc_path(process_id, "maps");
         std::string value = read_text_file(proc_maps.c_str());
-        replace_all(
-            &value,
-            environment->data_root + "/.jiagu",
-            environment->target_data_alias + "/.jiagu"
-        );
-        replace_all(
-            &value,
-            environment->data_root_alias + "/.jiagu",
-            environment->target_data_alias + "/.jiagu"
-        );
         replace_all(
             &value,
             environment->actual_base_apk_path,
@@ -1401,6 +1418,17 @@ std::string virtualized_proc_content(
                 environment->virtual_native_library_dir
             );
         }
+        const size_t runtime_count = std::min(
+            environment->runtime_library_dirs.size(),
+            environment->virtual_runtime_library_dirs.size()
+        );
+        for (size_t index = 0; index < runtime_count; ++index) {
+            replace_all(
+                &value,
+                environment->runtime_library_dirs[index],
+                environment->virtual_runtime_library_dirs[index]
+            );
+        }
         replace_all(&value, environment->data_root, environment->target_data_root);
         replace_all(
             &value,
@@ -1417,16 +1445,6 @@ std::string virtualized_proc_content(
         std::string value = read_text_file(proc_mountinfo.c_str());
         replace_all(
             &value,
-            environment->data_root + "/.jiagu",
-            environment->target_data_alias + "/.jiagu"
-        );
-        replace_all(
-            &value,
-            environment->data_root_alias + "/.jiagu",
-            environment->target_data_alias + "/.jiagu"
-        );
-        replace_all(
-            &value,
             environment->actual_base_apk_path,
             environment->virtual_base_apk_path
         );
@@ -1441,6 +1459,17 @@ std::string virtualized_proc_content(
                 &value,
                 environment->native_library_dir,
                 environment->virtual_native_library_dir
+            );
+        }
+        const size_t runtime_count = std::min(
+            environment->runtime_library_dirs.size(),
+            environment->virtual_runtime_library_dirs.size()
+        );
+        for (size_t index = 0; index < runtime_count; ++index) {
+            replace_all(
+                &value,
+                environment->runtime_library_dirs[index],
+                environment->virtual_runtime_library_dirs[index]
             );
         }
         replace_all(&value, environment->data_root, environment->target_data_root);

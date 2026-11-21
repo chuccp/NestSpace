@@ -48,16 +48,16 @@ object TargetApplicationFactory {
                     )
                 }
             }
-            is ApplicationBootstrap.TinkerApplication -> runCatching {
-                attachTinkerApplication(bootstrap, containerContext)
+            is ApplicationBootstrap.DelegatingApplication -> runCatching {
+                attachDelegatingApplication(bootstrap, containerContext)
             }.onFailure {
-                Log.w(TAG, "Tinker Application init failed", it)
+                Log.w(TAG, "delegating Application init failed", it)
             }.getOrElse {
                 if (bootstrap.allowManifestFallback) {
                     attachRegularApplication(spec, loader, containerContext)
                 } else {
                     throw IllegalStateException(
-                        "unsupported Tinker Application: ${bootstrap.wrapperClass.name}",
+                        "unsupported delegating Application: ${bootstrap.wrapperClass.name}",
                         it
                     )
                 }
@@ -86,7 +86,11 @@ object TargetApplicationFactory {
                 attachRegularApplication(
                     spec,
                     loader,
-                    if (spec.applicationInfo.className == "com.stub.StubApp") {
+                    if (ExternalApplicationBootstrap.isExternalApplication(
+                            spec.applicationInfo.className,
+                            spec.packageName
+                        )
+                    ) {
                         hardenedAttachContext
                     } else {
                         containerContext
@@ -100,8 +104,8 @@ object TargetApplicationFactory {
      * manifest wrapper as the process Application so framework-only fields
      * copied by Android remain available to startup tasks.
      */
-    private fun attachTinkerApplication(
-        bootstrap: ApplicationBootstrap.TinkerApplication,
+    private fun attachDelegatingApplication(
+        bootstrap: ApplicationBootstrap.DelegatingApplication,
         context: Context
     ): Application {
         val wrapper = bootstrap.wrapperClass.getDeclaredConstructor().newInstance()
@@ -109,13 +113,13 @@ object TargetApplicationFactory {
             context.targetApplication = wrapper
         }
         attachBaseContext(wrapper, context)
-        val delegate = findTinkerDelegate(wrapper)
-            ?: error("Tinker delegate Application was not created")
-        Log.d(TAG, "Tinker delegate attached: ${delegate.javaClass.name}")
+        val delegate = findDelegatingApplication(wrapper)
+            ?: error("delegating Application delegate was not created")
+        Log.d(TAG, "delegating Application attached: ${delegate.javaClass.name}")
         return wrapper
     }
 
-    private fun findTinkerDelegate(wrapper: Application): Application? {
+    private fun findDelegatingApplication(wrapper: Application): Application? {
         var current: Class<*>? = wrapper.javaClass
         while (current != null) {
             val fields = current.declaredFields

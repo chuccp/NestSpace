@@ -446,18 +446,25 @@ void log_sensitive_path(const char* api, const char* path) {
     );
 }
 
-void log_packer_open(
+void log_runtime_library_open(
     const char* api,
     const char* requested,
     const char* actual,
     int result
 ) {
-    if (requested == nullptr || strstr(requested, ".jiagu") == nullptr) return;
+    const Environment* environment = current_environment();
+    if (requested == nullptr ||
+        environment == nullptr ||
+        strstr(requested, ".so") == nullptr ||
+        strncmp(requested, environment->data_root.c_str(),
+            environment->data_root.size()) != 0) {
+        return;
+    }
     const int saved_errno = errno;
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "packer-open api=%s requested=%s actual=%s result=%d errno=%d",
+        "runtime-library-open api=%s requested=%s actual=%s result=%d errno=%d",
         api,
         requested,
         actual == nullptr ? "?" : actual,
@@ -973,11 +980,7 @@ using RegisterNativesFunction = jint (*)(
     const JNINativeMethod*,
     jint
 );
-using Interface5Function = void (*)(JNIEnv*, jclass, jobject);
-
 RegisterNativesFunction g_registerNatives = nullptr;
-Interface5Function g_interface5 = nullptr;
-void* g_interface5_target = nullptr;
 decltype(JNINativeInterface::GetMethodID) g_get_method_id = nullptr;
 decltype(JNINativeInterface::GetFieldID) g_get_field_id = nullptr;
 decltype(JNINativeInterface::ExceptionCheck) g_exception_check = nullptr;
@@ -1004,67 +1007,6 @@ std::unordered_map<jmethodID, std::string> g_probe_methods;
 const char* probe_method_name(jmethodID method) {
     const auto found = g_probe_methods.find(method);
     return found == g_probe_methods.end() ? "?" : found->second.c_str();
-}
-
-void log_stub_class_loader(JNIEnv* env) {
-    jclass stub_class = env->FindClass("com/stub/StubApp");
-    jclass class_class = env->FindClass("java/lang/Class");
-    if (stub_class == nullptr || class_class == nullptr) return;
-    jmethodID get_class_loader = env->GetMethodID(
-        class_class,
-        "getClassLoader",
-        "()Ljava/lang/ClassLoader;"
-    );
-    jobject loader = get_class_loader == nullptr
-        ? nullptr
-        : env->CallObjectMethod(stub_class, get_class_loader);
-    if (loader == nullptr) {
-        __android_log_print(
-            ANDROID_LOG_DEBUG,
-            "NestSpaceNative",
-            "StubApp class loader unavailable"
-        );
-        return;
-    }
-    jclass base_loader_class = env->FindClass("dalvik/system/BaseDexClassLoader");
-    jfieldID path_list_field = base_loader_class == nullptr
-        ? nullptr
-        : env->GetFieldID(
-            base_loader_class,
-            "pathList",
-            "Ldalvik/system/DexPathList;"
-        );
-    jobject path_list = path_list_field == nullptr
-        ? nullptr
-        : env->GetObjectField(loader, path_list_field);
-    jclass path_list_class = path_list == nullptr
-        ? nullptr
-        : env->GetObjectClass(path_list);
-    jfieldID elements_field = path_list_class == nullptr
-        ? nullptr
-        : env->GetFieldID(
-            path_list_class,
-            "dexElements",
-            "[Ldalvik/system/DexPathList$Element;"
-        );
-    jobjectArray elements = elements_field == nullptr
-        ? nullptr
-        : static_cast<jobjectArray>(
-            env->GetObjectField(path_list, elements_field)
-        );
-    __android_log_print(
-        ANDROID_LOG_DEBUG,
-        "NestSpaceNative",
-        "StubApp class loader available elements=%d",
-        elements == nullptr ? -1 : env->GetArrayLength(elements)
-    );
-    if (elements != nullptr) env->DeleteLocalRef(elements);
-    if (path_list_class != nullptr) env->DeleteLocalRef(path_list_class);
-    if (path_list != nullptr) env->DeleteLocalRef(path_list);
-    if (base_loader_class != nullptr) env->DeleteLocalRef(base_loader_class);
-    env->DeleteLocalRef(loader);
-    env->DeleteLocalRef(class_class);
-    env->DeleteLocalRef(stub_class);
 }
 
 void virtualize_package_info_uid(
@@ -1168,7 +1110,7 @@ jobject probe_call_object_method(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallObjectMethod method=%s result=%p value=%s",
+            "jni-probe CallObjectMethod method=%s result=%p value=%s",
             method_name,
             result,
             value == nullptr ? "?" : value
@@ -1180,7 +1122,7 @@ jobject probe_call_object_method(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallObjectMethod method=%s result=%p",
+            "jni-probe CallObjectMethod method=%s result=%p",
             method_name,
             result
         );
@@ -1212,7 +1154,7 @@ jobject probe_call_static_object_method(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallStaticObjectMethod method=%s result=%p value=%s",
+            "jni-probe CallStaticObjectMethod method=%s result=%p value=%s",
             method_name,
             result,
             value == nullptr ? "?" : value
@@ -1224,7 +1166,7 @@ jobject probe_call_static_object_method(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallStaticObjectMethod method=%s result=%p",
+            "jni-probe CallStaticObjectMethod method=%s result=%p",
             method_name,
             result
         );
@@ -1254,7 +1196,7 @@ jobject probe_call_object_method_v(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallObjectMethodV method=%s result=%p value=%s",
+            "jni-probe CallObjectMethodV method=%s result=%p value=%s",
             method_name,
             result,
             value == nullptr ? "?" : value
@@ -1266,7 +1208,7 @@ jobject probe_call_object_method_v(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallObjectMethodV method=%s result=%p",
+            "jni-probe CallObjectMethodV method=%s result=%p",
             method_name,
             result
         );
@@ -1295,7 +1237,7 @@ jobject probe_call_static_object_method_v(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallStaticObjectMethodV method=%s result=%p value=%s",
+            "jni-probe CallStaticObjectMethodV method=%s result=%p value=%s",
             method_name,
             result,
             value == nullptr ? "?" : value
@@ -1307,7 +1249,7 @@ jobject probe_call_static_object_method_v(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 CallStaticObjectMethodV method=%s result=%p",
+            "jni-probe CallStaticObjectMethodV method=%s result=%p",
             method_name,
             result
         );
@@ -1328,7 +1270,7 @@ jint probe_call_int_method(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallIntMethod method=%s result=%d",
+        "jni-probe CallIntMethod method=%s result=%d",
         probe_method_name(method),
         result
     );
@@ -1363,7 +1305,7 @@ jint probe_call_int_method_v(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallIntMethodV method=%s result=%d permission=%s pid=%d uid=%d",
+        "jni-probe CallIntMethodV method=%s result=%d permission=%s pid=%d uid=%d",
         method_name,
         result,
         permission == nullptr ? "?" : permission,
@@ -1397,7 +1339,7 @@ jboolean probe_call_boolean_method(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallBooleanMethod method=%s result=%d",
+        "jni-probe CallBooleanMethod method=%s result=%d",
         probe_method_name(method),
         result
     );
@@ -1422,7 +1364,7 @@ jboolean probe_call_static_boolean_method(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallStaticBooleanMethod method=%s result=%d",
+        "jni-probe CallStaticBooleanMethod method=%s result=%d",
         probe_method_name(method),
         result
     );
@@ -1444,7 +1386,7 @@ jboolean probe_call_boolean_method_v(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallBooleanMethodV method=%s result=%d",
+        "jni-probe CallBooleanMethodV method=%s result=%d",
         probe_method_name(method),
         result
     );
@@ -1463,13 +1405,10 @@ jboolean probe_call_static_boolean_method_v(
         method,
         arguments
     );
-    if (strstr(probe_method_name(method), "isIsolated") != nullptr) {
-        log_stub_class_loader(env);
-    }
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallStaticBooleanMethodV method=%s result=%d",
+        "jni-probe CallStaticBooleanMethodV method=%s result=%d",
         probe_method_name(method),
         result
     );
@@ -1486,7 +1425,7 @@ void probe_call_static_void_method_v(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallStaticVoidMethodV method=%s id=%p",
+        "jni-probe CallStaticVoidMethodV method=%s id=%p",
         method_name,
         method
     );
@@ -1515,7 +1454,7 @@ void probe_call_static_void_method(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallStaticVoidMethod method=%s id=%p",
+        "jni-probe CallStaticVoidMethod method=%s id=%p",
         method_name,
         method
     );
@@ -1536,7 +1475,7 @@ void probe_call_static_void_method_a(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 CallStaticVoidMethodA method=%s id=%p",
+        "jni-probe CallStaticVoidMethodA method=%s id=%p",
         method_name,
         method
     );
@@ -1558,7 +1497,7 @@ jclass probe_find_class(JNIEnv* env, const char* name) {
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 FindClass name=%s result=%p",
+        "jni-probe FindClass name=%s result=%p",
         name == nullptr ? "?" : name,
         result
     );
@@ -1579,7 +1518,7 @@ jmethodID probe_get_static_method_id(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 GetStaticMethodID class=%p name=%s signature=%s result=%p",
+        "jni-probe GetStaticMethodID class=%p name=%s signature=%s result=%p",
         clazz,
         name == nullptr ? "?" : name,
         signature == nullptr ? "?" : signature,
@@ -1598,7 +1537,7 @@ jfieldID probe_get_static_field_id(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 GetStaticFieldID class=%p name=%s signature=%s result=%p",
+        "jni-probe GetStaticFieldID class=%p name=%s signature=%s result=%p",
         clazz,
         name == nullptr ? "?" : name,
         signature == nullptr ? "?" : signature,
@@ -1612,7 +1551,7 @@ jclass probe_get_object_class(JNIEnv* env, jobject object) {
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 GetObjectClass object=%p result=%p",
+        "jni-probe GetObjectClass object=%p result=%p",
         object,
         result
     );
@@ -1633,7 +1572,7 @@ jmethodID probe_get_method_id(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 GetMethodID class=%p name=%s signature=%s result=%p",
+        "jni-probe GetMethodID class=%p name=%s signature=%s result=%p",
         clazz,
         name == nullptr ? "?" : name,
         signature == nullptr ? "?" : signature,
@@ -1656,7 +1595,7 @@ jfieldID probe_get_field_id(
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 GetFieldID class=%p name=%s signature=%s result=%p",
+        "jni-probe GetFieldID class=%p name=%s signature=%s result=%p",
         clazz,
         name == nullptr ? "?" : name,
         signature == nullptr ? "?" : signature,
@@ -1685,7 +1624,7 @@ jobject probe_get_object_field(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 GetObjectField field=%s object=%p result=%p value=%s",
+            "jni-probe GetObjectField field=%s object=%p result=%p value=%s",
             field_name,
             object,
             result,
@@ -1701,7 +1640,7 @@ jobject probe_get_object_field(
         __android_log_print(
             ANDROID_LOG_DEBUG,
             "NestSpaceNative",
-            "interface5 GetObjectField field=%s object=%p result=%p caller=%p",
+            "jni-probe GetObjectField field=%s object=%p result=%p caller=%p",
             field_name,
             object,
             result,
@@ -1716,77 +1655,10 @@ jboolean probe_exception_check(JNIEnv* env) {
     __android_log_print(
         ANDROID_LOG_DEBUG,
         "NestSpaceNative",
-        "interface5 ExceptionCheck result=%d",
+        "jni-probe ExceptionCheck result=%d",
         result
     );
     return result;
-}
-
-void dump_interface5_code() {
-    const Environment* environment = current_environment();
-    if (environment == nullptr || g_interface5_target == nullptr) return;
-    constexpr size_t kDumpSize = 256 * 1024;
-    std::string path = environment->data_root +
-        "/.nestspace/interface5.bin";
-    int fd = open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) return;
-    const auto* source = static_cast<const uint8_t*>(g_interface5_target);
-    size_t written = 0;
-    while (written < kDumpSize) {
-        ssize_t count = write(fd, source + written, kDumpSize - written);
-        if (count <= 0) break;
-        written += static_cast<size_t>(count);
-    }
-    close(fd);
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        "NestSpaceNative",
-        "interface5 code dumped path=%s size=%zu",
-        path.c_str(),
-        written
-    );
-}
-
-void hook_interface5(JNIEnv* env, jclass clazz, jobject application) {
-    jclass application_class = application == nullptr
-        ? nullptr
-        : env->GetObjectClass(application);
-    jclass class_class = env->FindClass("java/lang/Class");
-    jmethodID get_name = class_class == nullptr
-        ? nullptr
-        : env->GetMethodID(
-            class_class,
-            "getName",
-            "()Ljava/lang/String;"
-        );
-    auto application_name = get_name == nullptr
-        ? static_cast<jstring>(nullptr)
-        : static_cast<jstring>(
-            env->CallObjectMethod(application_class, get_name)
-        );
-    const char* application_chars = application_name == nullptr
-        ? nullptr
-        : env->GetStringUTFChars(application_name, nullptr);
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        "NestSpaceNative",
-        "interface5 enter application=%s function=%p",
-        application_chars == nullptr ? "?" : application_chars,
-        reinterpret_cast<void*>(g_interface5)
-    );
-    if (application_chars != nullptr) {
-        env->ReleaseStringUTFChars(application_name, application_chars);
-    }
-    if (application_name != nullptr) env->DeleteLocalRef(application_name);
-    if (application_class != nullptr) env->DeleteLocalRef(application_class);
-    if (class_class != nullptr) env->DeleteLocalRef(class_class);
-    dump_interface5_code();
-    g_interface5(env, clazz, application);
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        "NestSpaceNative",
-        "interface5 returned"
-    );
 }
 
 void suppress_native_abort(JNIEnv*, jobject) {
@@ -1832,18 +1704,6 @@ jint hook_register_natives(
                     : methods[index].signature,
                 methods[index].fnPtr
             );
-            if (class_chars != nullptr &&
-                strcmp(class_chars, "com.stub.StubApp") == 0 &&
-                methods[index].name != nullptr &&
-                strcmp(methods[index].name, "interface5") == 0) {
-                g_interface5_target = methods[index].fnPtr;
-                __android_log_print(
-                    ANDROID_LOG_WARN,
-                    "NestSpaceNative",
-                    "interface5 registered target=%p",
-                    methods[index].fnPtr
-                );
-            }
             if (methods[index].name != nullptr &&
                 methods[index].signature != nullptr &&
                 strcmp(methods[index].name, "nativeAbort") == 0 &&
@@ -1885,7 +1745,7 @@ void install_jni_registration_hook(JNIEnv* env) {
         "debug.nestspace.jni_registration_hook",
         enabled
     );
-    if (strcmp(enabled, "0") == 0) return;
+    if (strcmp(enabled, "1") != 0) return;
     static std::once_flag once;
     std::call_once(once, [env] {
         void* trampoline = nullptr;
@@ -3183,6 +3043,22 @@ void hook_abort() {
 
 namespace {
 
+bool is_runtime_module_path(const char* path) {
+    const Environment* environment = current_environment();
+    if (path == nullptr || environment == nullptr) return false;
+    const auto starts_with = [path](const std::string& prefix) {
+        return !prefix.empty() &&
+            strncmp(path, prefix.c_str(), prefix.size()) == 0 &&
+            (path[prefix.size()] == '\0' || path[prefix.size()] == '/');
+    };
+    return starts_with(environment->data_root) ||
+        std::any_of(
+            environment->runtime_library_dirs.begin(),
+            environment->runtime_library_dirs.end(),
+            starts_with
+        );
+}
+
 void log_exit(const char* api, int status, uintptr_t caller) {
     if (current_environment() == nullptr) return;
     Dl_info info{};
@@ -3193,7 +3069,7 @@ void log_exit(const char* api, int status, uintptr_t caller) {
         : 0;
     if (resolved &&
         info.dli_fname != nullptr &&
-        strstr(info.dli_fname, ".jiagu/") != nullptr &&
+        is_runtime_module_path(info.dli_fname) &&
         (getenv("NESTSPACE_CALLER_DUMP") != nullptr ||
             [] {
                 char value[PROP_VALUE_MAX] = {};
@@ -3207,7 +3083,7 @@ void log_exit(const char* api, int status, uintptr_t caller) {
         if (!dumped.exchange(true)) {
             const Environment* environment = current_environment();
             const std::string path = environment->data_root +
-                "/.nestspace/jiagu-termination-caller.bin";
+                "/.nestspace/runtime-termination-caller.bin";
             const uintptr_t start = (caller & ~uintptr_t{3}) - 0x1000;
             const int fd = g_real.open
                 ? g_real.open(
@@ -3230,46 +3106,6 @@ void log_exit(const char* api, int status, uintptr_t caller) {
                     caller,
                     start
                 );
-            }
-            const uintptr_t caller_offset =
-                base == 0 ? 0 : caller - base;
-            if (caller_offset >= 0x227000 &&
-                caller_offset < 0x228000) {
-                const uintptr_t helper_start = base + 0x236000;
-                const std::string helper_path = environment->data_root +
-                    "/.nestspace/jiagu-termination-helper.bin";
-                const int helper_fd = g_real.open
-                    ? g_real.open(
-                        helper_path.c_str(),
-                        O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC,
-                        0600
-                    )
-                    : -1;
-                if (helper_fd >= 0) {
-                    write(
-                        helper_fd,
-                        reinterpret_cast<const void*>(helper_start),
-                        0x10000
-                    );
-                    close(helper_fd);
-                }
-                const std::string data_path = environment->data_root +
-                    "/.nestspace/jiagu-termination-syscalls.bin";
-                const int data_fd = g_real.open
-                    ? g_real.open(
-                        data_path.c_str(),
-                        O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC,
-                        0600
-                    )
-                    : -1;
-                if (data_fd >= 0) {
-                    write(
-                        data_fd,
-                        reinterpret_cast<const void*>(base + 0x2bb000),
-                        0x2000
-                    );
-                    close(data_fd);
-                }
             }
         }
     }
@@ -3551,7 +3387,7 @@ int hook_open(const char* path, int flags, ...) {
     const int result = g_real.open
         ? g_real.open(actual, flags, mode)
         : open(actual, flags, mode);
-    log_packer_open("open", path, actual, result);
+    log_runtime_library_open("open", path, actual, result);
     log_database_path("open", path, actual, result);
     log_database_fd_identity("open", path, actual, result);
     return result;
@@ -3583,7 +3419,7 @@ int hook_open64(const char* path, int flags, ...) {
     const int result = g_real.open64
         ? g_real.open64(actual, flags, mode)
         : open64(actual, flags, mode);
-    log_packer_open("open64", path, actual, result);
+    log_runtime_library_open("open64", path, actual, result);
     log_database_path("open64", path, actual, result);
     log_database_fd_identity("open64", path, actual, result);
     return result;
@@ -3622,7 +3458,7 @@ int hook_openat(int dirfd, const char* path, int flags, ...) {
     const int result = g_real.openat
         ? g_real.openat(dirfd, actual, flags, mode)
         : openat(dirfd, actual, flags, mode);
-    log_packer_open("openat", path, actual, result);
+    log_runtime_library_open("openat", path, actual, result);
     log_database_path("openat", path, actual, result);
     log_database_fd_identity("openat", path, actual, result);
     return result;
@@ -3661,7 +3497,7 @@ int hook_openat64(int dirfd, const char* path, int flags, ...) {
     const int result = g_real.openat64
         ? g_real.openat64(dirfd, actual, flags, mode)
         : openat64(dirfd, actual, flags, mode);
-    log_packer_open("openat64", path, actual, result);
+    log_runtime_library_open("openat64", path, actual, result);
     log_database_path("openat64", path, actual, result);
     log_database_fd_identity("openat64", path, actual, result);
     return result;
@@ -3847,7 +3683,7 @@ void* hook_mmap(
     const bool target = g_real.dladdr != nullptr &&
         g_real.dladdr(reinterpret_cast<void*>(caller), &info) != 0 &&
         info.dli_fname != nullptr &&
-        strstr(info.dli_fname, ".jiagu/") != nullptr;
+        is_runtime_module_path(info.dli_fname);
     if (!target) return result;
     install_target_clear_cache_hook(
         reinterpret_cast<uintptr_t>(info.dli_fbase)

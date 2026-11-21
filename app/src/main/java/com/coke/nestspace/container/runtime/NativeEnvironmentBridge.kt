@@ -115,7 +115,9 @@ object NativeEnvironmentBridge {
         identity: VirtualIdentitySnapshot,
         hostPackageName: String,
         hostBaseApkPath: String,
-        hostNativeLibraryDir: String
+        hostNativeLibraryDir: String,
+        runtimeLibraryDirs: List<String>,
+        runtimeLibraryPaths: List<String>
     ): Boolean {
         if (!ensureLoaded()) return false
         return runCatching {
@@ -130,6 +132,8 @@ object NativeEnvironmentBridge {
                 hostNativeLibraryDir,
                 environment.nativeLibraryDir.orEmpty(),
                 environment.virtualNativeLibraryDir.orEmpty(),
+                runtimeLibraryDirs.toTypedArray(),
+                runtimeLibraryPaths.toTypedArray(),
                 environment.apkPaths.firstOrNull().orEmpty(),
                 environment.virtualApkPaths.firstOrNull().orEmpty(),
                 environment.splitApkPaths.toTypedArray(),
@@ -297,6 +301,8 @@ object NativeEnvironmentBridge {
         hostNativeLibraryDir: String,
         nativeLibraryDir: String,
         virtualNativeLibraryDir: String,
+        runtimeLibraryDirs: Array<String>,
+        runtimeLibraryPaths: Array<String>,
         actualBaseApkPath: String,
         virtualBaseApkPath: String,
         actualSplitApkPaths: Array<String>,

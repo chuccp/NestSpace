@@ -64,6 +64,10 @@ struct Environment {
     std::string host_native_library_dir;
     std::string native_library_dir;
     std::string virtual_native_library_dir;
+    std::vector<std::string> runtime_library_dirs;
+    std::vector<std::string> virtual_runtime_library_dirs;
+    std::vector<std::string> runtime_library_paths;
+    std::vector<std::string> virtual_runtime_library_paths;
     std::string actual_base_apk_path;
     std::string virtual_base_apk_path;
     std::vector<std::string> actual_split_apk_paths;

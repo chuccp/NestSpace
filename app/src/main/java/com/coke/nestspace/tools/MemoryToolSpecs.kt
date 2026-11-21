@@ -154,7 +154,7 @@ internal fun ToolRegistry.memoryToolSpecs(): List<ToolSpec> = listOf(
                 "reports whether it is enabled; in Standard/Loose mode it is enabled immediately, " +
                 "while Strict/Custom-risk mode may show an enable card in the chat. Pass the " +
                 "user's exact request in source_quote. Use a short lowercase name such as " +
-                "'bilibili-search'.",
+                "'search-notes'.",
             inputSchema = schema(
                 "name" to "string",
                 "description" to "string",

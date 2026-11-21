@@ -241,8 +241,9 @@ class ContainerContext(
      * to be non-null. The manager created for the host application, however,
      * resolves its autofill client through ActivityThread and ends up
      * reporting the virtual package to the system autofill service, which
-     * blocks the main thread for 5s per attempt ("com.deepseek.chat is not a
-     * valid package") and ANRs while typing into a login form.
+     * blocks the main thread for 5s per attempt because the virtual package is
+     * not known to the autofill service, and ANRs while typing into a login
+     * form.
      *
      * Build a manager backed by the host ContextImpl rather than the host
      * Application: ContextImpl.getAutofillClient() is null, so the framework

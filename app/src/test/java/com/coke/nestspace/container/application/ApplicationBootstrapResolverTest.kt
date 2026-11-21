@@ -127,14 +127,14 @@ class ApplicationBootstrapResolverTest {
     }
 
     @Test
-    fun tinkerWrapperRequiresApplicationDelegateField() {
+    fun delegatingWrapperRequiresApplicationDelegateField() {
         assertTrue(
-            ApplicationBootstrapResolver.hasTinkerDelegateField(
+            ApplicationBootstrapResolver.hasApplicationDelegateField(
                 listOf(String::class.java, Application::class.java)
             )
         )
         assertFalse(
-            ApplicationBootstrapResolver.hasTinkerDelegateField(
+            ApplicationBootstrapResolver.hasApplicationDelegateField(
                 listOf(String::class.java, ExampleApplicationLike::class.java)
             )
         )

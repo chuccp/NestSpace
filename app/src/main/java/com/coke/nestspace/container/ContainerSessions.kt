@@ -13,8 +13,8 @@ import com.coke.nestspace.i18n.AppLanguage
  * libraries and their JNI state are process-global and cannot be unloaded, so
  * destroying the session and creating a fresh ClassLoader when the user
  * reopens the same app fails the second `System.loadLibrary` with
- * "Shared library ... already opened by ClassLoader ..." (DeepSeek's MMKV
- * does this during Application.onCreate). Keeping the session also matches
+ * "Shared library ... already opened by ClassLoader ...". Keeping the session
+ * also matches
  * Android: finishing the last Activity does not recreate the Application,
  * and the next launch continues with the same process state.
  */
