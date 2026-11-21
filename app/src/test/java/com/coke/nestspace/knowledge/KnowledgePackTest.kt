@@ -60,71 +60,52 @@ class KnowledgePackTest {
 
     @Test
     fun matchesByPackageAndMostSpecificHost() {
-        val appEntries = read(KnowledgeEntry.Kind.APP, "apps", "APP.md")
-        val siteEntries = read(KnowledgeEntry.Kind.SITE, "sites", "SITE.md")
         val store = KnowledgeStore.of(
-            appEntries + siteEntries
+            read(KnowledgeEntry.Kind.APP, "apps", "APP.md") +
+                read(KnowledgeEntry.Kind.SITE, "sites", "SITE.md")
         )
-        val app = appEntries.first { it.packages.isNotEmpty() }
-        val site = siteEntries.first { it.domains.isNotEmpty() }
 
-        assertNotNull(store.forPackage(app.packages.first()))
+        assertNotNull(store.forPackage("tv.danmaku.bili"))
+        assertNotNull(store.forPackage("com.xunmeng.pinduoduo"))
+        assertNotNull(store.forPackage("com.eg.android.AlipayGphone"))
+        assertNotNull(store.forPackage("com.deepseek.chat"))
+        assertNotNull(store.forPackage("com.ss.android.article.news"))
         assertNull(store.forPackage("com.example.unknown"))
-        assertNotNull(store.forHost(site.domains.first()))
 
-        val broad = KnowledgeEntry(
-            KnowledgeEntry.Kind.SITE,
-            "example",
-            "Example",
-            emptyList(),
-            listOf("example.com"),
-            emptyList(),
-            "broad"
-        )
-        val specific = broad.copy(
-            name = "search-example",
-            display = "Search Example",
-            domains = listOf("search.example.com"),
-            body = "specific"
-        )
-        val specificityStore = KnowledgeStore.of(listOf(broad, specific))
-        assertEquals(
-            specific.name,
-            specificityStore.forHost("search.example.com")?.name
-        )
-        assertEquals(
-            broad.name,
-            specificityStore.forHost("www.example.com")?.name
-        )
+        assertEquals("bilibili.com", store.forHost("www.bilibili.com")?.name)
+        assertEquals("bilibili.com", store.forHost("search.bilibili.com")?.name)
+        assertEquals("zhihu.com", store.forHost("www.zhihu.com")?.name)
+        assertEquals("12306.cn", store.forHost("www.12306.cn")?.name)
+        assertEquals("qq.com", store.forHost("xw.qq.com")?.name)
+        assertEquals("ele.me", store.forHost("www.ele.me")?.name)
         assertNull(store.forHost("example.com"))
     }
 
     @Test
     fun matchesToolCallsAndInjectsGuideOnce() {
-        val appEntries = read(KnowledgeEntry.Kind.APP, "apps", "APP.md")
-        val siteEntries = read(KnowledgeEntry.Kind.SITE, "sites", "SITE.md")
-        val store = KnowledgeStore.of(appEntries + siteEntries)
-        val appEntry = appEntries.first { it.packages.isNotEmpty() }
-        val siteEntry = siteEntries.first { it.domains.isNotEmpty() }
+        val store = KnowledgeStore.of(
+            read(KnowledgeEntry.Kind.APP, "apps", "APP.md") +
+                read(KnowledgeEntry.Kind.SITE, "sites", "SITE.md")
+        )
 
         val app = store.forTool(
             "space_launch",
-            JSONObject().put("package", appEntry.packages.first()),
+            JSONObject().put("package", "com.xunmeng.pinduoduo"),
             "{}"
         )
         assertNotNull(app)
 
-        val url = "https://${siteEntry.domains.first()}/"
         val site = store.forTool(
             "browser_open",
-            JSONObject().put("url", url),
-            JSONObject().put("url", url).toString()
+            JSONObject().put("url", "https://www.bilibili.com/video/BV1"),
+            JSONObject().put("url", "https://www.bilibili.com/video/BV1").toString()
         )
-        assertEquals(siteEntry.name, site?.name)
+        assertEquals("bilibili.com", site?.name)
 
         val withGuide = JSONObject(site!!.withGuide("{\"opened\":true}"))
         assertTrue(withGuide.getBoolean("opened"))
         assertTrue(withGuide.getString("guide").contains("NestSpace guide"))
+        assertTrue(withGuide.getString("guide").contains("哔哩哔哩"))
     }
 
     private fun read(kind: KnowledgeEntry.Kind, dir: String, fileName: String): List<KnowledgeEntry> {

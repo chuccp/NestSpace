@@ -66,8 +66,8 @@ private fun suggestions(): List<Suggestion> = listOf(
         AppLanguage.tr("整理网页", "Summarize a page"),
         AppLanguage.tr("打开网页，提取关键信息", "Open a page and pull out the key points"),
         AppLanguage.tr(
-            "打开 https://example.com，并总结页面中的主要内容。",
-            "Open https://example.com and summarize the main content."
+            "打开 https://www.zhihu.com，并总结页面中的主要内容。",
+            "Open https://www.zhihu.com and summarize the main content."
         )
     ),
     Suggestion(

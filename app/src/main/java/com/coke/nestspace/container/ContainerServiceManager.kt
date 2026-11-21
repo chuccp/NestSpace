@@ -61,8 +61,8 @@ class ContainerServiceManager(
         }
         val copy = Intent(intent)
         // Service.onCreate/onStartCommand always run on the main thread in
-        // Android. Calling them on the caller (often a worker such as Xiaomi
-        // push) makes BaseService's `Handler()` constructor throw.
+        // Android. Calling them on a worker thread makes BaseService's
+        // `Handler()` constructor throw.
         mainHandler.post { startServiceNow(info, copy, foreground) }
         return ComponentName(session.spec.packageName, info.name)
     }

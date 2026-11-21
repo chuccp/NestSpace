@@ -185,12 +185,28 @@ internal fun ToolRegistry.hostToolSpecs(): List<ToolSpec> = listOf(
 
 internal fun ToolRegistry.isHostBrowserPackage(packageName: String): Boolean {
     if (packageName.isBlank()) return false
+    if (packageName in HOST_BROWSER_PACKAGES) return true
     val intent = Intent(
         Intent.ACTION_VIEW,
         Uri.parse("https://example.com")
     ).addCategory(Intent.CATEGORY_BROWSABLE)
-    return context.packageManager.queryIntentActivities(
+    val resolved = context.packageManager.resolveActivity(
         intent,
         PackageManager.MATCH_DEFAULT_ONLY
-    ).any { it.activityInfo?.packageName == packageName }
+    )?.activityInfo?.packageName
+    return resolved == packageName
 }
+
+private val HOST_BROWSER_PACKAGES = setOf(
+    "com.android.chrome",
+    "com.chrome.beta",
+    "com.chrome.dev",
+    "com.android.browser",
+    "com.sec.android.app.sbrowser",
+    "org.mozilla.firefox",
+    "com.brave.browser",
+    "com.microsoft.emmx",
+    "com.opera.browser",
+    "com.UCMobile",
+    "com.quark.browser"
+)

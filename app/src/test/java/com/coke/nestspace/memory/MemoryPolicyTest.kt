@@ -37,8 +37,8 @@ class MemoryPolicyTest {
 
     @Test
     fun skillNamesAreSafeAndStable() {
-        assertEquals("search-notes", SkillPolicy.normalizeName("Search Notes"))
-        assertTrue(SkillPolicy.isValidName("search-notes"))
+        assertEquals("bilibili-search", SkillPolicy.normalizeName("Bilibili Search"))
+        assertTrue(SkillPolicy.isValidName("bilibili-search"))
         assertFalse(SkillPolicy.isValidName(""))
         assertFalse(SkillPolicy.isValidName("../escape"))
     }

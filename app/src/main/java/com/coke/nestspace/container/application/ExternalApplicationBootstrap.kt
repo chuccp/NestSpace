@@ -238,7 +238,6 @@ internal object ExternalApplicationBootstrap {
                         method.parameterTypes[0]
                     )
             }
-            .sortedWith(compareBy<Method> { it.name }.thenBy { it.parameterCount })
             .forEach { method ->
                 runCatching {
                     method.isAccessible = true

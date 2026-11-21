@@ -2994,7 +2994,7 @@ int hook_raise(int signal) {
             __android_log_print(
                 ANDROID_LOG_WARN,
                 "NestSpaceNative",
-                "suppressed target SIGKILL via raise tid=%d caller=%016" PRIxPTR
+                "contained target SIGKILL via raise tid=%d caller=%016" PRIxPTR
                 " offset=%016" PRIxPTR " name=%s",
                 static_cast<int>(gettid()),
                 caller,
@@ -3003,8 +3003,7 @@ int hook_raise(int signal) {
                     ? info.dli_fname
                     : "?"
             );
-            syscall(SYS_exit, 0);
-            __builtin_unreachable();
+            return 0;
         }
     }
     __android_log_print(

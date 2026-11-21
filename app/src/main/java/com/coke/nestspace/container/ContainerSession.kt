@@ -1165,6 +1165,23 @@ class ContainerSession private constructor(
                 true,
                 false
             )
+            mapOf(
+                "mApplication" to application,
+                "mApplicationInfo" to context.applicationInfo,
+                "mClassLoader" to loader,
+                "mPackageName" to spec.packageName,
+                "mAppDir" to spec.baseApkPath,
+                "mResDir" to spec.baseApkPath,
+                "mDataDir" to context.applicationInfo.dataDir,
+                "mResources" to resources
+            ).forEach { (name, value) ->
+                findField(targetLoadedApk.javaClass, name)?.let { field ->
+                    runCatching { field.set(targetLoadedApk, value) }
+                        .onFailure {
+                            Log.w(TAG, "initialize target LoadedApk field failed: $name", it)
+                        }
+                }
+            }
             val packagesField = activityThreadClass
                 .getDeclaredField("mPackages")
                 .apply { isAccessible = true }
