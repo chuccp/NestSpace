@@ -14,6 +14,7 @@
 #include <linux/seccomp.h>
 #include <limits.h>
 #include <sys/prctl.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -63,6 +64,12 @@ enum GatewayRequestType : int {
     kGatewayOpenat = 1,
     kGatewayRtSigaction = 2,
     kGatewayVirtualProc = 3,
+    kGatewayFstatat = 4,
+    kGatewayVirtualFstatat = 5,
+    kGatewayStatx = 6,
+    kGatewayVirtualStatx = 7,
+    kGatewayFaccessat = 8,
+    kGatewayReadlinkat = 9,
 };
 
 struct GatewayRequest {
@@ -72,11 +79,13 @@ struct GatewayRequest {
     int signal_number;
     pid_t client_pid;
     mode_t mode;
+    unsigned int mask;
     uintptr_t action_address;
     uintptr_t old_action_address;
     size_t signal_set_size;
     size_t action_size;
     unsigned char action[64];
+    int rewrite_identity;
     char path[PATH_MAX];
 };
 
@@ -84,6 +93,8 @@ struct GatewayResponse {
     long result;
     size_t action_size;
     unsigned char action[64];
+    size_t payload_size;
+    unsigned char payload[256];
 };
 
 bool diagnostic_enabled(const char* environment, const char* property) {
@@ -962,8 +973,14 @@ long duplicate_gateway_fd_template(const char* path, int flags) {
     return -ENOENT;
 }
 
-long call_syscall_broker(GatewayRequest* request) {
+long call_syscall_broker(
+    GatewayRequest* request,
+    int* returned_fd = nullptr,
+    GatewayResponse* caller_response = nullptr
+) {
     if (request == nullptr) return -EINVAL;
+    if (returned_fd != nullptr) *returned_fd = -1;
+    if (caller_response != nullptr) *caller_response = {};
     long returned = -ENOSYS;
     if (g_syscall_broker_request_write < 0) {
         __android_log_print(
@@ -1021,6 +1038,9 @@ long call_syscall_broker(GatewayRequest* request) {
         );
         const int response_errno = response_read ? 0 : errno;
         if (response_read) {
+            if (caller_response != nullptr) {
+                *caller_response = response;
+            }
             int resolved_fd = received_fd;
             if ((request->type == kGatewayOpenat ||
                  request->type == kGatewayVirtualProc) &&
@@ -1077,31 +1097,8 @@ long call_syscall_broker(GatewayRequest* request) {
             returned = resolved_fd >= 0
                 ? static_cast<long>(resolved_fd)
                 : response.result;
-            if (returned >= 0 &&
-                (request->type == kGatewayOpenat ||
-                 request->type == kGatewayVirtualProc)) {
-                struct stat status {};
-                const long stat_result = syscall(
-                    SYS_fstat,
-                    returned,
-                    &status
-                );
-                __android_log_print(
-                    ANDROID_LOG_WARN,
-                    kLogTag,
-                    "syscall-openat fd result=%ld received=%d broker=%ld "
-                    "stat=%ld mode=%o size=%lld",
-                    returned,
-                    resolved_fd,
-                    response.result,
-                    stat_result,
-                    stat_result == 0
-                        ? static_cast<unsigned int>(status.st_mode)
-                        : 0,
-                    stat_result == 0
-                        ? static_cast<long long>(status.st_size)
-                        : -1LL
-                );
+            if (returned_fd != nullptr && resolved_fd >= 0) {
+                *returned_fd = resolved_fd;
             }
             if (request->type == kGatewayRtSigaction &&
                 request->old_action_address != 0 &&

@@ -8,6 +8,7 @@ import com.coke.nestspace.container.vpm.VirtualPackageRegistry
 import com.coke.nestspace.runtime.RuntimeHostHooks
 
 
+import android.Manifest
 import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
@@ -79,6 +80,7 @@ object SystemServiceIdentity {
     @Volatile private var hostPackage: String = ""
     @Volatile private var targetPackageInfo: PackageInfo? = null
     @Volatile private var targetAppInfo: ApplicationInfo? = null
+    @Volatile private var targetUid: Int = -1
     @Volatile private var targetResources: Resources? = null
     @Volatile private var registry: VirtualPackageRegistry? = null
     @Volatile private var virtualPermissions: ContainerPermissions? = null
@@ -148,6 +150,7 @@ object SystemServiceIdentity {
         this.hostPackage = hostPackage
         targetPackageInfo = spec.packageInfo
         targetAppInfo = spec.applicationInfo
+        targetUid = spec.targetUid.takeIf { it > 0 } ?: spec.applicationInfo.uid
         this.targetResources = targetResources
         this.registry = registry
         virtualPermissions = permissions
@@ -482,7 +485,7 @@ object SystemServiceIdentity {
                 Proxy.newProxyInstance(
                     iface.classLoader,
                     arrayOf(iface),
-                    IdentityRewriteHandler(staticDelegate)
+                    AppOpsRewriteHandler(staticDelegate)
                 )
             )
             staticPatched = true
@@ -502,7 +505,7 @@ object SystemServiceIdentity {
                     Proxy.newProxyInstance(
                         iface.classLoader,
                         arrayOf(iface),
-                        IdentityRewriteHandler(delegate)
+                    AppOpsRewriteHandler(delegate)
                     )
                 )
                 instances++
@@ -649,11 +652,52 @@ object SystemServiceIdentity {
      */
     private class NotificationRewriteHandler(private val delegate: Any) : InvocationHandler {
         override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
+            if (method.name.startsWith("areNotificationsEnabled")) {
+                val permission = virtualPermissions?.checkSelfPermission(
+                    Manifest.permission.POST_NOTIFICATIONS
+                )
+                if (permission != PackageManager.PERMISSION_GRANTED) {
+                    return false
+                }
+            }
+            if (isNotificationReadMethod(method.name)) {
+                return invokeDelegate(delegate, method, args)
+            }
             val env = notificationEnv()
                 ?: return invokeDelegate(delegate, method, args)
             val callArgs = ContainerNotificationBridge.rewriteCall(method.name, args, env)
             val result = invokeDelegate(delegate, method, callArgs)
             return ContainerNotificationBridge.rewriteResult(method.name, result, env)
+        }
+    }
+
+    private fun isNotificationReadMethod(name: String): Boolean =
+        name.startsWith("areNotificationsEnabled") ||
+            name.startsWith("getImportance") ||
+            name == "getNotificationChannel" ||
+            name == "getNotificationChannels" ||
+            name == "getNotificationChannelsForPackage" ||
+            name == "getEnabledNotificationListeners"
+
+    /**
+     * AppOps checks are read-only identity queries. The target package/UID pair
+     * is valid because the target is the installed copy used as the container
+     * source, so asking the system for that pair preserves the real policy while
+     * mutations continue through the host-attribution rewrite.
+     */
+    private class AppOpsRewriteHandler(private val delegate: Any) : InvocationHandler {
+        private val fallback = IdentityRewriteHandler(delegate)
+
+        override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
+            if (method.declaringClass == Any::class.java) {
+                return fallback.invoke(proxy, method, args)
+            }
+            if (method.name.startsWith("checkOp") ||
+                method.name.startsWith("unsafeCheckOp")
+            ) {
+                return invokeDelegate(delegate, method, args)
+            }
+            return fallback.invoke(proxy, method, args)
         }
     }
 
@@ -896,8 +940,7 @@ object SystemServiceIdentity {
                 args
             }
             val result = invokeDelegate(delegate, method, callArgs)
-            rewriteProcessIdentity(method.name, callArgs, result)
-            return result
+            return rewriteProcessIdentity(method.name, callArgs, result)
         }
     }
 
@@ -913,10 +956,10 @@ object SystemServiceIdentity {
         methodName: String,
         args: Array<Any?>?,
         result: Any?
-    ) {
+    ): Any? {
         val target = targetPackage
         val host = hostPackage
-        if (target.isEmpty() || target == host) return
+        if (target.isEmpty() || target == host) return result
         val myPid = Process.myPid()
         val processInfoClass = android.app.ActivityManager.RunningAppProcessInfo::class.java
 
@@ -930,16 +973,26 @@ object SystemServiceIdentity {
             if (belongsToHost) {
                 running.processName = target
                 running.pkgList = arrayOf(target)
+                if (targetUid > 0) running.uid = targetUid
             }
         }
 
-        when {
+        return when {
             methodName == "getRunningAppProcesses" &&
-                result is Iterable<*> -> result.forEach(::rewrite)
+                result is Iterable<*> -> result
+                    .filter { info ->
+                        info is android.app.ActivityManager.RunningAppProcessInfo &&
+                            info.pid == myPid
+                    }
+                    .onEach(::rewrite)
             methodName in setOf(
                 "getMyMemoryState",
                 "getRunningAppProcessInfo"
-            ) -> args.orEmpty().forEach(::rewrite)
+            ) -> {
+                args.orEmpty().forEach(::rewrite)
+                result
+            }
+            else -> result
         }
     }
 

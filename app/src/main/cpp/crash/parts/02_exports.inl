@@ -156,11 +156,12 @@ extern "C" bool install_native_kill_guard() {
 }
 
 extern "C" bool install_native_syscall_gateway() {
-    if (!diagnostic_enabled(
-            "NESTSPACE_SYSCALL_GATEWAY",
-            "debug.nestspace.syscall_gateway"
-        )) {
-        return false;
-    }
-    return install_openat_gateway_filter();
+    if (getenv("NESTSPACE_DISABLE_SYSCALL_GATEWAY") != nullptr) return false;
+    char value[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.syscall_gateway",
+        value
+    );
+    if (strcmp(value, "0") == 0) return false;
+    return install_user_notify_gateway();
 }

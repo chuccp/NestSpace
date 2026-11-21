@@ -236,6 +236,107 @@ void handle_rt_sigprocmask_syscall(ucontext_t* context) {
                 request.flags,
                 request.client_pid
             );
+        } else if (request.type == kGatewayFstatat ||
+                   request.type == kGatewayVirtualFstatat) {
+            struct stat status {};
+            if (request.type == kGatewayVirtualFstatat) {
+                const int fd = nestspace::open_virtual_proc_for_pid(
+                    request.path,
+                    O_RDONLY | O_CLOEXEC,
+                    request.client_pid
+                );
+                if (fd >= 0) {
+                    result = syscall(SYS_fstat, fd, &status);
+                    syscall(SYS_close, fd);
+                } else {
+                    result = fd;
+                }
+            } else {
+                result = syscall(
+                    SYS_newfstatat,
+                    request.dirfd,
+                    request.path,
+                    &status,
+                    request.flags
+                );
+            }
+            if (result == 0) {
+                const auto* environment = nestspace::current_environment();
+                if (request.rewrite_identity && environment != nullptr) {
+                    status.st_uid = static_cast<uid_t>(
+                        environment->observed_uid
+                    );
+                    status.st_gid = static_cast<gid_t>(
+                        environment->observed_uid
+                    );
+                }
+                response.payload_size = sizeof(status);
+                memcpy(response.payload, &status, sizeof(status));
+            }
+        } else if (request.type == kGatewayStatx ||
+                   request.type == kGatewayVirtualStatx) {
+            struct statx status {};
+            if (request.type == kGatewayVirtualStatx) {
+                const int fd = nestspace::open_virtual_proc_for_pid(
+                    request.path,
+                    O_RDONLY | O_CLOEXEC,
+                    request.client_pid
+                );
+                if (fd >= 0) {
+                    result = syscall(
+                        SYS_statx,
+                        fd,
+                        "",
+                        AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW,
+                        request.mask,
+                        &status
+                    );
+                    syscall(SYS_close, fd);
+                } else {
+                    result = fd;
+                }
+            } else {
+                result = syscall(
+                    SYS_statx,
+                    request.dirfd,
+                    request.path,
+                    request.flags,
+                    request.mask,
+                    &status
+                );
+            }
+            if (result == 0) {
+                const auto* environment = nestspace::current_environment();
+                if (request.rewrite_identity && environment != nullptr) {
+                    status.stx_uid = static_cast<uint32_t>(
+                        environment->observed_uid
+                    );
+                    status.stx_gid = static_cast<uint32_t>(
+                        environment->observed_uid
+                    );
+                }
+                response.payload_size = sizeof(status);
+                memcpy(response.payload, &status, sizeof(status));
+            }
+        } else if (request.type == kGatewayFaccessat) {
+            result = syscall(
+                SYS_faccessat,
+                request.dirfd,
+                request.path,
+                request.mode
+            );
+        } else if (request.type == kGatewayReadlinkat) {
+            const long length = syscall(
+                SYS_readlinkat,
+                request.dirfd,
+                request.path,
+                response.payload,
+                sizeof(response.payload)
+            );
+            result = length;
+            if (length >= 0) {
+                response.payload_size = static_cast<size_t>(length);
+            }
         } else if (request.type == kGatewayRtSigaction) {
             unsigned char old_action[sizeof(response.action)] {};
             if (request.signal_number == SIGSYS &&
@@ -727,7 +828,7 @@ bool install_kill_guard_filter() {
     return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
 }
 
-bool install_openat_gateway_filter() {
+[[maybe_unused]] bool install_openat_gateway_filter() {
 #if defined(__NR_openat)
     __android_log_print(
         ANDROID_LOG_WARN,

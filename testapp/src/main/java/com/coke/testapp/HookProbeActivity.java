@@ -1,8 +1,24 @@
 package com.coke.testapp;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.AppOpsManager;
+import android.app.NotificationManager;
+import android.app.usage.UsageStatsManager;
+import android.accounts.AccountManager;
+import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
+import android.content.pm.ResolveInfo;
+import android.content.pm.Signature;
+import android.content.pm.SigningInfo;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
 import android.system.Os;
@@ -18,6 +34,7 @@ import java.io.File;
 import java.io.FileWriter;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -114,6 +131,7 @@ public class HookProbeActivity extends Activity {
         add(lines, "packageManager.packagesForUid", safe(
             () -> Arrays.toString(getPackageManager().getPackagesForUid(Process.myUid()))
         ));
+        appendCrossProcessProbes(lines);
         add(lines, "context.dataDir", getDataDir().getAbsolutePath());
         File external = getExternalFilesDir("hook-probe");
         if (external != null) {
@@ -200,6 +218,278 @@ public class HookProbeActivity extends Activity {
         lines.add("---- native ----");
         lines.add(nativeReport == null ? "native=null" : nativeReport);
         return String.join("\n", lines);
+    }
+
+    private void appendCrossProcessProbes(List<String> lines) {
+        String packageName = getPackageName();
+        PackageManager pm = getPackageManager();
+        int uid = Process.myUid();
+        add(lines, "xp.pm.packageUid", safe(() -> pm.getPackageUid(packageName, 0)));
+        add(lines, "xp.pm.nameForUid", safe(() -> pm.getNameForUid(uid)));
+        add(lines, "xp.pm.packageGids", packageManagerGids());
+        add(lines, "xp.pm.installedPackages", safe(() -> {
+            List<PackageInfo> values = pm.getInstalledPackages(0);
+            return packageListSummary(values, packageName);
+        }));
+        add(lines, "xp.pm.installedPackageNames", safe(() -> {
+            List<String> values = new ArrayList<>();
+            for (PackageInfo value : pm.getInstalledPackages(0)) {
+                values.add(value.packageName);
+            }
+            values.sort(String::compareTo);
+            return String.join(",", values);
+        }));
+        add(lines, "xp.pm.installedApplications", safe(() -> {
+            List<ApplicationInfo> values = pm.getInstalledApplications(0);
+            long selfCount = values.stream()
+                .filter(value -> packageName.equals(value.packageName))
+                .count();
+            return "count=" + values.size() + ",self=" + selfCount;
+        }));
+        add(lines, "xp.pm.cachedPackage", safe(() -> {
+            PackageInfo value = pm.getPackageInfo(packageName, 0);
+            return "uid=" + value.applicationInfo.uid
+                + ",version=" + value.getLongVersionCode()
+                + ",source=" + value.applicationInfo.sourceDir;
+        }));
+        add(lines, "xp.pm.matchUninstalled", safe(() -> {
+            int flags = PackageManager.MATCH_UNINSTALLED_PACKAGES
+                | PackageManager.MATCH_DISABLED_COMPONENTS;
+            PackageInfo value = pm.getPackageInfo(packageName, flags);
+            return "uid=" + value.applicationInfo.uid
+                + ",source=" + value.applicationInfo.sourceDir;
+        }));
+        add(lines, "xp.signature.selfDigest", signatureDigest(packageName));
+        add(lines, "xp.signature.selfCheck", safe(
+            () -> pm.checkSignatures(packageName, packageName)
+        ));
+        add(lines, "xp.signature.androidCheck", safe(
+            () -> pm.checkSignatures(packageName, "android")
+        ));
+
+        Intent launcher = new Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setPackage(packageName);
+        Intent activityIntent = new Intent(this, HookProbeActivity.class)
+            .setPackage(packageName);
+        Intent serviceIntent = new Intent("com.coke.testapp.PING")
+            .setPackage(packageName);
+        Intent receiverIntent = new Intent("com.coke.testapp.PING_RECEIVER")
+            .setPackage(packageName);
+        add(lines, "xp.resolve.launcher", resolveActivity(launcher));
+        add(lines, "xp.resolve.explicitActivity", resolveActivity(activityIntent));
+        add(lines, "xp.query.launcher", queryActivityCount(launcher));
+        add(lines, "xp.resolve.service", resolveService(serviceIntent));
+        add(lines, "xp.query.receivers", queryReceiverCount(receiverIntent));
+        add(lines, "xp.resolve.provider", resolveProvider(packageName + ".testprovider"));
+        add(lines, "xp.visibility.webIntent", queryActivityCount(
+            new Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com"))
+        ));
+
+        add(lines, "xp.permission.camera.self",
+            permissionProbe(Manifest.permission.CAMERA));
+        add(lines, "xp.permission.notifications.self",
+            permissionProbe(Manifest.permission.POST_NOTIFICATIONS));
+        add(lines, "xp.permission.camera.uid", safe(
+            () -> checkPermission(Manifest.permission.CAMERA, Process.myPid(), uid)
+        ));
+        add(lines, "xp.permission.calling", safe(
+            () -> checkCallingPermission(Manifest.permission.CAMERA)
+        ));
+
+        AppOpsManager appOps = getSystemService(AppOpsManager.class);
+        add(lines, "xp.appops.camera", checkAppOp(
+            appOps, AppOpsManager.OPSTR_CAMERA, uid, packageName
+        ));
+        add(lines, "xp.appops.usage", checkAppOp(
+            appOps, AppOpsManager.OPSTR_GET_USAGE_STATS, uid, packageName
+        ));
+
+        add(lines, "xp.binder.beforePackageCall", Binder.getCallingUid());
+        add(lines, "xp.pm.callResult", safe(() -> pm.getPackageUid(packageName, 0)));
+        add(lines, "xp.binder.afterPackageCall", Binder.getCallingUid());
+        add(lines, "xp.binder.clearedPackageResult", safe(() -> {
+            long token = Binder.clearCallingIdentity();
+            try {
+                return pm.getPackageUid(packageName, 0);
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }));
+        add(lines, "xp.binder.afterClearRestore", Binder.getCallingUid());
+
+        add(lines, "xp.provider.query", providerQuery());
+        add(lines, "xp.provider.call", safe(() -> getContentResolver().call(
+            Uri.parse("content://" + packageName + ".testprovider"),
+            "probe",
+            null,
+            null
+        )));
+        add(lines, "xp.provider.type", safe(() -> getContentResolver().getType(
+            Uri.parse("content://" + packageName + ".testprovider")
+        )));
+
+        ActivityManager am = getSystemService(ActivityManager.class);
+        add(lines, "xp.activity.running", safe(() -> {
+            ActivityManager.RunningAppProcessInfo self =
+                new ActivityManager.RunningAppProcessInfo();
+            ActivityManager.getMyMemoryState(self);
+            return "pid=" + self.pid + ",uid=" + self.uid
+                + ",importance=" + self.importance
+                + ",process=" + self.processName
+                + ",reason=" + self.importanceReasonCode;
+        }));
+        add(lines, "xp.activity.processes", safe(() -> {
+            List<ActivityManager.RunningAppProcessInfo> values =
+                am.getRunningAppProcesses();
+            if (values == null) return "null";
+            long self = values.stream()
+                .filter(value -> value.uid == uid || packageName.equals(value.processName))
+                .count();
+            return "count=" + values.size() + ",self=" + self;
+        }));
+
+        NotificationManager notifications = getSystemService(NotificationManager.class);
+        add(lines, "xp.notifications.enabled", safe(notifications::areNotificationsEnabled));
+        AccountManager accounts = getSystemService(AccountManager.class);
+        add(lines, "xp.accounts.google", safe(
+            () -> accounts.getAccountsByType("com.google").length
+        ));
+
+        UsageStatsManager usage = getSystemService(UsageStatsManager.class);
+        long now = System.currentTimeMillis();
+        add(lines, "xp.usageStats.query", safe(
+            () -> usage.queryUsageStats(
+                UsageStatsManager.INTERVAL_DAILY,
+                now - 60_000L,
+                now
+            ) == null ? "null" : "ok"
+        ));
+
+        add(lines, "xp.telephony.imei", safe(() ->
+            getSystemService(android.telephony.TelephonyManager.class)
+                .getImei()
+        ));
+        add(lines, "xp.telephony.subscriber", safe(() ->
+            getSystemService(android.telephony.TelephonyManager.class)
+                .getSubscriberId()
+        ));
+    }
+
+    private static String packageListSummary(
+        List<PackageInfo> values,
+        String packageName
+    ) {
+        long self = values.stream()
+            .filter(value -> packageName.equals(value.packageName))
+            .count();
+        return "count=" + values.size() + ",self=" + self;
+    }
+
+    private String resolveActivity(Intent intent) {
+        ResolveInfo value = getPackageManager().resolveActivity(
+            intent,
+            PackageManager.MATCH_DEFAULT_ONLY
+        );
+        if (value == null || value.activityInfo == null) return "null";
+        return value.activityInfo.packageName + "/" + value.activityInfo.name
+            + ",exported=" + value.activityInfo.exported;
+    }
+
+    private String queryActivityCount(Intent intent) {
+        List<ResolveInfo> values = getPackageManager().queryIntentActivities(
+            intent,
+            PackageManager.MATCH_DEFAULT_ONLY
+        );
+        long self = values.stream()
+            .filter(value -> value.activityInfo != null &&
+                getPackageName().equals(value.activityInfo.packageName))
+            .count();
+        return "count=" + values.size() + ",self=" + self;
+    }
+
+    private String resolveService(Intent intent) {
+        ResolveInfo value = getPackageManager().resolveService(intent, 0);
+        if (value == null || value.serviceInfo == null) return "null";
+        return value.serviceInfo.packageName + "/" + value.serviceInfo.name
+            + ",exported=" + value.serviceInfo.exported;
+    }
+
+    private String queryReceiverCount(Intent intent) {
+        List<ResolveInfo> values = getPackageManager().queryBroadcastReceivers(intent, 0);
+        long self = values.stream()
+            .filter(value -> value.activityInfo != null &&
+                getPackageName().equals(value.activityInfo.packageName))
+            .count();
+        return "count=" + values.size() + ",self=" + self;
+    }
+
+    private String resolveProvider(String authority) {
+        ProviderInfo value = getPackageManager().resolveContentProvider(authority, 0);
+        if (value == null) return "null";
+        return value.packageName + "/" + value.name
+            + ",exported=" + value.exported;
+    }
+
+    private String permissionProbe(String permission) {
+        return safe(() -> checkSelfPermission(permission)
+            + ",packageManager=" + getPackageManager().checkPermission(
+                permission,
+                getPackageName()
+            ));
+    }
+
+    private String checkAppOp(
+        AppOpsManager manager,
+        String operation,
+        int uid,
+        String packageName
+    ) {
+        return safe(() -> manager.checkOp(operation, uid, packageName)
+            + ",noThrow=" + manager.checkOpNoThrow(operation, uid, packageName));
+    }
+
+    private String providerQuery() {
+        try (Cursor cursor = getContentResolver().query(
+            Uri.parse("content://" + getPackageName() + ".testprovider"),
+            null,
+            null,
+            null,
+            null
+        )) {
+            if (cursor == null) return "null";
+            if (!cursor.moveToFirst()) return "empty";
+            return cursor.getString(0);
+        } catch (Throwable error) {
+            return describe(error);
+        }
+    }
+
+    private String signatureDigest(String packageName) {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(
+                packageName,
+                PackageManager.GET_SIGNING_CERTIFICATES
+            );
+            SigningInfo signing = info.signingInfo;
+            Signature[] signatures = signing == null
+                ? null
+                : (Build.VERSION.SDK_INT >= 28
+                    ? signing.getApkContentsSigners()
+                    : signing.getSigningCertificateHistory());
+            if (signatures == null || signatures.length == 0) return "none";
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            StringBuilder result = new StringBuilder();
+            for (Signature signature : signatures) {
+                if (result.length() > 0) result.append(',');
+                for (byte value : digest.digest(signature.toByteArray())) {
+                    result.append(String.format(Locale.US, "%02x", value));
+                }
+            }
+            return result.toString();
+        } catch (Throwable error) {
+            return describe(error);
+        }
     }
 
     private void addPathProbe(List<String> lines, String label, String path) {

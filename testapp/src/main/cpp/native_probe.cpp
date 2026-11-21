@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <fcntl.h>
 #include <linux/capability.h>
+#include <linux/stat.h>
 #include <sched.h>
 #include <sys/ptrace.h>
 #include <sys/statfs.h>
@@ -36,6 +37,13 @@ struct ChildProcProbe {
     gid_t groups[16] = {};
     int group_count = 0;
     int task_count = 0;
+    int directory_fd = -1;
+    int directory_errno = 0;
+    long first_getdents = 0;
+    int first_getdents_errno = 0;
+    int seccomp_filters = -1;
+    long raw_uid = -1;
+    int raw_self_status_open = 0;
     char parent_comm[64] = {};
     char first_tasks[512] = {};
     char task_details[2048] = {};
@@ -58,6 +66,73 @@ constexpr long kSysFstatat = SYS_newfstatat;
 constexpr long kSysFstatat = SYS_fstatat64;
 #else
 constexpr long kSysFstatat = -1;
+#endif
+
+#if defined(__aarch64__)
+__attribute__((noinline)) long raw_syscall6(
+    long number,
+    long arg0,
+    long arg1,
+    long arg2,
+    long arg3,
+    long arg4,
+    long arg5
+) {
+    register long x0 asm("x0") = arg0;
+    register long x1 asm("x1") = arg1;
+    register long x2 asm("x2") = arg2;
+    register long x3 asm("x3") = arg3;
+    register long x4 asm("x4") = arg4;
+    register long x5 asm("x5") = arg5;
+    register long x8 asm("x8") = number;
+    asm volatile(
+        "svc #0"
+        : "+r"(x0)
+        : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x8)
+        : "memory"
+    );
+    return x0;
+}
+#define RAW_SYSCALL_SUPPORTED 1
+#elif defined(__x86_64__)
+__attribute__((noinline)) long raw_syscall6(
+    long number,
+    long arg0,
+    long arg1,
+    long arg2,
+    long arg3,
+    long arg4,
+    long arg5
+) {
+    register long rax asm("rax") = number;
+    register long rdi asm("rdi") = arg0;
+    register long rsi asm("rsi") = arg1;
+    register long rdx asm("rdx") = arg2;
+    register long r10 asm("r10") = arg3;
+    register long r8 asm("r8") = arg4;
+    register long r9 asm("r9") = arg5;
+    asm volatile(
+        "syscall"
+        : "+r"(rax)
+        : "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(r8), "r"(r9)
+        : "rcx", "r11", "memory"
+    );
+    return rax;
+}
+#define RAW_SYSCALL_SUPPORTED 1
+#else
+long raw_syscall6(
+    long,
+    long,
+    long,
+    long,
+    long,
+    long,
+    long
+) {
+    return -ENOSYS;
+}
+#define RAW_SYSCALL_SUPPORTED 0
 #endif
 
 std::string read_file(const char* path, size_t limit = 64 * 1024) {
@@ -307,6 +382,146 @@ std::string capability_summary() {
         ":" + std::to_string(data[1].inheritable);
 }
 
+std::string compact_stat(const struct stat& value);
+
+std::string raw_syscall_summary(const char* data_root) {
+#if RAW_SYSCALL_SUPPORTED
+    const long uid = raw_syscall6(SYS_getuid, 0, 0, 0, 0, 0, 0);
+    const long euid = raw_syscall6(SYS_geteuid, 0, 0, 0, 0, 0, 0);
+    const long gid = raw_syscall6(SYS_getgid, 0, 0, 0, 0, 0, 0);
+    const long egid = raw_syscall6(SYS_getegid, 0, 0, 0, 0, 0, 0);
+
+    std::string files_path = data_root == nullptr ? "" : data_root;
+    if (!files_path.empty()) files_path += "/files";
+    const long files_fd = files_path.empty()
+        ? -ENOENT
+        : raw_syscall6(
+            SYS_openat,
+            AT_FDCWD,
+            reinterpret_cast<long>(files_path.c_str()),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC,
+            0,
+            0,
+            0
+        );
+    if (files_fd >= 0) {
+        raw_syscall6(SYS_close, files_fd, 0, 0, 0, 0, 0);
+    }
+
+    struct stat raw_status {};
+    const char* status_path = "/proc/self/status";
+    const long stat_result = raw_syscall6(
+        kSysFstatat,
+        AT_FDCWD,
+        reinterpret_cast<long>(status_path),
+        reinterpret_cast<long>(&raw_status),
+        0,
+        0,
+        0
+    );
+
+    char exe[PATH_MAX] = {};
+    const char* exe_path = "/proc/self/exe";
+    const long exe_length = raw_syscall6(
+        SYS_readlinkat,
+        AT_FDCWD,
+        reinterpret_cast<long>(exe_path),
+        reinterpret_cast<long>(exe),
+        sizeof(exe) - 1,
+        0,
+        0
+    );
+    if (exe_length >= 0) exe[exe_length] = '\0';
+
+    struct statx raw_statx {};
+    const long statx_result = files_path.empty()
+        ? -ENOENT
+        : raw_syscall6(
+            SYS_statx,
+            AT_FDCWD,
+            reinterpret_cast<long>(files_path.c_str()),
+            0,
+            STATX_BASIC_STATS,
+            reinterpret_cast<long>(&raw_statx),
+            0
+        );
+
+    const long access_result = files_path.empty()
+        ? -ENOENT
+        : raw_syscall6(
+            SYS_faccessat,
+            AT_FDCWD,
+            reinterpret_cast<long>(files_path.c_str()),
+            F_OK,
+            0,
+            0,
+            0
+        );
+
+    const long self_task_fd = raw_syscall6(
+        SYS_openat,
+        AT_FDCWD,
+        reinterpret_cast<long>("/proc/self/task"),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC,
+        0,
+        0,
+        0
+    );
+    long self_task_entries = 0;
+    int self_task_errno = 0;
+    if (self_task_fd >= 0) {
+        std::array<char, 4096> entries {};
+        errno = 0;
+        self_task_entries = raw_syscall6(
+            SYS_getdents64,
+            self_task_fd,
+            reinterpret_cast<long>(entries.data()),
+            entries.size(),
+            0,
+            0,
+            0
+        );
+        if (self_task_entries < 0) self_task_errno = errno;
+        raw_syscall6(SYS_close, self_task_fd, 0, 0, 0, 0, 0);
+    } else {
+        self_task_errno = static_cast<int>(-self_task_fd);
+    }
+
+    return "raw.syscall.supported=1"
+        "\nraw.syscall.getuid=" + std::to_string(uid) +
+        "\nraw.syscall.geteuid=" + std::to_string(euid) +
+        "\nraw.syscall.getgid=" + std::to_string(gid) +
+        "\nraw.syscall.getegid=" + std::to_string(egid) +
+        "\nraw.syscall.openat.files=" + (files_fd >= 0
+            ? "ok"
+            : "error=" + std::to_string(files_fd)) +
+        "\nraw.syscall.newfstatat.procStatus=" + (stat_result == 0
+            ? compact_stat(raw_status)
+            : "error=" + std::to_string(stat_result)) +
+        "\nraw.syscall.readlinkat.procExe=" + (exe_length >= 0
+            ? std::string(exe, static_cast<size_t>(exe_length))
+            : "error=" + std::to_string(exe_length)) +
+        "\nraw.syscall.statx.files=" + (statx_result == 0
+            ? "dev=" + std::to_string(raw_statx.stx_dev_major) + ":" +
+                std::to_string(raw_statx.stx_dev_minor) +
+                " ino=" + std::to_string(raw_statx.stx_ino) +
+                " mode=" + std::to_string(raw_statx.stx_mode) +
+                " uid=" + std::to_string(raw_statx.stx_uid) +
+                " gid=" + std::to_string(raw_statx.stx_gid)
+            : "error=" + std::to_string(statx_result)) +
+        "\nraw.syscall.faccessat.files=" + (access_result == 0
+            ? "ok"
+            : "error=" + std::to_string(access_result)) +
+        "\nraw.syscall.selfTask=" + (self_task_fd >= 0
+            ? "getdents=" + std::to_string(self_task_entries) +
+                " errno=" + std::to_string(self_task_errno)
+            : "open_error=" + std::to_string(self_task_errno));
+#else
+    (void)data_root;
+    return "raw.syscall.supported=0";
+#endif
+}
+
 std::string compact_stat(const struct stat& value) {
     return "dev=" + std::to_string(value.st_dev) +
         " ino=" + std::to_string(value.st_ino) +
@@ -396,24 +611,62 @@ void run_child_proc_probe(std::string* report) {
         *report += "\nchild-proc=pipe-error=" + std::to_string(errno);
         return;
     }
-    const pid_t parent_pid = getpid();
     const pid_t child_pid = fork();
     if (child_pid == 0) {
         close(pipe_fds[0]);
         ChildProcProbe probe;
-        probe.parent_pid = static_cast<int>(parent_pid);
+        probe.parent_pid = static_cast<int>(raw_syscall6(
+            SYS_getppid,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        ));
         probe.uid = getuid();
         probe.gid = getgid();
         probe.group_count = getgroups(
             static_cast<int>(std::size(probe.groups)),
             probe.groups
         );
-        errno = 0;
-        probe.trace_result = ptrace(PTRACE_TRACEME, 0, nullptr, nullptr);
-        probe.trace_errno = probe.trace_result < 0 ? errno : 0;
+        probe.raw_uid = raw_syscall6(
+            SYS_getuid,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        );
+        const long raw_status_fd = raw_syscall6(
+            SYS_openat,
+            AT_FDCWD,
+            reinterpret_cast<long>("/proc/self/status"),
+            O_RDONLY | O_CLOEXEC,
+            0,
+            0,
+            0
+        );
+        probe.raw_self_status_open = raw_status_fd >= 0
+            ? 0
+            : static_cast<int>(-raw_status_fd);
+        if (raw_status_fd >= 0) {
+            raw_syscall6(SYS_close, raw_status_fd, 0, 0, 0, 0, 0);
+        }
+        char own_status[2048] = {};
+        read_into_buffer(
+            "/proc/self/status",
+            own_status,
+            sizeof(own_status)
+        );
+        const char* filters = strstr(own_status, "Seccomp_filters:");
+        if (filters != nullptr) {
+            probe.seccomp_filters = atoi(filters + 16);
+        }
 
         const std::string parent = "/proc/" +
-            std::to_string(parent_pid);
+            std::to_string(probe.parent_pid);
         read_into_buffer(
             (parent + "/comm").c_str(),
             probe.parent_comm,
@@ -436,20 +689,37 @@ void run_child_proc_probe(std::string* report) {
         );
 
         const std::string task_root = parent + "/task";
-        const int directory_fd = open(
-            task_root.c_str(),
-            O_RDONLY | O_DIRECTORY | O_CLOEXEC
+        const long raw_directory_fd = raw_syscall6(
+            SYS_openat,
+            AT_FDCWD,
+            reinterpret_cast<long>(task_root.c_str()),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC,
+            0,
+            0,
+            0
         );
+        const int directory_fd = raw_directory_fd >= 0
+            ? static_cast<int>(raw_directory_fd)
+            : -1;
+        probe.directory_fd = directory_fd;
+        probe.directory_errno = directory_fd < 0
+            ? static_cast<int>(-raw_directory_fd)
+            : 0;
         if (directory_fd >= 0) {
             std::array<char, 4096> entries{};
             size_t formatted = 0;
-            for (;;) {
+            for (int pass = 0;; ++pass) {
+                errno = 0;
                 const long count = syscall(
                     SYS_getdents64,
                     directory_fd,
                     entries.data(),
                     entries.size()
                 );
+                if (pass == 0) {
+                    probe.first_getdents = count;
+                    probe.first_getdents_errno = count <= 0 ? errno : 0;
+                }
                 if (count <= 0) break;
                 size_t offset = 0;
                 while (offset < static_cast<size_t>(count)) {
@@ -524,6 +794,9 @@ void run_child_proc_probe(std::string* report) {
             }
             close(directory_fd);
         }
+        errno = 0;
+        probe.trace_result = ptrace(PTRACE_TRACEME, 0, nullptr, nullptr);
+        probe.trace_errno = probe.trace_result < 0 ? errno : 0;
         size_t written = 0;
         const auto* bytes = reinterpret_cast<const char*>(&probe);
         while (written < sizeof(probe)) {
@@ -583,6 +856,20 @@ void run_child_proc_probe(std::string* report) {
         "\nchild-proc.groups=" + group_value +
         "\nchild-proc.parent_tasks=" +
             std::to_string(probe.task_count) +
+        "\nchild-proc.directory_fd=" +
+            std::to_string(probe.directory_fd) +
+        "\nchild-proc.directory_errno=" +
+            std::to_string(probe.directory_errno) +
+        "\nchild-proc.first_getdents=" +
+            std::to_string(probe.first_getdents) +
+        "\nchild-proc.first_getdents_errno=" +
+            std::to_string(probe.first_getdents_errno) +
+        "\nchild-proc.seccomp_filters=" +
+            std::to_string(probe.seccomp_filters) +
+        "\nchild-proc.raw_uid=" +
+            std::to_string(probe.raw_uid) +
+        "\nchild-proc.raw_self_status_open=" +
+            std::to_string(probe.raw_self_status_open) +
         "\nchild-proc.parent_task_ids=" + probe.first_tasks +
         "\nchild-proc.parent_task_details=" + probe.task_details +
         "\nchild-proc.parent_comm=" + probe.parent_comm +
@@ -753,6 +1040,7 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
         "\nsyscall.geteuid=" + std::to_string(syscall(SYS_geteuid)) +
         "\nsyscall.getgid=" + std::to_string(syscall(SYS_getgid)) +
         "\nsyscall.getegid=" + std::to_string(syscall(SYS_getegid)) +
+        "\n" + raw_syscall_summary(data_root.c_str()) +
         "\nprctl.dumpable=" + std::to_string(prctl(PR_GET_DUMPABLE)) +
         "\nprctl.noNewPrivs=" + std::to_string(prctl(PR_GET_NO_NEW_PRIVS)) +
         "\nprctl.seccomp=" + std::to_string(prctl(PR_GET_SECCOMP)) +
