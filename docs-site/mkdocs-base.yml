@@ -85,8 +85,12 @@ markdown_extensions:
 
 exclude_docs: |
   archive/
+  assistant-task-orchestration.md
+  hardened-runtime-recovery.md
+  hardened-runtime-summary.md
   performance-audit-and-improvement-plan.md
   runtime-modules.md
+  task-experience-and-runtime-guide.md
   releases/
 
 extra:

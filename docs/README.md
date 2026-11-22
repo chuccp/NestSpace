@@ -39,16 +39,16 @@
 | --- | --- |
 | [架构与限制](architecture.md) | 容器实现、进程模型和已知边界 |
 | [单 APK 兼容运行时设计](single-apk-android-compatibility-runtime.md) | 免 Root 条件下的统一环境、Native Facade 和分阶段改造方案 |
-| [加固运行与原生 Android 复原研究](hardened-runtime-recovery.md) | 运行期 DEX 恢复结论、加固启动链和剩余原生环境差异 |
-| [加固运行时复原总结](hardened-runtime-summary.md) | 当前暂停点、根因证据、代码检查点、禁止重复实验和下一次接续步骤 |
+| [加固运行与原生 Android 复原研究](https://github.com/chuccp/NestSpace/blob/main/docs/hardened-runtime-recovery.md) | 运行期 DEX 恢复结论、加固启动链和剩余原生环境差异 |
+| [加固运行时复原总结](https://github.com/chuccp/NestSpace/blob/main/docs/hardened-runtime-summary.md) | 当前暂停点、根因证据、代码检查点、禁止重复实验和下一次接续步骤 |
 | [插件平台与 Java SDK](plugin-center.md) | Java SDK、Agent Tools/Hook、文件与密钥、任务/事件、UI、LLM Provider、目标版本匹配和插件中心计划 |
 | [插件编写指南](plugin-authoring.md) | 从创建源码插件到 Manifest、Java API、声明式设置、Host API、运行时代理、调试和发布 |
-| [整体性能审计与修改建议](performance-audit-and-improvement-plan.md) | 容器启动、Hook、进程池、截图和 target 热路径的性能优化路线 |
+| [整体性能审计与修改建议](https://github.com/chuccp/NestSpace/blob/main/docs/performance-audit-and-improvement-plan.md) | 容器启动、Hook、进程池、截图和 target 热路径的性能优化路线 |
 | [MCP 工具参考](mcp-tools.md) | 全部 MCP 工具和参数 |
-| [AI 助手任务与子 Agent 编排设计](assistant-task-orchestration.md) | 主代理、任务队列、暂停/取消、后台执行、主代理交接、可靠性与故障恢复设计 |
+| [AI 助手任务与子 Agent 编排设计](https://github.com/chuccp/NestSpace/blob/main/docs/assistant-task-orchestration.md) | 主代理、任务队列、暂停/取消、后台执行、主代理交接、可靠性与故障恢复设计 |
 | [App / 网站知识包](knowledge-packs.md) | 知识包的格式、匹配和新增方法 |
 | [从源码构建](building.md) | 环境要求、构建命令和 CI |
-| [发布更新日志](releases/README.md) | Release 文件格式、发布前检查和自动发布流程 |
+| [发布更新日志](https://github.com/chuccp/NestSpace/blob/main/docs/releases/README.md) | Release 文件格式、发布前检查和自动发布流程 |
 | [nestspace-mcp CLI](cli.md) | 命令行客户端的安装和使用 |
 | [技术设计](android-virtual-space-agent-mcp.md) | 早期的完整技术方案（开发参考） |
 
