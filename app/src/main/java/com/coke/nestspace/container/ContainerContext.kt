@@ -253,8 +253,12 @@ class ContainerContext(
     private fun virtualAutofillManager(): Any? {
         autofillManager?.let { return it }
         return runCatching {
-            val app = baseContext.applicationContext
-            val hostManager = app.getSystemService(Context.AUTOFILL_SERVICE)
+            val app = HostIdentity.application ?: return null
+            // Do not call applicationContext here: this method is reached from
+            // ContainerContext.getSystemService(), and a container-derived
+            // application context can route back into this same method.
+            val hostImpl = app.createDeviceProtectedStorageContext()
+            val hostManager = hostImpl.getSystemService(Context.AUTOFILL_SERVICE)
                 as? android.view.autofill.AutofillManager
                 ?: error("host AutofillManager missing")
             val serviceField = android.view.autofill.AutofillManager::class.java
@@ -266,7 +270,6 @@ class ContainerContext(
             // service call then carries the virtual package. A fresh derived
             // ContextImpl starts with no client; clear it explicitly to be
             // safe, so AutofillManager treats autofill as unavailable.
-            val hostImpl = app.createDeviceProtectedStorageContext()
             runCatching {
                 hostImpl.javaClass
                     .getDeclaredField("mAutofillClient")

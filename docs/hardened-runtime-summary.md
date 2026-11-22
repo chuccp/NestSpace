@@ -345,6 +345,9 @@ syscall(SYS_getuid)=虚拟 UID
 - Application 创建前后多次捕获。
 - APK 优先、运行期 DEX 补位的顺序验证。
 
+当前已从正常容器启动路径移除这套进程内存扫描；它只保留为离线诊断，
+不能再作为启动兜底。
+
 这些修复解决了 DEX 代次污染和资源类遮蔽问题，但不能修复 native 解释器状态。
 
 ### 7.2 Context / ClassLoader 方向
@@ -429,19 +432,17 @@ syscall(SYS_getuid)=虚拟 UID
 
 这是正常 Android 启动语义，不属于壳特判。
 
-### 8.2 DEX 代次修复
+### 8.2 DEX 文件加载
 
 涉及：
 
-- [`ProcessDexBridge.kt`](../app/src/main/java/com/coke/nestspace/container/loader/ProcessDexBridge.kt)
 - [`RuntimeDexPathClassLoader.kt`](../app/src/main/java/com/coke/nestspace/container/loader/RuntimeDexPathClassLoader.kt)
 
 建议保留：
 
-- 当前运行内累积捕获。
-- 大 DEX 优先。
-- generation manifest。
-- 排除旧代次目录。
+- 显式 ClassLoader 代码路径。
+- 已存在的生成 DEX 文件和正常失败异常。
+- 不扫描 `/proc/self/maps` 或读取 `/proc/self/mem`。
 
 ### 8.3 启动阶段记录
 
@@ -450,8 +451,8 @@ syscall(SYS_getuid)=虚拟 UID
 - [`AndroidStartupCoordinator.kt`](../app/src/main/java/com/coke/nestspace/container/runtime/AndroidStartupCoordinator.kt)
 - [`ContainerLaunchProgress.kt`](../app/src/main/java/com/coke/nestspace/container/ContainerLaunchProgress.kt)
 
-新增 `PROCESS_DEX` 阶段，便于确认 DEX 刷新发生在 Application 和首个
-Activity 之间的哪个位置。
+启动阶段只记录正常的 ClassLoader、Application、Provider 和 Activity
+生命周期，不增加进程内存 DEX 扫描阶段。
 
 ### 8.4 运行期终止容纳
 
@@ -591,7 +592,6 @@ adb -s emulator-5556 install -r \
 ContainerSpecFactory
 ContainerSession
 ExternalAppBootstrap
-ProcessDex
 application attached
 APPLICATION_CREATE
 activity class

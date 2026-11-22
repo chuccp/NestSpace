@@ -98,15 +98,6 @@ object NativeEnvironmentBridge {
         }
     }
 
-    fun captureProcessDex(dataRoot: String): List<String> {
-        if (!ensureLoaded()) return emptyList()
-        return runCatching {
-            nativeCaptureProcessDex(dataRoot)?.toList().orEmpty()
-        }.onFailure {
-            Log.w(TAG, "capture process DEX failed", it)
-        }.getOrDefault(emptyList())
-    }
-
     fun dumpRuntimeCode(dataRoot: String): Int {
         if (!ensureLoaded()) return 0
         return runCatching {
@@ -150,6 +141,14 @@ object NativeEnvironmentBridge {
         return runCatching { nativeInstallSyscallGateway() }
             .onSuccess { Log.d(TAG, "syscall gateway=$it") }
             .onFailure { Log.w(TAG, "install syscall gateway failed", it) }
+            .getOrDefault(false)
+    }
+
+    fun installCoreFileBridge(): Boolean {
+        if (!ensureLoaded()) return false
+        return runCatching { nativeInstallCoreFileBridge() }
+            .onSuccess { Log.d(TAG, "core file bridge=$it") }
+            .onFailure { Log.w(TAG, "install core file bridge failed", it) }
             .getOrDefault(false)
     }
 
@@ -377,7 +376,6 @@ object NativeEnvironmentBridge {
     @JvmStatic
     private external fun nativeInstallCrashTrace(path: String)
     private external fun nativeInstallDexFileTrace()
-    private external fun nativeCaptureProcessDex(dataRoot: String): Array<String>?
     private external fun nativeDumpRuntimeCode(dataRoot: String): Int
 
     @JvmStatic
@@ -391,6 +389,7 @@ object NativeEnvironmentBridge {
 
     @JvmStatic
     private external fun nativeInstallSyscallGateway(): Boolean
+    private external fun nativeInstallCoreFileBridge(): Boolean
 
     @JvmStatic
     private external fun nativeRewritePath(path: String): String?

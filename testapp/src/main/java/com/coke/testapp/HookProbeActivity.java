@@ -137,6 +137,7 @@ public class HookProbeActivity extends Activity {
         if (external != null) {
             add(lines, "context.externalFiles", external.getAbsolutePath());
         }
+        appendFileSystemProbe(lines);
 
         add(lines, "os.getuid", safe(Os::getuid));
         add(lines, "os.geteuid", safe(Os::geteuid));
@@ -218,6 +219,43 @@ public class HookProbeActivity extends Activity {
         lines.add("---- native ----");
         lines.add(nativeReport == null ? "native=null" : nativeReport);
         return String.join("\n", lines);
+    }
+
+    private void appendFileSystemProbe(List<String> lines) {
+        File root = new File(
+            getFilesDir(),
+            "filesystem-probe-" + System.nanoTime()
+        );
+        File source = new File(root, "source.txt");
+        File renamed = new File(root, "renamed.txt");
+        try {
+            add(lines, "fs.mkdirs", root.mkdirs());
+            try (FileWriter writer = new FileWriter(source)) {
+                writer.write("filesystem-probe");
+            }
+            add(lines, "fs.exists", source.exists());
+            add(lines, "fs.isFile", source.isFile());
+            add(lines, "fs.isDirectory", root.isDirectory());
+            add(lines, "fs.length", source.length());
+            add(lines, "fs.lastModified", source.lastModified());
+            add(lines, "fs.canRead", source.canRead());
+            add(lines, "fs.canWrite", source.canWrite());
+            add(lines, "fs.usableSpace", root.getUsableSpace());
+            add(lines, "fs.totalSpace", root.getTotalSpace());
+            add(lines, "fs.canonical", root.getCanonicalPath());
+            String[] listed = root.list();
+            add(lines, "fs.list", listed == null ? "null" : Arrays.toString(listed));
+            add(lines, "fs.rename", source.renameTo(renamed));
+            add(lines, "fs.renamedExists", renamed.isFile());
+            add(lines, "fs.deleteFile", renamed.delete());
+            add(lines, "fs.deleteDirectory", root.delete());
+        } catch (Throwable error) {
+            add(lines, "fs.error", describe(error));
+        } finally {
+            renamed.delete();
+            source.delete();
+            root.delete();
+        }
     }
 
     private void appendCrossProcessProbes(List<String> lines) {

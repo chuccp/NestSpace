@@ -48,7 +48,7 @@ class ContainerInstrumentation(
             return null
         }
         if (handlePermissionRequest(session, host, target, intent, requestCode)) return null
-        if (session.startTargetActivity(host, intent, requestCode)) return null
+        if (session.startTargetActivity(host, intent, requestCode, target)) return null
         Log.w(
             TAG,
             "startActivity falls back to host: component=${intent.component} " +

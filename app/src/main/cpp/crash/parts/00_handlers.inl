@@ -13,6 +13,7 @@
 #include <linux/futex.h>
 #include <linux/seccomp.h>
 #include <limits.h>
+#include <poll.h>
 #include <sys/prctl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -1493,9 +1494,20 @@ long call_syscall_broker(
         );
         return returned;
     }
+    constexpr int kBrokerBusySpinLimit = 10000;
+    int busy_spins = 0;
     while (g_syscall_broker_busy.test_and_set(
             std::memory_order_acquire
         )) {
+        if (++busy_spins >= kBrokerBusySpinLimit) {
+            __android_log_print(
+                ANDROID_LOG_ERROR,
+                kLogTag,
+                "syscall broker busy timeout type=%d",
+                request->type
+            );
+            return -EBUSY;
+        }
         asm volatile("yield");
     }
     for (int attempt = 0; attempt < 3; ++attempt) {
@@ -1530,6 +1542,27 @@ long call_syscall_broker(
         GatewayResponse response {};
         response.result = -EIO;
         int received_fd = -1;
+        struct pollfd waiter {};
+        waiter.fd = reply_sockets[1];
+        waiter.events = POLLIN;
+        constexpr int kBrokerReplyTimeoutMs = 250;
+        const int ready = poll(
+            &waiter,
+            1,
+            kBrokerReplyTimeoutMs
+        );
+        if (ready <= 0) {
+            __android_log_print(
+                ANDROID_LOG_ERROR,
+                kLogTag,
+                "syscall broker reply timeout ready=%d errno=%d type=%d",
+                ready,
+                ready < 0 ? errno : 0,
+                request->type
+            );
+            if (reply_sockets[1] >= 0) close(reply_sockets[1]);
+            continue;
+        }
         const bool response_read = receive_gateway_response(
             reply_sockets[1],
             &response,

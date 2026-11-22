@@ -346,12 +346,8 @@ DEX 能解析不代表业务代码完整。应继续检查：
 
 调试模式下可以临时把恢复结果接入分析器，但不能把“预注入恢复 DEX”作为正常启动方案。否则会掩盖 ClassLoader、DexFile 和 Framework 初始化顺序的真实问题。
 
-当前相关实现边界：
-
-- [`ProcessDexBridge.kt`](../app/src/main/java/com/coke/nestspace/container/loader/ProcessDexBridge.kt)：恢复结果的 Java 侧桥接和诊断分析。
-- [`process_dex_capture.cpp`](../app/src/main/cpp/core/process_dex_capture.cpp)：进程内存扫描、DEX 校验和文件输出。
-
-两者应继续服务于诊断和离线恢复，不应成为普通运行路径中的隐式预加载器。
+当前运行路径不再扫描 `/proc/self/maps` 或读取 `/proc/self/mem` 来发现 DEX。
+DEX 的发现、恢复和保存只作为离线诊断能力，不属于正常容器启动链。
 
 ## 4. 当前已定位的环境差异
 
@@ -1005,16 +1001,12 @@ native runtime 极早初始化阶段仍能读到宿主内核身份。
 - [`ContainerSession.kt`](../app/src/main/java/com/coke/nestspace/container/ContainerSession.kt)
   - 临时 shell Context 补齐目标 ClassLoader、LoadedApk 信息和 Resources。
   - Application 挂载后重新绑定 wrapper 和真实 Application 的 base Context。
-  - 启动阶段增加 `PROCESS_DEX`，允许 Application 创建前后补齐 DEX 代次。
   - 运行期终止入口会被容器记录，避免业务 wrapper 直接杀死整个宿主进程。
 - [`ExternalApplicationBootstrap.kt`](../app/src/main/java/com/coke/nestspace/container/application/ExternalApplicationBootstrap.kt)
   - 根据 wrapper 的公开入口字段配置真实 Application 类名。
   - 完成 Context 重新绑定。
-- [`ProcessDexBridge.kt`](../app/src/main/java/com/coke/nestspace/container/loader/ProcessDexBridge.kt)
-  - 当前代次累积捕获。
-  - 大 DEX 优先，避免小资源 DEX 遮蔽完整定义。
 - [`RuntimeDexPathClassLoader.kt`](../app/src/main/java/com/coke/nestspace/container/loader/RuntimeDexPathClassLoader.kt)
-  - 排除旧 `process-dex-backup-*` 和 `process-dex-stale-*` 目录。
+  - 只处理显式代码路径和已存在的 DEX 文件，不扫描进程内存。
 - [`01_jni.inl`](../app/src/main/cpp/hooks/libc/parts/01_jni.inl)
   - 类/字段一致性 bridge 为显式诊断能力，默认关闭。
   - `FindClass` inline hook 只有在显式属性为 `1` 时安装。

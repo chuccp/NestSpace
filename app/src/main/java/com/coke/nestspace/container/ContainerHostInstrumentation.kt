@@ -22,6 +22,10 @@ class ContainerHostInstrumentation : Instrumentation() {
         className: String,
         intent: Intent?
     ): Activity {
+        android.util.Log.d(
+            "ContainerHostInstrumentation",
+            "newActivity class=$className intent=${intent?.component}"
+        )
         val type = runCatching {
             Class.forName(className, false, cl)
         }.getOrElse {
@@ -33,7 +37,15 @@ class ContainerHostInstrumentation : Instrumentation() {
         }
         val hostStage = StageAActivity::class.java.isAssignableFrom(type)
         if (hostStage) {
+            android.util.Log.d(
+                "ContainerHostInstrumentation",
+                "preparing host launch class=$className"
+            )
             ContainerSessions.prepareHostActivityLaunch()
+            android.util.Log.d(
+                "ContainerHostInstrumentation",
+                "prepared host launch class=$className"
+            )
         }
         return super.newActivity(
             if (hostStage) {
@@ -43,7 +55,12 @@ class ContainerHostInstrumentation : Instrumentation() {
             },
             className,
             intent
-        )
+        ).also {
+            android.util.Log.d(
+                "ContainerHostInstrumentation",
+                "created host instance class=$className"
+            )
+        }
     }
 
 }

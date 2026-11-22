@@ -25,6 +25,8 @@ class RuntimeDexPathClassLoader(
     private val resolvingFallback = ThreadLocal<Boolean>()
     private var mergedDexSignature: String? = null
     private var fallbackDexLoader: ClassLoader? = null
+    private val hostClassLoader =
+        RuntimeDexPathClassLoader::class.java.classLoader
 
     override fun findLibrary(name: String): String? {
         val resolved = super.findLibrary(name)
@@ -53,6 +55,13 @@ class RuntimeDexPathClassLoader(
     }
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        if (name.startsWith("com.coke.nestspace.")) {
+            hostClassLoader?.let {
+                return it.loadClass(name).also { type ->
+                    if (resolve) resolveClass(type)
+                }
+            }
+        }
         if (resolvingFallback.get() == true) {
             return super.loadClass(name, resolve)
         }

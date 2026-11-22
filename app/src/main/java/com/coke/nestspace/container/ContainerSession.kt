@@ -16,7 +16,6 @@ import com.coke.nestspace.container.loader.ApkClassIndex
 import com.coke.nestspace.container.loader.CompleteClassBridge
 import com.coke.nestspace.container.loader.NativeLibs
 import com.coke.nestspace.container.loader.PluginClassPathResolver
-import com.coke.nestspace.container.loader.ProcessDexBridge
 import com.coke.nestspace.container.loader.RuntimeDexPathClassLoader
 import com.coke.nestspace.container.loader.SharedLibraries
 import com.coke.nestspace.container.loader.withContainerClassLoader
@@ -493,8 +492,6 @@ class ContainerSession private constructor(
     private var fastNativeHookPump: ScheduledFuture<*>? = null
     private var slowNativeHookPump: ScheduledFuture<*>? = null
     private var publishedLoadedApk: Any? = null
-    private val activityDexLock = Any()
-    private var activityDexCaptured = false
 
     @Volatile
     var navigator: StageAActivity? = null
@@ -554,10 +551,6 @@ class ContainerSession private constructor(
         startupCoordinator.run(AndroidStartupPhase.APPLICATION_CREATE) {
             (bootstrapApplication ?: application).onCreate()
         }
-        refreshProcessDexBeforeActivity(
-            AndroidStartupPhase.PROCESS_DEX,
-            "application-created"
-        )
         publishTargetOpPackage(application)
         refreshNativeHooks()
         startupCoordinator.run(AndroidStartupPhase.APPLICATION_COMPATIBILITY) {
@@ -590,10 +583,6 @@ class ContainerSession private constructor(
                 application
             )
         }
-        refreshProcessDexBeforeActivity(
-            AndroidStartupPhase.PROCESS_DEX,
-            "startup-compatibility-complete"
-        )
         if (ExternalApplicationBootstrap.lastRealApplication != null) {
             Log.d(TAG, "boot graph recovery skipped for external bootstrap")
         } else {
@@ -642,8 +631,14 @@ class ContainerSession private constructor(
 
     fun noteFirstActivityOpened() {
         startupCoordinator.markOnce(AndroidStartupPhase.FIRST_ACTIVITY_OPENED)
-        refreshNativeHooks()
-        writeRuntimeDiagnostics()
+        runCatching {
+            nativeHookExecutor.execute {
+                refreshNativeHooksSafely(scanElfFallback = false)
+                writeRuntimeDiagnostics()
+            }
+        }.onFailure {
+            Log.w(TAG, "post-launch diagnostics scheduling failed", it)
+        }
     }
 
     internal fun refreshNativeHooks(scanElfFallback: Boolean = false) {
@@ -1095,10 +1090,6 @@ class ContainerSession private constructor(
         ) {
             NativeEnvironmentBridge.installCrashTrace(spec.dataDir)
         }
-        refreshProcessDexBeforeActivity(
-            AndroidStartupPhase.PROCESS_DEX,
-            "first-activity"
-        )
         val preparePauseMs = NativeEnvironmentBridge
             .readPropertyForDiagnostics(
                 "debug.nestspace.activity_prepare_pause_ms"
@@ -1531,7 +1522,12 @@ class ContainerSession private constructor(
      * Returns false for intents outside the target package so the host can
      * launch them normally.
      */
-    fun startTargetActivity(host: StageAActivity, intent: Intent, requestCode: Int): Boolean {
+    fun startTargetActivity(
+        host: StageAActivity,
+        intent: Intent,
+        requestCode: Int,
+        sourceTarget: Activity? = null
+    ): Boolean {
         if (host.blockActivityLaunchFromBack()) {
             Log.d(TAG, "blocked activity launch triggered by back: ${intent.component}")
             return true
@@ -1604,65 +1600,11 @@ class ContainerSession private constructor(
             }
         }
         val currentSlot = ContainerProcessPool.currentSlot()
-        if (!host.isMirrorMode() &&
-            targetProcess == spec.targetProcessName &&
-            currentSlot >= 0
-        ) {
-            val navigationSuffix = info.name
-                .substringAfterLast('.')
-                .replace(Regex("[^A-Za-z0-9_]"), "_")
-                .take(24)
-            val navigationProcess = "$targetProcess:nav_$navigationSuffix"
-            val launchNavigationSlot = {
-                ContainerProcessBrokerClient.acquireAsync(
-                    host,
-                    spec.packageName,
-                    spec.instanceId,
-                    navigationProcess
-                ) { slot ->
-                    if (slot == null) {
-                        Log.w(
-                            TAG,
-                            "no navigation slot for ${info.name} process=$navigationProcess"
-                        )
-                        return@acquireAsync
-                    }
-                    launchOnHost(
-                        host,
-                        hostPackage,
-                        info,
-                        ContainerProcessPool.activityClass(slot),
-                        targetProcess,
-                        intent,
-                        requestCode,
-                        forceSessionBootstrap = true
-                    )
-                }
-            }
-            val targetIntent = Intent(intent).setClassName(
-                spec.packageName,
-                info.name
-            )
-            if (Looper.myLooper() == Looper.getMainLooper()) {
-                if (host.openMirrorChildTarget(info.name, targetIntent, requestCode)) {
-                    return true
-                }
-                launchNavigationSlot()
-            } else {
-                host.runOnUiThread {
-                    if (!host.openMirrorChildTarget(
-                            info.name,
-                            targetIntent,
-                            requestCode
-                        )
-                    ) {
-                        launchNavigationSlot()
-                    }
-                }
-            }
-            return true
-        }
         if (targetProcess == spec.targetProcessName) {
+            if (!host.beginTargetNavigationHandoff(sourceTarget, info.name)) {
+                Log.w(TAG, "activity host unavailable for ${info.name}")
+                return true
+            }
             val launchHostClass = when {
                 info.launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_INSTANCE &&
                     currentSlot in 0 until ContainerProcessPool.SLOT_COUNT ->
@@ -1672,20 +1614,36 @@ class ContainerSession private constructor(
                     ContainerProcessPool.activityClass(currentSlot)
                 else -> host.javaClass
             }
-            return launchOnHost(
-                host,
-                hostPackage,
-                info,
-                launchHostClass,
-                targetProcess,
-                intent,
-                requestCode
-            )
+            val launch = {
+                launchOnHost(
+                    host,
+                    hostPackage,
+                    info,
+                    launchHostClass,
+                    targetProcess,
+                    intent,
+                    requestCode
+                )
+            }
+            if (sourceTarget != null && host.currentTargetActivity() == null) {
+                return host.stageTargetNavigationLaunch(info.name, launch)
+            }
+            val launched = launch()
+            if (launched) {
+                host.completeTargetNavigationHandoff(info.name)
+            } else {
+                host.cancelTargetNavigationHandoff(info.name)
+            }
+            return launched
         }
 
         // A subprocess activity needs a host slot. Allocation may require the
         // main-process broker, so resolve it off the main thread and launch
         // once the slot is known. The launch itself is asynchronous either way.
+        if (!host.beginTargetNavigationHandoff(sourceTarget, info.name)) {
+            Log.w(TAG, "activity host unavailable for ${info.name}")
+            return true
+        }
         ContainerProcessBrokerClient.acquireAsync(
             host,
             spec.packageName,
@@ -1694,6 +1652,7 @@ class ContainerSession private constructor(
         ) { slot ->
             if (slot == null) {
                 Log.w(TAG, "no slot for activity ${info.name} process=$targetProcess")
+                host.cancelTargetNavigationHandoff(info.name)
                 return@acquireAsync
             }
             if (reuseExisting &&
@@ -1705,9 +1664,10 @@ class ContainerSession private constructor(
                         intent
                     )
             ) {
+                host.completeTargetNavigationHandoff(info.name)
                 return@acquireAsync
             }
-            launchOnHost(
+            val launched = launchOnHost(
                 host,
                 hostPackage,
                 info,
@@ -1722,6 +1682,11 @@ class ContainerSession private constructor(
                 intent,
                 requestCode
             )
+            if (launched) {
+                host.completeTargetNavigationHandoff(info.name)
+            } else {
+                host.cancelTargetNavigationHandoff(info.name)
+            }
         }
         return true
     }
@@ -2058,41 +2023,6 @@ class ContainerSession private constructor(
         }
     }
 
-    private fun refreshProcessDexBeforeActivity(
-        phase: AndroidStartupPhase,
-        reason: String
-    ) {
-        if (ExternalApplicationBootstrap.lastRealApplication == null) return
-        if (NativeEnvironmentBridge.readPropertyForDiagnostics(
-                "debug.nestspace.disable_process_dex_bridge"
-            ) == "1"
-        ) {
-            return
-        }
-        if (reason == "first-activity") {
-            synchronized(activityDexLock) {
-                if (activityDexCaptured) return
-                activityDexCaptured = true
-            }
-        }
-        startupCoordinator.runOptional(phase) {
-            val added = ProcessDexBridge.bindTargetDex(
-                targetLoader = loader,
-                targetPackage = spec.packageName,
-                entryApplication = application.javaClass.name,
-                launcherActivity = spec.launcherActivity,
-                dataRoot = File(spec.dataDir)
-            )
-            CompleteClassBridge.prepare(File(spec.dataDir), loader)
-            Log.d(
-                TAG,
-                "process DEX refresh reason=$reason added=$added"
-            )
-        }?.let {
-            Log.w(TAG, "process DEX refresh failed reason=$reason", it)
-        }
-    }
-
     private fun hostToken(host: Activity): IBinder =
         Activity::class.java
             .getDeclaredField("mToken")
@@ -2228,46 +2158,11 @@ class ContainerSession private constructor(
                 NativeEnvironmentBridge.readPropertyForDiagnostics(
                     "debug.nestspace.external_dynamic_loader"
                 ) == "1"
-            val useApkOnlyExternalClasspath =
-                NativeEnvironmentBridge.readPropertyForDiagnostics(
-                    "debug.nestspace.external_apk_only_classpath"
-                ) == "1"
-            val useCompleteExternalClasspath =
-                NativeEnvironmentBridge.readPropertyForDiagnostics(
-                    "debug.nestspace.external_complete_classpath"
-                ) == "1"
-            val cachedExternalEntry = ExternalApplicationBootstrap.cachedEntryName(
-                dataRoot,
-                spec.baseApkPath
-            )
-            val bootstrapDex = if (
-                externalApplication && cachedExternalEntry != null
-            ) {
-                ProcessDexBridge.cachedDexFilesContaining(
-                    dataRoot,
-                    listOf(cachedExternalEntry)
-                )
-            } else {
-                emptyList()
-            }
             // Keep the platform loader as parent and the target APK first so
             // hardened startup code sees the same class path shape as a
             // directly installed app.
             val selectedClassPath = if (externalApplication) {
-                // A normal installed application has its APK (and split
-                // APKs) on the code path. On later launches, add only the DEX
-                // defining the cached concrete Application so the wrapper can
-                // mount it without changing the platform loader shape.
-                if (useApkOnlyExternalClasspath) {
-                    apkPaths
-                } else if (useCompleteExternalClasspath) {
-                    apkPaths + ProcessDexBridge.cachedDexFiles(dataRoot)
-                        .map(File::getAbsolutePath)
-                } else if (useDynamicExternalLoader) {
-                    apkPaths
-                } else {
-                    apkPaths + bootstrapDex.map(File::getAbsolutePath)
-                }
+                apkPaths
             } else {
                 listOf(baseClassPath)
             }
@@ -2388,9 +2283,7 @@ class ContainerSession private constructor(
             Log.d(
                 TAG,
                 "initial class loader=${loader.javaClass.name} " +
-                    "external=$externalApplication " +
-                    "bootstrapDex=${bootstrapDex.size} " +
-                    "cachedExternalEntry=${cachedExternalEntry ?: "<none>"}"
+                    "external=$externalApplication"
             )
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_CODE)
             appInfo.dataDir = "/data/user/0/${spec.packageName}"
@@ -2611,6 +2504,7 @@ class ContainerSession private constructor(
                     runtimeNativeLibraries.directories.map(File::getAbsolutePath),
                     runtimeNativeLibraries.files.map(File::getAbsolutePath)
                 )
+                NativeEnvironmentBridge.installCoreFileBridge()
             }
             if (com.coke.nestspace.BuildConfig.DEBUG) {
                 runCatching {
@@ -2768,9 +2662,6 @@ class ContainerSession private constructor(
             } else {
                 NativeEnvironmentBridge.installSyscallGateway()
             }
-            if (externalApplication && bootstrapDex.isNotEmpty()) {
-                warmResourceClasses(loader)
-            }
             ContainerLaunchProgress.advance(LaunchProgressStage.ATTACHING_APPLICATION)
             val applicationAttachStartedAt = SystemClock.elapsedRealtime()
             val attachedApplication = ProcessNameCompat.withProcessName(spec.targetProcessName) {
@@ -2790,19 +2681,8 @@ class ContainerSession private constructor(
             } else {
                 attachedApplication
             }
-            if (externalApplication &&
-                NativeEnvironmentBridge.readPropertyForDiagnostics(
-                    "debug.nestspace.disable_process_dex_bridge"
-                ) != "1"
-            ) {
-                ProcessDexBridge.bindTargetDex(
-                    targetLoader = loader,
-                    targetPackage = spec.packageName,
-                    entryApplication = application.javaClass.name,
-                    launcherActivity = spec.launcherActivity,
-                    dataRoot = File(spec.dataDir)
-                )
-                CompleteClassBridge.prepare(File(spec.dataDir), loader)
+            if (externalApplication) {
+                CompleteClassBridge.prepare(loader)
                 if (NativeEnvironmentBridge.readPropertyForDiagnostics(
                         "debug.nestspace.complete_field_resolver"
                     ) == "1"
@@ -2824,9 +2704,6 @@ class ContainerSession private constructor(
                 ) == "1"
             ) {
                 NativeEnvironmentBridge.installLateJniCompatibility()
-            }
-            if (externalApplication) {
-                warmResourceClasses(loader)
             }
             startupCoordinator.mark(
                 AndroidStartupPhase.APPLICATION_ATTACH,
@@ -3243,48 +3120,6 @@ class ContainerSession private constructor(
         }.onFailure {
             Log.w(TAG, "create external shell ContextImpl failed", it)
         }.getOrDefault(fallback)
-
-        private fun warmResourceClasses(loader: ClassLoader) {
-            val pathList = findField(loader.javaClass, "pathList")
-                ?.let { runCatching { it.get(loader) }.getOrNull() }
-            val elements = pathList
-                ?.let { findField(it.javaClass, "dexElements") }
-                ?.let { runCatching { it.get(pathList) as? Array<*> }.getOrNull() }
-                .orEmpty()
-            val names = elements.asSequence()
-                .filterNotNull()
-                .mapNotNull { element ->
-                    runCatching {
-                        findField(element.javaClass, "dexFile")
-                            ?.get(element) as? dalvik.system.DexFile
-                    }.getOrNull()
-                }
-                .flatMap { dex ->
-                    runCatching { dex.entries().asSequence() }
-                        .getOrDefault(emptySequence())
-                }
-                .distinct()
-                .filter { name ->
-                    val simple = name.substringAfterLast('.')
-                    simple == "R" || simple.startsWith("R$")
-                }
-                .toList()
-            CompleteClassBridge.recordClassNames(loader, names)
-            var initialized = 0
-            names.forEach { name ->
-                runCatching {
-                    val type = Class.forName(name, true, loader)
-                    type.declaredFields
-                    initialized += 1
-                }.onFailure {
-                    Log.w(TAG, "resource class warm-up failed: $name", it)
-                }
-            }
-            Log.d(
-                TAG,
-                "resource classes warmed=$initialized/${names.size}"
-            )
-        }
 
         private fun exposeVirtualClassPath(
             loader: ClassLoader,

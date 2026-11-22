@@ -6,9 +6,9 @@ set(NESTSPACE_RUNTIME_SOURCES
     core/native_environment.cpp
     core/native_environment_state.cpp
     hooks/libc/native_libc_hooks.cpp
+    hooks/java/native_core_file_bridge.cpp
     hooks/elf/native_elf_hooks.cpp
     core/dex_file_trace.cpp
-    core/process_dex_capture.cpp
     core/complete_static_field.cpp
 )
 

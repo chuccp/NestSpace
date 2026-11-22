@@ -553,7 +553,8 @@ void log_target_open(
     if (strcmp(enabled, "1") != 0 ||
         (strncmp(
             requested,
-            environment->target_data_root.c_str(),
+            environment->target_data_root
+                .c_str(),
             environment->target_data_root.size()
         ) != 0 &&
          strncmp(

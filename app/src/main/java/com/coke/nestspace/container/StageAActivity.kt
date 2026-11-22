@@ -141,12 +141,25 @@ open class StageAActivity : Activity() {
     private var backCallbackRunning = false
     private var backLaunchBlocked = false
     private var targetRequestParameterHook: AutoCloseable? = null
+    private var navigationHandoffState = NavigationHandoffState.NONE
+    private val stagedNavigationLaunches = ArrayDeque<StagedNavigationLaunch>()
 
     private data class MirrorBackEntry(
         val target: Activity,
         val decor: View,
         val requestCode: Int
     )
+
+    private data class StagedNavigationLaunch(
+        val className: String,
+        val launch: () -> Boolean
+    )
+
+    private enum class NavigationHandoffState {
+        NONE,
+        WAITING_FOR_CHILD,
+        CHILD_LAUNCHED
+    }
 
     /**
      * Mirror mode hosts target Activities itself instead of creating a real
@@ -417,6 +430,78 @@ open class StageAActivity : Activity() {
     fun isMirrorMode(): Boolean = mirrorMode
 
     fun isHeadlessMode(): Boolean = headless
+
+    /**
+     * A target may call finish() immediately after startActivity(), before an
+     * asynchronous slot allocation has delivered the child host launch. Keep
+     * this host alive until that launch has been submitted; otherwise the
+     * target's finish closes the shared host token and the task returns to the
+     * desktop between both pages.
+     */
+    fun beginTargetNavigationHandoff(
+        parent: Activity?,
+        className: String
+    ): Boolean {
+        if (navigationHandoffState != NavigationHandoffState.NONE) return true
+        val activeParent = parent ?: current ?: return false
+        if (isFinishing || isDestroyed) return false
+        giveTargetPrivateToken(activeParent)
+        navigationHandoffState = NavigationHandoffState.WAITING_FOR_CHILD
+        Log.d(TAG, "navigation handoff waiting child=$className")
+        return true
+    }
+
+    fun completeTargetNavigationHandoff(className: String) {
+        if (navigationHandoffState == NavigationHandoffState.NONE) return
+        navigationHandoffState = NavigationHandoffState.CHILD_LAUNCHED
+        Log.d(TAG, "navigation handoff submitted child=$className")
+    }
+
+    fun cancelTargetNavigationHandoff(className: String) {
+        if (navigationHandoffState == NavigationHandoffState.NONE) return
+        navigationHandoffState = NavigationHandoffState.NONE
+        Log.w(TAG, "navigation handoff failed child=$className")
+        returnToDesktopIfRootTargetFinished()
+    }
+
+    /**
+     * Activity.startActivity is valid from onCreate, but here the synthetic
+     * target is still inside the host's Activity launch callback. Starting a
+     * second real host synchronously can leave its ActivityRecord RESUMED
+     * before ActivityThread has a chance to run its client onCreate. Queue it
+     * until the current page has fully settled and then run from the explicit
+     * post-create checkpoint.
+     */
+    fun stageTargetNavigationLaunch(
+        className: String,
+        launch: () -> Boolean
+    ): Boolean {
+        if (isFinishing || isDestroyed) {
+            cancelTargetNavigationHandoff(className)
+            return false
+        }
+        stagedNavigationLaunches.addLast(
+            StagedNavigationLaunch(className, launch)
+        )
+        Log.d(TAG, "staged navigation child=$className")
+        return true
+    }
+
+    private fun runStagedNavigationLaunches() {
+        while (stagedNavigationLaunches.isNotEmpty()) {
+            val next = stagedNavigationLaunches.removeFirst()
+            if (isFinishing || isDestroyed) {
+                cancelTargetNavigationHandoff(next.className)
+                continue
+            }
+            Log.d(TAG, "running staged navigation child=${next.className}")
+            if (next.launch()) {
+                completeTargetNavigationHandoff(next.className)
+            } else {
+                cancelTargetNavigationHandoff(next.className)
+            }
+        }
+    }
 
     /**
      * Host a target Activity started by the currently visible target Activity
@@ -695,6 +780,11 @@ open class StageAActivity : Activity() {
 
     @Suppress("DEPRECATION")
     private fun onCreateHost(savedInstanceState: Bundle?) {
+        Log.d(
+            TAG,
+            "host onCreate instance=${hashCode()} headless=" +
+                "${intent.getBooleanExtra(EXTRA_HEADLESS, false)}"
+        )
         requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
         ContainerSessions.restoreHostFrameworkState(this, restoreTheme = true)
         headless = intent.getBooleanExtra(EXTRA_HEADLESS, false)
@@ -804,6 +894,7 @@ open class StageAActivity : Activity() {
             showLaunchPlaceholder(frame)
         }
         setContentView(frame)
+        Log.d(TAG, "host content ready instance=${hashCode()}")
         syncAiInfoCaptureGuard()
         registerPredictiveBack()
         if (mirrorMode) {
@@ -836,6 +927,10 @@ open class StageAActivity : Activity() {
         targetStartScheduled = true
         val frame = root ?: return
         val launchIntent = Intent(intent)
+        Log.d(
+            TAG,
+            "schedule target start instance=${hashCode()} mirror=$mirrorMode"
+        )
         if (mirrorMode) {
             // The 1x1 mirror host is sent to the back and its own window is
             // never drawn, so onPreDraw would never fire. Child hosts created
@@ -843,7 +938,6 @@ open class StageAActivity : Activity() {
             // with a blank Presentation. Start the target on the next turn.
             frame.post {
                 if (isFinishing || isDestroyed) return@post
-                stopLaunchRendering(frame)
                 handleIntent(launchIntent, savedState)
                 session?.headless = headless
             }
@@ -853,9 +947,10 @@ open class StageAActivity : Activity() {
             object : android.view.ViewTreeObserver.OnPreDrawListener {
                 override fun onPreDraw(): Boolean {
                     frame.viewTreeObserver.removeOnPreDrawListener(this)
+                    Log.d(TAG, "host first draw instance=${hashCode()}")
                     frame.post {
                         if (isFinishing || isDestroyed) return@post
-                        stopLaunchRendering(frame)
+                        Log.d(TAG, "handle target after draw instance=${hashCode()}")
                         handleIntent(launchIntent, savedState)
                         session?.headless = headless
                     }
@@ -1385,6 +1480,12 @@ open class StageAActivity : Activity() {
         SystemServiceIdentity.clearRootFinishInterceptor()
         returnToDesktopIfRootTargetFinished()
         Log.d(TAG, "host onStop target=${current?.javaClass?.name}")
+        if (navigationHandoffState == NavigationHandoffState.CHILD_LAUNCHED &&
+            !isFinishing &&
+            current?.isFinishing != true
+        ) {
+            navigationHandoffState = NavigationHandoffState.NONE
+        }
         // The headless window is no longer visible; restore drawing so
         // ui_observe still sees the target hierarchy.
         if (headless) root?.alpha = 1f
@@ -1848,14 +1949,32 @@ open class StageAActivity : Activity() {
         ) {
             return
         }
-        if (isFinishing || current?.isFinishing == true) {
-            openContainerDesktop()
+        if (!isFinishing && current?.isFinishing != true) return
+        when (navigationHandoffState) {
+            NavigationHandoffState.WAITING_FOR_CHILD -> {
+                Log.d(
+                    TAG,
+                    "keeping host alive while target navigation is pending"
+                )
+            }
+            NavigationHandoffState.CHILD_LAUNCHED -> {
+                // The child launch has already been submitted to WindowManager.
+                // Finish this host without opening the desktop over the child.
+                Log.d(TAG, "closing parent host after child navigation")
+                finish()
+            }
+            NavigationHandoffState.NONE -> openContainerDesktop()
         }
     }
 
     private fun handleIntent(intent: Intent, savedState: Bundle?) {
         val launchPackage = intent.getStringExtra(EXTRA_LAUNCH_PACKAGE)
         val launchInstance = intent.getStringExtra(EXTRA_LAUNCH_INSTANCE)
+        Log.d(
+            TAG,
+            "handle host intent instance=${hashCode()} launch=$launchPackage " +
+                "session=${intent.getStringExtra(EXTRA_SESSION_ID)}"
+        )
         containerEntry = savedState?.getBoolean(KEY_CONTAINER_ENTRY)
             ?: intent.getBooleanExtra(EXTRA_CONTAINER_ENTRY, false)
         if (!launchPackage.isNullOrBlank() && !launchInstance.isNullOrBlank()) {
@@ -1919,6 +2038,11 @@ open class StageAActivity : Activity() {
         val sessionId = intent.getStringExtra(EXTRA_SESSION_ID)
         if (!sessionId.isNullOrBlank()) {
             val existing = ContainerSessions.retain(sessionId)
+            Log.d(
+                TAG,
+                "retained session instance=${hashCode()} id=$sessionId " +
+                    "found=${existing != null}"
+            )
             if (existing == null) {
                 showError(
                     AppLanguage.tr(
@@ -2079,13 +2203,16 @@ open class StageAActivity : Activity() {
             // ViewRoot briefly empty while a queued insets transaction may
             // still reference its SurfaceControl.
             val frame = mirrorRoot ?: root ?: return
-            stopLaunchRendering(frame)
             val target = session.createActivity(
                 this,
                 className,
                 targetIntent,
                 effectiveState
             )
+            // Keep the independent loading renderer alive while the target
+            // Activity is being constructed. Stopping it first freezes the
+            // launch screen and makes a slow initialization look like a hang.
+            stopLaunchRendering(frame)
             frame.removeAllViews()
             if (mirrorMode) addMirrorSnapshotBackground(frame)
             current = target
@@ -2154,7 +2281,9 @@ open class StageAActivity : Activity() {
             applyTargetActionBarInset(target)
             if (mirrorMode) giveTargetPrivateToken(target)
             session.noteFirstActivityOpened()
+            runStagedNavigationLaunches()
         } catch (t: Throwable) {
+            stagedNavigationLaunches.clear()
             Log.e(TAG, "container target activity failed", t)
             ContainerLaunchProgress.fail()
             analyzeBootFailure("target-activity-create", t)

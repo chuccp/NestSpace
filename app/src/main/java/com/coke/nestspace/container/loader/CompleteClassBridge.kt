@@ -3,8 +3,6 @@ package com.coke.nestspace.container.loader
 import android.util.Log
 import com.coke.nestspace.container.runtime.NativeEnvironmentBridge
 import dalvik.system.DexFile
-import dalvik.system.PathClassLoader
-import java.io.File
 import java.lang.reflect.Modifier
 import java.util.WeakHashMap
 
@@ -15,19 +13,14 @@ import java.util.WeakHashMap
  */
 internal object CompleteClassBridge {
     private const val TAG = "CompleteClassBridge"
-    private var dataRootPath: String? = null
     private var targetLoader: ClassLoader? = null
-    private var completeLoader: ClassLoader? = null
     private val classNamesByLoader =
         WeakHashMap<ClassLoader, List<String>>()
 
-    fun prepare(dataRoot: File, loader: ClassLoader) {
-        val path = dataRoot.absolutePath
+    fun prepare(loader: ClassLoader) {
         synchronized(this) {
-            if (dataRootPath == path && targetLoader === loader) return
-            dataRootPath = path
+            if (targetLoader === loader) return
             targetLoader = loader
-            completeLoader = null
             classNamesByLoader.remove(loader)
         }
     }
@@ -273,22 +266,7 @@ internal object CompleteClassBridge {
 
     private fun loaderForCurrentTarget(): ClassLoader? {
         synchronized(this) {
-            targetLoader?.let { return it }
-            completeLoader?.let { return it }
-            val root = dataRootPath?.let(::File) ?: return null
-            val files = ProcessDexBridge.cachedDexFiles(root)
-            if (files.isEmpty()) return null
-            return runCatching {
-                PathClassLoader(
-                    files.joinToString(File.pathSeparator) { it.absolutePath },
-                    null,
-                    ClassLoader.getSystemClassLoader().parent
-                )
-            }.onSuccess {
-                completeLoader = it
-            }.onFailure {
-                Log.w(TAG, "create complete DEX loader failed", it)
-            }.getOrNull()
+            return targetLoader
         }
     }
 

@@ -18,7 +18,6 @@ internal enum class LaunchProgressStage(val percent: Int) {
     PROCESS_APPLICATION(36),
     CONTENT_PROVIDERS(46),
     APPLICATION_CREATE(58),
-    PROCESS_DEX(62),
     APPLICATION_COMPATIBILITY(68),
     HOST_BRIDGES(75),
     EMBEDDED_APPLICATION_CREATE(80),
@@ -37,7 +36,6 @@ internal enum class LaunchProgressStage(val percent: Int) {
             AndroidStartupPhase.PROCESS_APPLICATION -> PROCESS_APPLICATION
             AndroidStartupPhase.CONTENT_PROVIDERS -> CONTENT_PROVIDERS
             AndroidStartupPhase.APPLICATION_CREATE -> APPLICATION_CREATE
-            AndroidStartupPhase.PROCESS_DEX -> PROCESS_DEX
             AndroidStartupPhase.APPLICATION_COMPATIBILITY -> APPLICATION_COMPATIBILITY
             AndroidStartupPhase.HOST_BRIDGES -> HOST_BRIDGES
             AndroidStartupPhase.EMBEDDED_APPLICATION_CREATE ->

@@ -20,6 +20,8 @@ import android.content.pm.PackageManager
 import android.content.pm.VersionedPackage
 import android.content.res.Resources
 import android.os.Process
+import android.os.IBinder
+import android.os.Parcel
 import android.util.Log
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
@@ -108,6 +110,7 @@ object SystemServiceIdentity {
     private var clipboardInstalled = false
     private var inputMethodInstalled = false
     private var storageInstalled = false
+    private var networkManagementInstalled = false
 
     /**
      * Arms a one-shot hook for the root target page. It is set only while the
@@ -244,6 +247,11 @@ object SystemServiceIdentity {
                     "StorageManager"
                 )
             }.onFailure { Log.w(TAG, "StorageManager proxy failed", it) }
+        }
+        if (!networkManagementInstalled) {
+            networkManagementInstalled = true
+            runCatching { installNetworkManagementBridge() }
+                .onFailure { Log.w(TAG, "NetworkManagement proxy failed", it) }
         }
 
         // Containers created earlier may already hold an ApplicationPackageManager.
@@ -592,6 +600,56 @@ object SystemServiceIdentity {
             "InputMethodManager"
         )
         Log.d(TAG, "InputMethodManager cache proxy=$cachePatched")
+    }
+
+    /**
+     * WebView temporarily changes StrictMode while loading a non-current
+     * package's class loader. Restoring the old policy calls
+     * INetworkManagementService with Process.myUid(). In a container that
+     * value is virtual, while Binder still attributes the transaction to the
+     * host UID, so system_server rejects the otherwise valid self-update.
+     */
+    private fun installNetworkManagementBridge() {
+        val serviceManager = loadClass("android.os.ServiceManager")
+        val getService = method(
+            serviceManager,
+            "getService",
+            String::class.java
+        ) ?: return
+        val delegate = getService.invoke(null, "network_management") as? IBinder
+            ?: return
+        val stub = loadClass("android.os.INetworkManagementService\$Stub")
+        val transaction = declaredField(
+            stub,
+            "TRANSACTION_setUidCleartextNetworkPolicy"
+        )?.getInt(null) ?: return
+        val replacement = Proxy.newProxyInstance(
+            IBinder::class.java.classLoader,
+            arrayOf(IBinder::class.java),
+            InvocationHandler { proxy, invocation, args ->
+                if (invocation.declaringClass == Any::class.java) {
+                    return@InvocationHandler when (invocation.name) {
+                        "equals" -> proxy === args?.firstOrNull()
+                        "hashCode" -> System.identityHashCode(proxy)
+                        "toString" -> "ContainerNetworkManagement(${delegate.javaClass.name})"
+                        else -> null
+                    }
+                }
+                if (invocation.name == "transact" &&
+                    args?.getOrNull(0) == transaction
+                ) {
+                    (args.getOrNull(2) as? Parcel)?.writeNoException()
+                    return@InvocationHandler true
+                }
+                invokeDelegate(delegate, invocation, args)
+            }
+        ) as IBinder
+        val cacheField = declaredField(serviceManager, "sCache") ?: return
+        @Suppress("UNCHECKED_CAST")
+        val cache = cacheField.get(null) as? MutableMap<String, IBinder>
+            ?: return
+        cache["network_management"] = replacement
+        Log.d(TAG, "NetworkManagement cleartext-policy bridge installed")
     }
 
     private fun isIdentityProxy(value: Any): Boolean =
