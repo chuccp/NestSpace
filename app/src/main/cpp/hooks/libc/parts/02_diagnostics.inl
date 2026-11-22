@@ -140,7 +140,10 @@ namespace {
 
 constexpr size_t kDiagnosticObjectSize = 0x98;
 constexpr size_t kDiagnosticTrackedObjects = 64;
-constexpr uintptr_t kDiagnosticPointerTagMask = (1ULL << 56) - 1;
+constexpr uintptr_t kDiagnosticPointerTagMask =
+    sizeof(uintptr_t) >= sizeof(uint64_t)
+        ? static_cast<uintptr_t>((uint64_t{1} << 56) - 1)
+        : ~uintptr_t{0};
 std::array<std::atomic<uintptr_t>, kDiagnosticTrackedObjects>
     g_diagnostic_objects{};
 std::atomic<bool> g_diagnostic_watch_started{false};

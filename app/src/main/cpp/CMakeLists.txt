@@ -2,18 +2,32 @@ cmake_minimum_required(VERSION 3.22.1)
 
 project(nestspace_runtime LANGUAGES CXX)
 
-add_library(
-    nestspace_runtime
-    SHARED
+set(NESTSPACE_RUNTIME_SOURCES
     core/native_environment.cpp
     core/native_environment_state.cpp
     hooks/libc/native_libc_hooks.cpp
     hooks/elf/native_elf_hooks.cpp
-    crash/native_crash_trace.cpp
     core/dex_file_trace.cpp
     core/process_dex_capture.cpp
     core/complete_static_field.cpp
-    core/late_jni_trace.cpp
+)
+
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    list(APPEND NESTSPACE_RUNTIME_SOURCES
+        crash/native_crash_trace.cpp
+        core/late_jni_trace.cpp
+    )
+else()
+    list(APPEND NESTSPACE_RUNTIME_SOURCES
+        crash/native_crash_trace_generic.cpp
+        core/late_jni_trace_generic.cpp
+    )
+endif()
+
+add_library(
+    nestspace_runtime
+    SHARED
+    ${NESTSPACE_RUNTIME_SOURCES}
 )
 
 target_include_directories(
