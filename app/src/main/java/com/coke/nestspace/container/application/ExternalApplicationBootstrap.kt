@@ -41,35 +41,78 @@ internal object ExternalApplicationBootstrap {
             }
         }.getOrNull()
 
+    /**
+     * Wrappers commonly retain the Context passed to attachBaseContext in a
+     * static field. The container borrows a temporary host ContextImpl while
+     * the wrapper unpacks its code, then restores that host object. Any
+     * retained reference would therefore start resolving target classes and
+     * resources through the host package after bootstrap.
+     */
+    fun rebindStaticContexts(
+        applicationType: Class<*>,
+        previous: Context,
+        replacement: Context
+    ): Int {
+        var rebound = 0
+        staticFields(applicationType).forEach { field ->
+            if (!Context::class.java.isAssignableFrom(field.type)) {
+                return@forEach
+            }
+            runCatching {
+                if (field.get(null) === previous) {
+                    field.set(null, replacement)
+                    rebound += 1
+                }
+            }.onFailure {
+                Log.w(TAG, "rebind external Application context failed: ${field.name}", it)
+            }
+        }
+        if (rebound != 0) {
+            Log.d(
+                TAG,
+                "rebound external Application contexts=${rebound}"
+            )
+        }
+        return rebound
+    }
+
+    fun rebindApplicationContext(
+        application: Application,
+        context: Context
+    ) {
+        runCatching {
+            val baseField = baseContextField()
+            if (baseField.get(application) !== context) {
+                baseField.set(application, context)
+            }
+        }.onFailure {
+            Log.w(TAG, "rebind Application context failed", it)
+        }
+    }
+
     fun attach(
         loader: ClassLoader,
         context: Context,
         wrapperClassName: String,
         targetPackageName: String,
-        runtimeLibraries: RuntimeNativeLibraries,
-        classNames: List<String>,
         baseApkPath: String,
         dataRoot: File
     ): Application? = runCatching {
         val wrapperClass = loader.loadClass(wrapperClassName)
             .asSubclass(Application::class.java)
+        configureEntryAlias(
+            wrapperClass,
+            cachedEntryName(dataRoot, baseApkPath)
+        )
         val wrapper = wrapperClass.getDeclaredConstructor()
             .apply { isAccessible = true }
             .newInstance()
+        // The wrapper owns its startup sequence. In particular, a hardened
+        // wrapper may decrypt code, load its native runtime, and attach the
+        // target Application from its attachBaseContext override. Calling that
+        // lifecycle method is required; populating the wrapper's target slots
+        // beforehand can make it skip that startup path entirely.
         attachBaseContext(wrapper, context)
-
-        val cachedEntry = cachedEntryName(dataRoot, baseApkPath)
-        bindStaticValues(
-            wrapperClass,
-            wrapper,
-            context,
-            cachedEntry,
-            runtimeLibraries
-        )
-        loadLibraries(runtimeLibraries)
-        initializeLoaderClasses(loader, classNames)
-        invokeApplicationLifecycle(wrapperClass, wrapper)
-
         val real = findMountedApplication(
             wrapperClass,
             wrapper,
@@ -81,8 +124,6 @@ internal object ExternalApplicationBootstrap {
             return@runCatching wrapper
         }
 
-        attachBaseContext(real, context)
-        invokeApplicationLifecycle(wrapperClass, real)
         lastRealApplication = real
         writeEntryCache(dataRoot, baseApkPath, real.javaClass.name)
         Log.d(
@@ -95,90 +136,39 @@ internal object ExternalApplicationBootstrap {
         Log.e(TAG, "external Application bootstrap failed", it)
     }.getOrNull()
 
-    private fun bindStaticValues(
+    private fun configureEntryAlias(
         wrapperClass: Class<*>,
-        wrapper: Application,
-        context: Context,
-        cachedEntry: String?,
-        runtimeLibraries: RuntimeNativeLibraries
+        entryApplication: String?
     ) {
-        val libraryByBasename = runtimeLibraries.files.associateBy { it.name }
-        staticFields(wrapperClass).forEach { field ->
-            runCatching {
-                val type = field.type
-                val current = runCatching { field.get(null) }.getOrNull()
-                when {
-                    Application::class.java.isAssignableFrom(type) &&
-                        current == null -> field.set(null, wrapper)
-                    Context::class.java.isAssignableFrom(type) &&
-                        current == null -> field.set(null, context)
-                    type == String::class.java -> {
-                        val value = current as? String
-                        val name = field.name.lowercase()
-                        val library = if (!value.isNullOrBlank()) {
-                            libraryByBasename[value.substringAfterLast('/')]
-                        } else {
-                            null
-                        }
-                        when {
-                            library != null -> field.set(null, library.absolutePath)
-                            !cachedEntry.isNullOrBlank() &&
-                                name.contains("entry") &&
-                                name.contains("app") -> field.set(null, cachedEntry)
-                            value.isNullOrBlank() &&
-                                name.contains("lib") &&
-                                name.contains("dir") ->
-                                field.set(null, runtimeLibraries.root.absolutePath)
-                        }
-                    }
-                }
-            }.onFailure {
-                Log.w(TAG, "bind external Application field failed: ${field.name}", it)
+        if (entryApplication.isNullOrBlank()) return
+        staticFields(wrapperClass)
+            .filter { it.type == String::class.java }
+            .filter { field ->
+                val name = field.name.lowercase()
+                (name.contains("entry") && name.contains("application")) ||
+                    runCatching { field.get(null) as? String }
+                        .getOrNull()
+                        ?.let {
+                            it.startsWith("entry") &&
+                                it.endsWith("Application", ignoreCase = true)
+                        } == true
             }
-        }
-    }
-
-    private fun initializeLoaderClasses(
-        loader: ClassLoader,
-        classNames: List<String>
-    ) {
-        classNames.asSequence()
-            .filter { name ->
-                val simple = name.substringAfterLast('.')
-                simple.contains("Loader", ignoreCase = true)
-            }
-            .sortedWith(compareBy<String> { it.length }.thenBy { it })
-            .forEach { name ->
-                val type = runCatching { loader.loadClass(name) }.getOrNull()
-                    ?: return@forEach
-                val initializer = runCatching {
-                    type.getDeclaredMethod("init").takeIf {
-                        Modifier.isStatic(it.modifiers) &&
-                            it.parameterCount == 0
-                    }
-                }.getOrNull() ?: return@forEach
+            .forEach { field ->
                 runCatching {
-                    initializer.isAccessible = true
-                    initializer.invoke(null)
-                    Log.d(TAG, "initialized runtime loader: $name")
+                    field.set(null, entryApplication)
+                    Log.d(
+                        TAG,
+                        "configured external wrapper entry field=${field.name} " +
+                            "target=$entryApplication"
+                    )
                 }.onFailure {
-                    Log.w(TAG, "runtime loader initialization failed: $name", it)
+                    Log.w(
+                        TAG,
+                        "configure external wrapper entry field failed: ${field.name}",
+                        it
+                    )
                 }
             }
-    }
-
-    private fun loadLibraries(runtimeLibraries: RuntimeNativeLibraries) {
-        runtimeLibraries.root.listFiles()
-            .orEmpty()
-            .filter { it.isFile && it.name.endsWith(".so", ignoreCase = true) }
-            .sortedBy { it.name }
-            .forEach { library ->
-            runCatching {
-                System.load(library.absolutePath)
-            }.onFailure {
-                Log.d(TAG, "runtime library not loadable: ${library.absolutePath}")
-            }
-        }
     }
 
     private fun findMountedApplication(
@@ -227,40 +217,19 @@ internal object ExternalApplicationBootstrap {
         return null
     }
 
-    private fun invokeApplicationLifecycle(
-        wrapperClass: Class<*>,
-        application: Application
-    ) {
-        staticMethods(wrapperClass)
-            .filter { method ->
-                method.parameterCount == 1 &&
-                    Application::class.java.isAssignableFrom(
-                        method.parameterTypes[0]
-                    )
-            }
-            .forEach { method ->
-                runCatching {
-                    method.isAccessible = true
-                    method.invoke(null, application)
-                }.onFailure {
-                    Log.w(TAG, "external Application lifecycle hook failed: ${method.name}", it)
-                }
-            }
-    }
-
     private fun attachBaseContext(application: Application, context: Context) {
-        val baseField = ContextWrapper::class.java
-            .getDeclaredField("mBase")
-            .apply { isAccessible = true }
+        val baseField = baseContextField()
         val attachBase = attachBaseContextMethod(application.javaClass)
-        val current = baseField.get(application)
-        if (current == null && attachBase != null) {
-            attachBase.invoke(application, context)
-        }
+        attachBase?.invoke(application, context)
         if (baseField.get(application) == null || baseField.get(application) !== context) {
             baseField.set(application, context)
         }
     }
+
+    private fun baseContextField(): Field =
+        ContextWrapper::class.java
+            .getDeclaredField("mBase")
+            .apply { isAccessible = true }
 
     private fun attachBaseContextMethod(type: Class<*>): Method? {
         var current: Class<*>? = type

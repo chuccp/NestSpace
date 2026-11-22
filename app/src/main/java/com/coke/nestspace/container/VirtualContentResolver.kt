@@ -110,7 +110,7 @@ class VirtualContentResolver(
 
     private class ProviderOverlayResolver(
         context: Context,
-        delegate: ContentResolver,
+        private val delegate: ContentResolver,
         private val androidId: String
     ) : VirtualContentResolverBase(context, delegate) {
         override fun acquireProvider(context: Context, name: String): IContentProvider? =
@@ -142,17 +142,18 @@ class VirtualContentResolver(
                             callMethod == "GET_secure" &&
                                 callArg == Settings.Secure.ANDROID_ID ->
                                 Bundle().apply { putString("value", androidId) }
-                            // PhoneWindow reads these while Activity.attach is
-                            // running, before StageA.onCreate can restore host
-                            // framework state. Forwarding them through the
-                            // target attribution makes system_server reject the
-                            // process package. The framework defaults are safe.
-                            callMethod == "GET_global" &&
-                                callArg == "render_shadows_in_compositor" ->
-                                Bundle().apply { putString("value", "1") }
-                            callMethod == "GET_global" &&
-                                callArg == "force_resizable_activities" ->
-                                Bundle().apply { putString("value", "0") }
+                            callMethod == "GET_system" && callArg != null ->
+                                settingsValue(callArg) { key ->
+                                    Settings.System.getString(delegate, key)
+                                }
+                            callMethod == "GET_secure" && callArg != null ->
+                                settingsValue(callArg) { key ->
+                                    Settings.Secure.getString(delegate, key)
+                                }
+                            callMethod == "GET_global" && callArg != null ->
+                                settingsValue(callArg) { key ->
+                                    Settings.Global.getString(delegate, key)
+                                }
                             else ->
                                 invokeDelegate(provider, method, args)
                         }
@@ -160,6 +161,14 @@ class VirtualContentResolver(
                     else -> invokeDelegate(provider, method, args)
                 }
             } as IContentProvider
+        }
+
+        private fun settingsValue(
+            key: String,
+            lookup: (String) -> String?
+        ): Bundle = Bundle().apply {
+            val value = runCatching { lookup(key) }.getOrNull()
+            putString("value", value)
         }
 
         private fun invokeDelegate(

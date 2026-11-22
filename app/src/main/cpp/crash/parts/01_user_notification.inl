@@ -94,6 +94,52 @@ void respond_user_notification(
     seccomp_notif_resp& response
 ) {
     const long syscall_number = request.data.nr;
+#if defined(SYS_exit_group)
+    if (syscall_number == SYS_exit_group) {
+        if (diagnostic_enabled(
+                "NESTSPACE_PAUSE_ON_EXIT",
+                "debug.nestspace.pause_on_exit"
+            )) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "paused target exit status=%lld tid=%d",
+                static_cast<long long>(request.data.args[0]),
+                request.pid
+            );
+            return;
+        }
+        response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
+#endif
+#if defined(SYS_munmap)
+    if (syscall_number == SYS_munmap) {
+        const long page_size = sysconf(_SC_PAGESIZE);
+        const bool retain =
+            nestspace::current_environment() != nullptr &&
+            page_size > 0 &&
+            request.data.args[1] == static_cast<uint64_t>(page_size) &&
+            diagnostic_enabled(
+                "NESTSPACE_RETAIN_SMALL_CODE_MAPPINGS",
+                "debug.nestspace.retain_small_code_mappings"
+            );
+        if (retain) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "retained target code page address=%016llx",
+                static_cast<unsigned long long>(request.data.args[0])
+            );
+            response.val = 0;
+        } else {
+            response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+        }
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
+#endif
     if (syscall_number == SYS_getuid ||
         syscall_number == SYS_geteuid ||
         syscall_number == SYS_getgid ||
@@ -164,11 +210,13 @@ void respond_user_notification(
                 broker_response.payload_size,
                 sizeof(broker_response.payload)
             );
-            memcpy(
-                reinterpret_cast<void*>(destination),
+            if (!write_user_memory(
+                destination,
                 broker_response.payload,
                 count
-            );
+            )) {
+                response.error = -EFAULT;
+            }
         }
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
         return;
@@ -229,16 +277,17 @@ void respond_user_notification(
         if (result < 0) {
             response.error = result;
         } else if (broker_response.payload_size != 0) {
-            memcpy(
-                reinterpret_cast<void*>(
-                    static_cast<uintptr_t>(request.data.args[4])
-                ),
-                broker_response.payload,
-                std::min(
-                    broker_response.payload_size,
-                    sizeof(broker_response.payload)
-                )
+            const size_t count = std::min(
+                broker_response.payload_size,
+                sizeof(broker_response.payload)
             );
+            if (!write_user_memory(
+                static_cast<uintptr_t>(request.data.args[4]),
+                broker_response.payload,
+                count
+            )) {
+                response.error = -EFAULT;
+            }
         }
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
         return;
@@ -344,14 +393,15 @@ void respond_user_notification(
                 capacity,
                 broker_response.payload_size
             );
-            memcpy(
-                reinterpret_cast<void*>(
-                    static_cast<uintptr_t>(request.data.args[2])
-                ),
+            if (!write_user_memory(
+                static_cast<uintptr_t>(request.data.args[2]),
                 broker_response.payload,
                 count
-            );
-            response.val = static_cast<long>(count);
+            )) {
+                response.error = -EFAULT;
+            } else {
+                response.val = static_cast<long>(count);
+            }
         }
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
         return;
@@ -395,10 +445,12 @@ void respond_user_notification(
         return;
     }
     GatewayRequest broker_request {};
-    broker_request.type = notification_proc_path(
+    const bool virtual_proc_file =
+        notification_proc_path(
             virtual_path,
             static_cast<pid_t>(request.pid)
-        ) && !directory
+        ) && !directory;
+    broker_request.type = virtual_proc_file
         ? kGatewayVirtualProc
         : kGatewayOpenat;
     broker_request.client_pid = static_cast<pid_t>(request.pid);
@@ -414,10 +466,20 @@ void respond_user_notification(
     );
 
     int source_fd = -1;
-    const long opened = call_syscall_broker(
-        &broker_request,
-        &source_fd
-    );
+    long opened = -EIO;
+    if (virtual_proc_file) {
+        source_fd = nestspace::open_virtual_proc_for_pid(
+            virtual_path,
+            broker_request.flags,
+            static_cast<pid_t>(request.pid)
+        );
+        opened = source_fd >= 0 ? 0 : -errno;
+    } else {
+        opened = call_syscall_broker(
+            &broker_request,
+            &source_fd
+        );
+    }
     if (source_fd < 0) {
         response.error = opened < 0 ? opened : -EIO;
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
@@ -497,6 +559,14 @@ bool install_user_notify_gateway() {
 
     struct sock_filter filter[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
+#if defined(SYS_exit_group)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_exit_group, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(SYS_munmap)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_munmap, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
 #if defined(__NR_newfstatat)

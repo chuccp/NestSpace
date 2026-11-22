@@ -252,7 +252,11 @@
             thread,
             signal
         );
-        if (group == getpid() && signal == SIGKILL) return 0;
+        if (group == getpid() &&
+            thread == getpid() &&
+            signal == SIGKILL) {
+            return 0;
+        }
         return g_real.syscall
             ? g_real.syscall(number, group, thread, signal)
             : syscall(number, group, thread, signal);
@@ -288,21 +292,24 @@
         }
         std::string rewritten;
         const bool mapped = rewrite_target_path(path, &rewritten);
-        return g_real.syscall
+        const char* actual = mapped ? rewritten.c_str() : path;
+        const long result = g_real.syscall
             ? g_real.syscall(
                 number,
                 dirfd,
-                mapped ? rewritten.c_str() : path,
+                actual,
                 flags,
                 mode
             )
             : syscall(
                 number,
                 dirfd,
-                mapped ? rewritten.c_str() : path,
+                actual,
                 flags,
                 mode
             );
+        log_target_open("syscall-openat", path, actual, static_cast<int>(result));
+        return result;
     }
 #ifdef SYS_mkdirat
     if (number == SYS_mkdirat) {

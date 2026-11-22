@@ -15,8 +15,19 @@ internal object VirtualSettingsCache {
 
     fun seedAndroidId(context: ContainerContext): Boolean =
         runCatching {
-            val cache = secureCache()
-            clearCache(cache)
+            settingsCaches().forEach(::clearCache)
+            // SQLite reads this value through Settings.Global before target
+            // providers finish attaching. Warm each namespace through the
+            // virtual resolver so their static NameValueCache entries retain
+            // a target-attributed provider instead of rebinding directly.
+            Settings.Global.getString(
+                context.targetContentResolver,
+                "compatibility_wal_supported"
+            )
+            Settings.System.getString(
+                context.targetContentResolver,
+                Settings.System.SCREEN_BRIGHTNESS
+            )
             val value = Settings.Secure.getString(
                 context.targetContentResolver,
                 Settings.Secure.ANDROID_ID
@@ -27,10 +38,16 @@ internal object VirtualSettingsCache {
             Log.w(TAG, "settings cache seed failed", it)
         }.getOrDefault(false)
 
-    private fun secureCache(): Any {
-        val field = Settings.Secure::class.java.getDeclaredField("sNameValueCache")
-        field.isAccessible = true
-        return field.get(null) ?: error("Settings.Secure cache unavailable")
+    private fun settingsCaches(): List<Any> = listOf(
+        Settings.Global::class.java,
+        Settings.Secure::class.java,
+        Settings.System::class.java
+    ).mapNotNull { type ->
+        runCatching {
+            val field = type.getDeclaredField("sNameValueCache")
+            field.isAccessible = true
+            field.get(null)
+        }.getOrNull()
     }
 
     private fun clearCache(cache: Any) {

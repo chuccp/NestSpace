@@ -23,6 +23,7 @@
         ? g_real.open(actual, flags, mode)
         : open(actual, flags, mode);
     log_runtime_library_open("open", path, actual, result);
+    log_target_open("open", path, actual, result);
     log_database_path("open", path, actual, result);
     log_database_fd_identity("open", path, actual, result);
     return result;
@@ -55,6 +56,7 @@ int hook_open64(const char* path, int flags, ...) {
         ? g_real.open64(actual, flags, mode)
         : open64(actual, flags, mode);
     log_runtime_library_open("open64", path, actual, result);
+    log_target_open("open64", path, actual, result);
     log_database_path("open64", path, actual, result);
     log_database_fd_identity("open64", path, actual, result);
     return result;
@@ -94,6 +96,7 @@ int hook_openat(int dirfd, const char* path, int flags, ...) {
         ? g_real.openat(dirfd, actual, flags, mode)
         : openat(dirfd, actual, flags, mode);
     log_runtime_library_open("openat", path, actual, result);
+    log_target_open("openat", path, actual, result);
     log_database_path("openat", path, actual, result);
     log_database_fd_identity("openat", path, actual, result);
     return result;
@@ -133,6 +136,7 @@ int hook_openat64(int dirfd, const char* path, int flags, ...) {
         ? g_real.openat64(dirfd, actual, flags, mode)
         : openat64(dirfd, actual, flags, mode);
     log_runtime_library_open("openat64", path, actual, result);
+    log_target_open("openat64", path, actual, result);
     log_database_path("openat64", path, actual, result);
     log_database_fd_identity("openat64", path, actual, result);
     return result;
@@ -319,12 +323,17 @@ void* hook_mmap(
         g_real.dladdr(reinterpret_cast<void*>(caller), &info) != 0 &&
         info.dli_fname != nullptr &&
         is_runtime_module_path(info.dli_fname);
-    if (!target) return result;
-    install_target_clear_cache_hook(
-        reinterpret_cast<uintptr_t>(info.dli_fbase)
-    );
+    if (target) {
+        install_target_clear_cache_hook(
+            reinterpret_cast<uintptr_t>(info.dli_fbase)
+        );
+    }
     track_jit_page(result);
-    log_jit_page("target-jit-mmap", result, caller);
+    log_jit_page(
+        target ? "target-jit-mmap" : "external-jit-mmap",
+        result,
+        caller
+    );
     log_jit_page_later(result, caller);
     return result;
 }
@@ -332,6 +341,21 @@ void* hook_mmap(
 int hook_munmap(void* address, size_t length) {
     const uintptr_t caller =
         reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (retain_small_code_mappings_enabled() &&
+        current_environment() != nullptr &&
+        page_size > 0 &&
+        length == static_cast<size_t>(page_size)) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "retained target code page address=%p length=%zu caller=%016" PRIxPTR,
+            address,
+            length,
+            caller
+        );
+        return 0;
+    }
     const bool tracked =
         jit_trace_enabled() && forget_jit_page(address);
     if (tracked) log_jit_page("target-jit-munmap", address, caller);

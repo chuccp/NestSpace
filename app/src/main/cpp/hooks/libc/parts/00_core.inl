@@ -73,7 +73,6 @@ ssize_t readlink_actual(
     }
     return length;
 }
-
 ssize_t virtualize_readlink_result(
     char* buffer,
     size_t size,
@@ -140,6 +139,14 @@ bool install_inline_jump(
         reinterpret_cast<char*>(code),
         reinterpret_cast<char*>(code + page_size)
     );
+    if (mprotect(
+            code,
+            static_cast<size_t>(page_size),
+            PROT_READ | PROT_EXEC
+        ) != 0) {
+        munmap(code, static_cast<size_t>(page_size));
+        return false;
+    }
     *trampoline = code;
 
     const uintptr_t page = reinterpret_cast<uintptr_t>(target) &
@@ -163,11 +170,25 @@ bool install_inline_jump(
         reinterpret_cast<char*>(target),
         reinterpret_cast<char*>(target_bytes + kPatchSize)
     );
-    mprotect(
-        reinterpret_cast<void*>(page),
-        static_cast<size_t>(page_size),
-        PROT_READ | PROT_EXEC
-    );
+    if (mprotect(
+            reinterpret_cast<void*>(page),
+            static_cast<size_t>(page_size),
+            PROT_READ | PROT_EXEC
+        ) != 0 &&
+        syscall(
+            SYS_mprotect,
+            page,
+            static_cast<size_t>(page_size),
+            PROT_READ | PROT_EXEC
+        ) != 0) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "restore patched page failed page=%p errno=%d",
+            reinterpret_cast<void*>(page),
+            errno
+        );
+    }
     return true;
 #endif
 }
@@ -365,6 +386,9 @@ void initialize_real_functions() {
         g_real.memmoveCall = reinterpret_cast<MemmoveFunction>(
             dlsym(RTLD_DEFAULT, "memmove")
         );
+        g_real.strlenCall = reinterpret_cast<StrlenFunction>(
+            dlsym(RTLD_DEFAULT, "strlen")
+        );
         g_real.fopen = reinterpret_cast<FopenFunction>(
             dlsym(RTLD_DEFAULT, "fopen")
         );
@@ -511,6 +535,44 @@ void log_runtime_library_open(
         result < 0 ? saved_errno : 0
     );
     errno = saved_errno;
+}
+
+void log_target_open(
+    const char* api,
+    const char* requested,
+    const char* actual,
+    int result
+) {
+    const Environment* environment = current_environment();
+    if (requested == nullptr || environment == nullptr) return;
+    char enabled[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.target_open_trace",
+        enabled
+    );
+    if (strcmp(enabled, "1") != 0 ||
+        (strncmp(
+            requested,
+            environment->target_data_root.c_str(),
+            environment->target_data_root.size()
+        ) != 0 &&
+         strncmp(
+            requested,
+            environment->target_data_alias.c_str(),
+            environment->target_data_alias.size()
+        ) != 0)) {
+        return;
+    }
+    __android_log_print(
+        ANDROID_LOG_DEBUG,
+        "NestSpaceNative",
+        "target-open api=%s requested=%s actual=%s result=%d errno=%d",
+        api,
+        requested,
+        actual == nullptr ? "?" : actual,
+        result,
+        result < 0 ? errno : 0
+    );
 }
 
 void log_database_path(
@@ -1011,4 +1073,12 @@ void install_property_hooks() {
                 );
         }
     });
+}
+
+bool install_shared_inline_hook(
+    void* target,
+    void* replacement,
+    void** trampoline
+) {
+    return install_inline_jump(target, replacement, trampoline);
 }

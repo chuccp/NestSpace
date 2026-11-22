@@ -32,6 +32,7 @@ object TargetCrashGuard {
 
     private var guard: Thread.UncaughtExceptionHandler? = null
     private var hostHandler: Thread.UncaughtExceptionHandler? = null
+    private var preHandlerInstalled = false
 
     @Volatile
     private var crashContext: Context? = null
@@ -55,6 +56,7 @@ object TargetCrashGuard {
     fun install(force: Boolean = false) {
         synchronized(lock) {
             if (installed && !force) return
+            installPreHandler()
             if (hostHandler == null) {
                 val current = Thread.getDefaultUncaughtExceptionHandler()
                 if (current !== guard) hostHandler = current
@@ -97,6 +99,41 @@ object TargetCrashGuard {
             guard = handler
             Thread.setDefaultUncaughtExceptionHandler(handler)
             installed = true
+        }
+    }
+
+    /**
+     * Some packed applications replace the default handler and then exit on
+     * uncaught failures without logging the original exception. ART exposes a
+     * pre-handler that runs before the application-owned handler; it is used
+     * only for diagnostics so process containment policy remains unchanged.
+     */
+    private fun installPreHandler() {
+        if (preHandlerInstalled) return
+        val method = runCatching {
+            Thread::class.java.getDeclaredMethod(
+                "setUncaughtExceptionPreHandler",
+                Thread.UncaughtExceptionHandler::class.java
+            ).apply { isAccessible = true }
+        }.onFailure {
+            Log.w(TAG, "uncaught pre-handler unavailable", it)
+        }.getOrNull() ?: return
+        val handler = Thread.UncaughtExceptionHandler { thread, throwable ->
+            if (isTargetFailure(throwable) && causedByTarget(thread, throwable)) {
+                Log.e(
+                    TAG,
+                    "target uncaught before application handler on ${thread.name}: " +
+                        throwable.javaClass.name,
+                    throwable
+                )
+                recordCrash(thread, throwable)
+            }
+        }
+        runCatching {
+            method.invoke(null, handler)
+            preHandlerInstalled = true
+        }.onFailure {
+            Log.w(TAG, "install uncaught pre-handler failed", it)
         }
     }
 

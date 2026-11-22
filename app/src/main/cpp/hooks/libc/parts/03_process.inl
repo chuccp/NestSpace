@@ -142,6 +142,7 @@ extern "C" TgkillDispatchResult hook_tgkill_dispatch(
 ) {
     if (current_environment() != nullptr &&
         group == getpid() &&
+        thread == getpid() &&
         signal == SIGKILL) {
         Dl_info info{};
         const bool resolved = g_real.dladdr != nullptr &&
@@ -240,6 +241,8 @@ int hook_tgkill_entry(
         "ldr w9, [x9, :lo12:g_nestspace_tgkill_pid]\n"
         "cmp w0, w9\n"
         "b.ne 1f\n"
+        "cmp w1, w9\n"
+        "b.ne 1f\n"
         "cmp w2, #9\n"
         "b.eq 2f\n"
         "1:\n"
@@ -319,7 +322,39 @@ void log_unwind_frames(const char* api);
 }  // namespace
 
 int hook_raise(int signal) {
-    if (signal == SIGKILL) {
+    if (signal == SIGKILL &&
+        current_environment() != nullptr &&
+        gettid() != getpid()) {
+        const uintptr_t caller = reinterpret_cast<uintptr_t>(
+            __builtin_return_address(0)
+        );
+        Dl_info info{};
+        const bool resolved = g_real.dladdr != nullptr &&
+            g_real.dladdr(
+                reinterpret_cast<void*>(caller),
+                &info
+            ) != 0;
+        const uintptr_t base = resolved
+            ? reinterpret_cast<uintptr_t>(info.dli_fbase)
+            : 0;
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "contained helper SIGKILL tid=%d caller=%016" PRIxPTR
+            " offset=%016" PRIxPTR " name=%s",
+            static_cast<int>(gettid()),
+            caller,
+            base == 0 ? 0 : caller - base,
+            resolved && info.dli_fname != nullptr
+                ? info.dli_fname
+                : "?"
+        );
+        syscall(SYS_exit, 0);
+        __builtin_unreachable();
+    }
+    if (signal == SIGKILL &&
+        current_environment() != nullptr &&
+        gettid() == getpid()) {
         char pause[PROP_VALUE_MAX] = {};
         __system_property_get(
             "debug.nestspace.pause_packer_raise",

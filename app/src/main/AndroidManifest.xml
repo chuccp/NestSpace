@@ -80,7 +80,7 @@
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.Virtual"
@@ -101,7 +101,7 @@
 
         <activity
             android:name=".assistant.AssistantVoiceActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTop"
@@ -114,7 +114,7 @@
             android:launchMode="singleTop"
             android:label="浏览器"
             android:theme="@style/Theme.Virtual"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode" />
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment" />
 
         <activity
             android:name=".ui.plugins.PluginCenterActivity"
@@ -122,21 +122,21 @@
             android:launchMode="singleTop"
             android:label="插件中心"
             android:theme="@style/Theme.Virtual"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode" />
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment" />
 
         <activity
             android:name=".browser.BrowserFileChooserActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode" />
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment" />
 
         <activity
             android:name=".plugin.PluginFileOperationsActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode" />
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -156,7 +156,7 @@
             android:name=".container.StageAActivity"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" />
 
         <activity
@@ -165,7 +165,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c1"
             android:taskAffinity="com.coke.nestspace.c1" />
@@ -176,7 +176,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c2"
             android:taskAffinity="com.coke.nestspace.c2" />
@@ -187,7 +187,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c3"
             android:taskAffinity="com.coke.nestspace.c3" />
@@ -198,7 +198,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c4"
             android:taskAffinity="com.coke.nestspace.c4" />
@@ -209,7 +209,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c5"
             android:taskAffinity="com.coke.nestspace.c5" />
@@ -220,7 +220,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c6"
             android:taskAffinity="com.coke.nestspace.c6" />
@@ -231,7 +231,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c7"
             android:taskAffinity="com.coke.nestspace.c7" />
@@ -242,7 +242,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c8"
             android:taskAffinity="com.coke.nestspace.c8" />
@@ -253,7 +253,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c9"
             android:taskAffinity="com.coke.nestspace.c9" />
@@ -264,7 +264,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c10"
             android:taskAffinity="com.coke.nestspace.c10" />
@@ -275,7 +275,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c11"
             android:taskAffinity="com.coke.nestspace.c11" />
@@ -286,7 +286,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c12"
             android:taskAffinity="com.coke.nestspace.c12" />
@@ -297,7 +297,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c13"
             android:taskAffinity="com.coke.nestspace.c13" />
@@ -308,7 +308,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c14"
             android:taskAffinity="com.coke.nestspace.c14" />
@@ -319,7 +319,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c15"
             android:taskAffinity="com.coke.nestspace.c15" />
@@ -330,7 +330,7 @@
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false"
             android:process=":c16"
             android:taskAffinity="com.coke.nestspace.c16" />
@@ -339,112 +339,112 @@
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c1"
             android:taskAffinity="com.coke.nestspace.isolated.c1" />
         <activity android:name=".container.StageAIsolatedSlot2Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c2"
             android:taskAffinity="com.coke.nestspace.isolated.c2" />
         <activity android:name=".container.StageAIsolatedSlot3Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c3"
             android:taskAffinity="com.coke.nestspace.isolated.c3" />
         <activity android:name=".container.StageAIsolatedSlot4Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c4"
             android:taskAffinity="com.coke.nestspace.isolated.c4" />
         <activity android:name=".container.StageAIsolatedSlot5Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c5"
             android:taskAffinity="com.coke.nestspace.isolated.c5" />
         <activity android:name=".container.StageAIsolatedSlot6Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c6"
             android:taskAffinity="com.coke.nestspace.isolated.c6" />
         <activity android:name=".container.StageAIsolatedSlot7Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c7"
             android:taskAffinity="com.coke.nestspace.isolated.c7" />
         <activity android:name=".container.StageAIsolatedSlot8Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c8"
             android:taskAffinity="com.coke.nestspace.isolated.c8" />
         <activity android:name=".container.StageAIsolatedSlot9Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c9"
             android:taskAffinity="com.coke.nestspace.isolated.c9" />
         <activity android:name=".container.StageAIsolatedSlot10Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c10"
             android:taskAffinity="com.coke.nestspace.isolated.c10" />
         <activity android:name=".container.StageAIsolatedSlot11Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c11"
             android:taskAffinity="com.coke.nestspace.isolated.c11" />
         <activity android:name=".container.StageAIsolatedSlot12Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c12"
             android:taskAffinity="com.coke.nestspace.isolated.c12" />
         <activity android:name=".container.StageAIsolatedSlot13Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c13"
             android:taskAffinity="com.coke.nestspace.isolated.c13" />
         <activity android:name=".container.StageAIsolatedSlot14Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c14"
             android:taskAffinity="com.coke.nestspace.isolated.c14" />
         <activity android:name=".container.StageAIsolatedSlot15Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c15"
             android:taskAffinity="com.coke.nestspace.isolated.c15" />
         <activity android:name=".container.StageAIsolatedSlot16Activity"
             android:supportsPictureInPicture="true" android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
             android:theme="@style/Theme.Virtual.Container"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment"
             android:exported="false" android:process=":c16"
             android:taskAffinity="com.coke.nestspace.isolated.c16" />
 

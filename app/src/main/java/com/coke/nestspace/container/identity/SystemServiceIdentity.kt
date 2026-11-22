@@ -107,6 +107,7 @@ object SystemServiceIdentity {
     private var connectivityInstalled = false
     private var clipboardInstalled = false
     private var inputMethodInstalled = false
+    private var storageInstalled = false
 
     /**
      * Arms a one-shot hook for the root target page. It is set only while the
@@ -232,6 +233,17 @@ object SystemServiceIdentity {
             inputMethodInstalled = true
             runCatching { installInputMethodProxy(contexts) }
                 .onFailure { Log.w(TAG, "InputMethodManager proxy failed", it) }
+        }
+        if (!storageInstalled) {
+            storageInstalled = true
+            runCatching {
+                installCachedManagerProxy(
+                    contexts,
+                    Context.STORAGE_SERVICE,
+                    "android.os.storage.IStorageManager",
+                    "StorageManager"
+                )
+            }.onFailure { Log.w(TAG, "StorageManager proxy failed", it) }
         }
 
         // Containers created earlier may already hold an ApplicationPackageManager.

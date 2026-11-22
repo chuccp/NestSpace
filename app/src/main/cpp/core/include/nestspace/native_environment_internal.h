@@ -194,6 +194,7 @@ using ReallocFunction = void* (*)(void*, size_t);
 using FreeFunction = void (*)(void*);
 using MemcpyFunction = void* (*)(void*, const void*, size_t);
 using MemmoveFunction = void* (*)(void*, const void*, size_t);
+using StrlenFunction = size_t (*)(const char*);
 using FopenFunction = FILE* (*)(const char*, const char*);
 using FdopenFunction = FILE* (*)(int, const char*);
 using FcloseFunction = int (*)(FILE*);
@@ -308,6 +309,7 @@ struct RealFunctions {
     FreeFunction freeCall = nullptr;
     MemcpyFunction memcpyCall = nullptr;
     MemmoveFunction memmoveCall = nullptr;
+    StrlenFunction strlenCall = nullptr;
     FopenFunction fopen = nullptr;
     FopenFunction fopen64 = nullptr;
     FdopenFunction fdopen = nullptr;
@@ -355,6 +357,11 @@ bool syscall_gateway_active();
 void capture_previous_segv_action(const struct sigaction* action);
 void install_property_hooks();
 void install_jni_registration_hook(JNIEnv* env);
+bool install_shared_inline_hook(
+    void* target,
+    void* replacement,
+    void** trampoline
+);
 void* hook_dlsym(void* handle, const char* name);
 void* hook_dlvsym(void* handle, const char* name, const char* version);
 int hook_open(const char* path, int flags, ...);

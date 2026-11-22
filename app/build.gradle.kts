@@ -136,6 +136,11 @@ android {
         }
     }
     buildTypes {
+        create("snapshot") {
+            initWith(getByName("debug"))
+            isDebuggable = false
+            matchingFallbacks += listOf("debug")
+        }
         release {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")

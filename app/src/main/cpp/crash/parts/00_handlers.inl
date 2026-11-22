@@ -50,6 +50,7 @@ pid_t g_syscall_broker_child = -1;
 std::atomic_flag g_syscall_broker_busy = ATOMIC_FLAG_INIT;
 std::atomic<bool> g_syscall_gateway_active{false};
 std::atomic<bool> g_syscall_gateway_pause{false};
+uintptr_t g_runtime_table_fallback_object = 0;
 
 struct GatewayFdTemplate {
     char path[PATH_MAX];
@@ -147,7 +148,8 @@ void write_module(
     uintptr_t address
 ) {
     Dl_info info{};
-    const bool resolved = dladdr(
+    const bool resolved = nestspace::g_real.dladdr != nullptr &&
+        nestspace::g_real.dladdr(
         reinterpret_cast<void*>(address),
         &info
     ) != 0;
@@ -220,6 +222,37 @@ bool write_process_memory(
     return true;
 }
 
+void write_code_window(const char* label, uintptr_t address) {
+    if (address < 0x1000) return;
+    const uintptr_t start =
+        address & ~static_cast<uintptr_t>(0xfff);
+    char buffer[0x1000];
+    struct iovec local {
+        buffer,
+        sizeof(buffer)
+    };
+    struct iovec remote {
+        reinterpret_cast<void*>(start),
+        sizeof(buffer)
+    };
+    if (syscall(
+            SYS_process_vm_readv,
+            getpid(),
+            &local,
+            1,
+            &remote,
+            1,
+            0
+        ) != static_cast<long>(sizeof(buffer))) {
+        return;
+    }
+    write(g_trace_fd, label, strlen(label));
+    write(g_trace_fd, "\n", 1);
+    write_hex(address);
+    write_hex(start);
+    write(g_trace_fd, buffer, sizeof(buffer));
+}
+
 [[noreturn]] __attribute__((naked)) void guard_exit_thread() {
     __asm__ __volatile__(
         "bti c\n"
@@ -230,7 +263,311 @@ bool write_process_memory(
     );
 }
 
+bool find_mapping_bounds(
+    uintptr_t address,
+    uintptr_t* begin,
+    uintptr_t* end
+) {
+    if (address == 0 || begin == nullptr || end == nullptr) return false;
+    const int fd = static_cast<int>(syscall(
+        SYS_openat,
+        AT_FDCWD,
+        "/proc/self/maps",
+        O_RDONLY | O_CLOEXEC
+    ));
+    if (fd < 0) return false;
+    char chunk[4096];
+    char line[512];
+    size_t length = 0;
+    bool found = false;
+    while (!found) {
+        const long count = syscall(SYS_read, fd, chunk, sizeof(chunk));
+        if (count <= 0) break;
+        for (long index = 0; index < count && !found; ++index) {
+            const char value = chunk[index];
+            if (value != '\n') {
+                if (length + 1 < sizeof(line)) line[length++] = value;
+                continue;
+            }
+            line[length] = '\0';
+            length = 0;
+            size_t cursor = 0;
+            uintptr_t range_begin = 0;
+            while (cursor < sizeof(line) && line[cursor] != '-') {
+                const char digit = line[cursor++];
+                int hex = -1;
+                if (digit >= '0' && digit <= '9') hex = digit - '0';
+                else if (digit >= 'a' && digit <= 'f') hex = digit - 'a' + 10;
+                else if (digit >= 'A' && digit <= 'F') hex = digit - 'A' + 10;
+                else break;
+                range_begin = (range_begin << 4) | static_cast<uintptr_t>(hex);
+            }
+            if (cursor >= sizeof(line) || line[cursor] != '-') continue;
+            ++cursor;
+            uintptr_t range_end = 0;
+            while (cursor < sizeof(line) && line[cursor] != ' ') {
+                const char digit = line[cursor++];
+                int hex = -1;
+                if (digit >= '0' && digit <= '9') hex = digit - '0';
+                else if (digit >= 'a' && digit <= 'f') hex = digit - 'a' + 10;
+                else if (digit >= 'A' && digit <= 'F') hex = digit - 'A' + 10;
+                else break;
+                range_end = (range_end << 4) | static_cast<uintptr_t>(hex);
+            }
+            if (address >= range_begin && address < range_end) {
+                *begin = range_begin;
+                *end = range_end;
+                found = true;
+            }
+        }
+    }
+    syscall(SYS_close, fd);
+    return found;
+}
+
+bool recover_runtime_oob_load(
+    int signal_number,
+    const siginfo_t* info,
+    ucontext_t* context
+) {
+    if (signal_number == SIGSEGV && info != nullptr && context != nullptr) {
+        __android_log_print(
+            ANDROID_LOG_DEBUG,
+            kLogTag,
+            "runtime OOB probe fault=%p pc=%p",
+            info->si_addr,
+            reinterpret_cast<void*>(context->uc_mcontext.pc)
+        );
+    }
+    if (signal_number != SIGSEGV || info == nullptr ||
+        context == nullptr ||
+        !diagnostic_enabled(
+            "NESTSPACE_RUNTIME_OOB_ZERO",
+            "debug.nestspace.runtime_oob_zero"
+        )) {
+        return false;
+    }
+    constexpr uintptr_t kPointerTagMask = (1ULL << 56) - 1;
+    const uintptr_t fault_address =
+        reinterpret_cast<uintptr_t>(info->si_addr);
+    const uintptr_t x8 =
+        static_cast<uintptr_t>(context->uc_mcontext.regs[8]) &
+        kPointerTagMask;
+    const uintptr_t x9 =
+        static_cast<uintptr_t>(context->uc_mcontext.regs[9]);
+    char detail[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.runtime_oob_detail",
+        detail
+    );
+    if (strcmp(detail, "1") == 0) {
+        const uint32_t instruction =
+            *reinterpret_cast<const uint32_t*>(
+                context->uc_mcontext.pc
+            );
+        __android_log_print(
+            ANDROID_LOG_DEBUG,
+            kLogTag,
+            "runtime OOB detail pc=%p fault=%p x0=%p x8=%p x9=%p "
+            "x1=%p x10=%p x19=%p x20=%p x21=%p x22=%p "
+            "x23=%p x24=%p x25=%p x26=%p x27=%p x28=%p "
+            "instruction=%08x",
+            reinterpret_cast<void*>(context->uc_mcontext.pc),
+            reinterpret_cast<void*>(fault_address),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[0]),
+            reinterpret_cast<void*>(x8),
+            reinterpret_cast<void*>(x9),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[1]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[10]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[19]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[20]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[21]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[22]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[23]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[24]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[25]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[26]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[27]),
+            reinterpret_cast<void*>(context->uc_mcontext.regs[28]),
+            instruction
+        );
+    }
+    const uintptr_t pc = context->uc_mcontext.pc;
+    uint32_t instruction =
+        *reinterpret_cast<const uint32_t*>(pc);
+    bool advance_pc = true;
+    const bool is_64_bit_load =
+        (instruction & 0xffe00c00U) == 0xf8600800U;
+    const bool is_32_bit_load =
+        (instruction & 0xffe00c00U) == 0xb8600800U;
+    const bool is_16_bit_load =
+        (instruction & 0xffe00c00U) == 0x78600800U;
+    const bool is_8_bit_load =
+        (instruction & 0xffe00c00U) == 0x38600800U;
+    const bool is_64_bit_store =
+        (instruction & 0xffe00c00U) == 0xf8200800U;
+    const bool is_32_bit_store =
+        (instruction & 0xffe00c00U) == 0xb8200800U;
+    const bool is_16_bit_store =
+        (instruction & 0xffe00c00U) == 0x78200800U;
+    const bool is_8_bit_store =
+        (instruction & 0xffe00c00U) == 0x38200800U;
+    if (is_64_bit_store || is_32_bit_store ||
+        is_16_bit_store || is_8_bit_store) {
+        const uint32_t base = (instruction >> 5U) & 0x1fU;
+        const uint32_t index = (instruction >> 16U) & 0x1fU;
+        if (base != 31 && index != 31) {
+            const uintptr_t base_address =
+                static_cast<uintptr_t>(
+                    context->uc_mcontext.regs[base]
+                ) &
+                kPointerTagMask;
+            const uint32_t option =
+                (instruction >> 12U) & 0x3U;
+            const uint32_t shift = option == 3U
+                ? (is_64_bit_store ? 3U :
+                    is_32_bit_store ? 2U :
+                    is_16_bit_store ? 1U : 0U)
+                : 0U;
+            const uintptr_t index_value =
+                static_cast<uintptr_t>(
+                    static_cast<uint32_t>(
+                        context->uc_mcontext.regs[index]
+                    )
+                ) << shift;
+            if (base_address + index_value == fault_address) {
+                context->uc_mcontext.pc += 4;
+                __android_log_print(
+                    ANDROID_LOG_WARN,
+                    kLogTag,
+                    "runtime OOB store skipped base=x%u index=x%u "
+                    "address=%p pc=%p",
+                    base,
+                    index,
+                    info->si_addr,
+                    reinterpret_cast<void*>(pc)
+                );
+                return true;
+            }
+        }
+    }
+    if (!is_64_bit_load && !is_32_bit_load &&
+        !is_16_bit_load && !is_8_bit_load &&
+        (instruction & 0xffc00000U) == 0xb9400000U &&
+        g_runtime_table_fallback_object != 0) {
+        const uint32_t target = instruction & 0x1fU;
+        const uint32_t base = (instruction >> 5U) & 0x1fU;
+        const uint32_t immediate =
+            ((instruction >> 10U) & 0xfffU) << 3U;
+        constexpr uintptr_t kPointerTagMask = (1ULL << 56) - 1;
+        const uintptr_t base_address =
+            static_cast<uintptr_t>(context->uc_mcontext.regs[base]) &
+            kPointerTagMask;
+        const uintptr_t fault_address =
+            reinterpret_cast<uintptr_t>(info->si_addr);
+        if (base_address < 0x40000000 &&
+            base_address + immediate == fault_address) {
+            context->uc_mcontext.regs[target] =
+                g_runtime_table_fallback_object;
+            context->uc_mcontext.pc += 4;
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "runtime invalid reference recovered base=x%u target=x%u "
+                "faul=%p",
+                base,
+                target,
+                info->si_addr
+            );
+            return true;
+        }
+    }
+    if (!is_64_bit_load && !is_32_bit_load &&
+        !is_16_bit_load && !is_8_bit_load && pc >= 4) {
+        instruction =
+            *reinterpret_cast<const uint32_t*>(pc - 4);
+        advance_pc = false;
+    }
+    const uint32_t load_mask = instruction & 0xffe00c00U;
+    const bool decoded_64_bit_load = load_mask == 0xf8600800U;
+    const bool decoded_32_bit_load = load_mask == 0xb8600800U;
+    const bool decoded_16_bit_load = load_mask == 0x78600800U;
+    const bool decoded_8_bit_load = load_mask == 0x38600800U;
+    if (!decoded_64_bit_load && !decoded_32_bit_load &&
+        !decoded_16_bit_load && !decoded_8_bit_load) {
+        return false;
+    }
+    const uint32_t target = instruction & 0x1fU;
+    const uint32_t base = (instruction >> 5U) & 0x1fU;
+    const uint32_t index = (instruction >> 16U) & 0x1fU;
+    if (target == 31 || base == 31 || index == 31) return false;
+    const uintptr_t base_address =
+        static_cast<uintptr_t>(context->uc_mcontext.regs[base]) &
+        kPointerTagMask;
+    uintptr_t index_value =
+        static_cast<uintptr_t>(context->uc_mcontext.regs[index]);
+    const uint32_t option = (instruction >> 12U) & 0x3U;
+    const uint32_t shift = option == 3U
+        ? (decoded_64_bit_load ? 3U :
+            decoded_32_bit_load ? 2U :
+            decoded_16_bit_load ? 1U : 0U)
+        : 0U;
+    index_value = static_cast<uint32_t>(index_value) << shift;
+    if (base_address + index_value != fault_address) return false;
+    uintptr_t mapping_begin = 0;
+    uintptr_t mapping_end = 0;
+    if (g_runtime_table_fallback_object != 0 &&
+        base_address != 0 &&
+        !find_mapping_bounds(base_address, &mapping_begin, &mapping_end)) {
+        context->uc_mcontext.regs[base] =
+            g_runtime_table_fallback_object;
+        context->uc_mcontext.regs[index] = 0;
+        const uintptr_t walker =
+            static_cast<uintptr_t>(context->uc_mcontext.regs[24]) &
+            kPointerTagMask;
+        if (walker != 0 &&
+            !find_mapping_bounds(walker, &mapping_begin, &mapping_end)) {
+            context->uc_mcontext.regs[24] =
+                g_runtime_table_fallback_object;
+        }
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "runtime OOB load moved invalid base=x%u to fallback",
+            base
+        );
+    }
+    if (target != base) {
+        context->uc_mcontext.regs[target] = 0;
+    }
+    if (decoded_16_bit_load &&
+        context->uc_mcontext.regs[22] == 0xffffffffU) {
+        context->uc_mcontext.regs[22] = 0;
+    }
+    if (advance_pc) context->uc_mcontext.pc += 4;
+    __android_log_print(
+        ANDROID_LOG_WARN,
+        kLogTag,
+        "runtime OOB load recovered target=x%u base=x%u index=x%u "
+        "address=%p pc=%p",
+        target,
+        base,
+        index,
+        info->si_addr,
+        reinterpret_cast<void*>(pc)
+    );
+    return true;
+}
+
 void crash_handler(int sig, siginfo_t* info, void* raw_context) {
+    if (raw_context != nullptr &&
+        recover_runtime_oob_load(
+            sig,
+            info,
+            static_cast<ucontext_t*>(raw_context)
+        )) {
+        return;
+    }
     if (g_trace_fd >= 0) {
         const char header[] = "signal\n";
         write(g_trace_fd, header, sizeof(header) - 1);
@@ -239,13 +576,16 @@ void crash_handler(int sig, siginfo_t* info, void* raw_context) {
             const char fault_header[] = "fault\n";
             write(g_trace_fd, fault_header, sizeof(fault_header) - 1);
             write_hex(reinterpret_cast<uintptr_t>(info->si_addr));
+            const char code_header[] = "signal_code\n";
+            write(g_trace_fd, code_header, sizeof(code_header) - 1);
+            write_hex(static_cast<uintptr_t>(info->si_code));
         }
         if (raw_context != nullptr) {
             auto* context = static_cast<ucontext_t*>(raw_context);
             const char pc_header[] = "pc\n";
             const char sp_header[] = "sp\n";
             const char regs_header[] = "regs\n";
-            const char code_header[] = "code\n";
+            const char code_header[] = "pc_code\n";
             write(g_trace_fd, pc_header, sizeof(pc_header) - 1);
             write_hex(static_cast<uintptr_t>(context->uc_mcontext.pc));
             write_module("pc", context->uc_mcontext.pc);
@@ -259,32 +599,38 @@ void crash_handler(int sig, siginfo_t* info, void* raw_context) {
                 );
             }
             const uintptr_t pc = context->uc_mcontext.pc;
-            const uintptr_t code_start = (pc & ~0xffU) - 0x100;
+            const uintptr_t code_start =
+                (pc & ~static_cast<uintptr_t>(0xff)) - 0x100;
             write(g_trace_fd, code_header, sizeof(code_header) - 1);
-            struct iovec local {
-                reinterpret_cast<void*>(code_start),
-                0x300
+            char code[0x300];
+            struct iovec code_local {
+                code,
+                sizeof(code)
             };
-            struct iovec remote {
+            struct iovec code_remote {
                 reinterpret_cast<void*>(code_start),
-                0x300
+                sizeof(code)
             };
-            const long copied = syscall(
-                SYS_process_vm_readv,
-                getpid(),
-                &local,
-                1,
-                &remote,
-                1,
-                0
-            );
-            if (copied == 0x300) {
-                write(g_trace_fd, local.iov_base, 0x300);
+            if (syscall(
+                    SYS_process_vm_readv,
+                    getpid(),
+                    &code_local,
+                    1,
+                    &code_remote,
+                    1,
+                    0
+                ) == static_cast<long>(sizeof(code))) {
+                write(g_trace_fd, code, sizeof(code));
             }
+            write_code_window(
+                "lr_code",
+                context->uc_mcontext.regs[30]
+            );
             const uintptr_t object = context->uc_mcontext.regs[0];
             write_process_memory("object", object, 0x100);
+            char object_buffer[0x100];
             struct iovec object_local {
-                local.iov_base,
+                object_buffer,
                 0x100
             };
             struct iovec object_remote {
@@ -302,7 +648,9 @@ void crash_handler(int sig, siginfo_t* info, void* raw_context) {
             );
             if (object_size >= 0x40) {
                 const auto* object_words =
-                    static_cast<const uintptr_t*>(local.iov_base);
+                    static_cast<const uintptr_t*>(
+                        static_cast<const void*>(object_buffer)
+                    );
                 const uintptr_t table = object_words[0x38 / sizeof(uintptr_t)];
                 const uintptr_t index = context->uc_mcontext.regs[1];
                 write_process_memory(
@@ -320,6 +668,37 @@ void crash_handler(int sig, siginfo_t* info, void* raw_context) {
             write_process_memory("x21", context->uc_mcontext.regs[21], 0x100);
             write_process_memory("x22", context->uc_mcontext.regs[22], 0x100);
             write_process_memory("x27", context->uc_mcontext.regs[27], 0x100);
+            write_process_memory("x8", context->uc_mcontext.regs[8], 0x100);
+            write_process_memory("x29", context->uc_mcontext.regs[29], 0x400);
+            uintptr_t interpreter_pc = 0;
+            struct iovec interpreter_local {
+                &interpreter_pc,
+                sizeof(interpreter_pc)
+            };
+            struct iovec interpreter_remote {
+                reinterpret_cast<void*>(
+                    static_cast<uintptr_t>(
+                        context->uc_mcontext.regs[22]
+                    )
+                ),
+                sizeof(interpreter_pc)
+            };
+            if (syscall(
+                    SYS_process_vm_readv,
+                    getpid(),
+                    &interpreter_local,
+                    1,
+                    &interpreter_remote,
+                    1,
+                    0
+                ) == static_cast<long>(sizeof(interpreter_pc)) &&
+                interpreter_pc > 0x40) {
+                write_process_memory(
+                    "interpreter-code",
+                    interpreter_pc - 0x20,
+                    0x80
+                );
+            }
             const char stack_header[] = "stack\n";
             write(g_trace_fd, stack_header, sizeof(stack_header) - 1);
             write(
@@ -349,6 +728,7 @@ void packer_relocation_handler(
     void* raw_context
 ) {
     auto* context = static_cast<ucontext_t*>(raw_context);
+    if (recover_runtime_oob_load(signal_number, info, context)) return;
     const uintptr_t instruction = context == nullptr
         ? 0
         : *reinterpret_cast<const uint32_t*>(context->uc_mcontext.pc);
@@ -368,7 +748,8 @@ void packer_relocation_handler(
     );
     if (context != nullptr) {
         Dl_info module{};
-        if (dladdr(
+        if (nestspace::g_real.dladdr != nullptr &&
+            nestspace::g_real.dladdr(
                 reinterpret_cast<void*>(context->uc_mcontext.pc),
                 &module
             ) != 0) {
@@ -390,6 +771,59 @@ void packer_relocation_handler(
     if (info != nullptr) {
         const uintptr_t fault_address =
             reinterpret_cast<uintptr_t>(info->si_addr);
+        char table_guard[PROP_VALUE_MAX] = {};
+        __system_property_get(
+            "debug.nestspace.runtime_table_guard",
+            table_guard
+        );
+        if (context != nullptr &&
+            signal_number == SIGSEGV &&
+            info->si_code == SEGV_ACCERR &&
+            strcmp(table_guard, "1") == 0 &&
+            g_runtime_table_fallback_object != 0) {
+            constexpr uintptr_t kPointerTagMask = (1ULL << 56) - 1;
+            const uintptr_t table =
+                static_cast<uintptr_t>(context->uc_mcontext.regs[8]) &
+                kPointerTagMask;
+            const uintptr_t delta = fault_address >= table
+                ? fault_address - table
+                : table - fault_address;
+            if (table != 0 && delta >= 0x1000 && delta < 0x100000) {
+                uintptr_t mapping_begin = 0;
+                uintptr_t mapping_end = 0;
+                if (find_mapping_bounds(
+                        table,
+                        &mapping_begin,
+                        &mapping_end
+                    ) &&
+                    mapping_end > mapping_begin) {
+                    const uintptr_t mapping_size =
+                        mapping_end - mapping_begin;
+                    const uintptr_t wrapped_address =
+                        mapping_begin +
+                        ((fault_address - mapping_begin) % mapping_size);
+                    const uintptr_t wrapped =
+                        wrapped_address - mapping_begin;
+                    __android_log_print(
+                        ANDROID_LOG_WARN,
+                        "NestSpaceNative",
+                        "runtime-table-guard table=%p mapping=%p-%p "
+                        "fault=%p delta=%p wrapped=%p pc=%p",
+                        reinterpret_cast<void*>(table),
+                        reinterpret_cast<void*>(mapping_begin),
+                        reinterpret_cast<void*>(mapping_end),
+                        reinterpret_cast<void*>(fault_address),
+                        reinterpret_cast<void*>(delta),
+                        reinterpret_cast<void*>(wrapped),
+                        reinterpret_cast<void*>(context->uc_mcontext.pc)
+                    );
+                    context->uc_mcontext.regs[8] = mapping_begin;
+                    context->uc_mcontext.regs[9] = wrapped;
+                    context->uc_mcontext.pc -= 4;
+                    return;
+                }
+            }
+        }
         const uintptr_t watch_start =
             g_watch_start.load(std::memory_order_acquire);
         const uintptr_t watch_size =
@@ -662,7 +1096,8 @@ void packer_relocation_handler(
             write_process_memory("runtime-caller", caller - 0x100, 0x300);
         }
         Dl_info module{};
-        if (dladdr(
+        if (nestspace::g_real.dladdr != nullptr &&
+            nestspace::g_real.dladdr(
                 reinterpret_cast<void*>(context->uc_mcontext.pc),
                 &module
             ) != 0 &&
@@ -695,6 +1130,31 @@ void packer_relocation_handler(
 
 void install_packer_relocation_guard() {
     if (g_packer_relocation_guard_installed) return;
+    char table_guard[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.runtime_table_guard",
+        table_guard
+    );
+    if (strcmp(table_guard, "1") == 0 &&
+        g_runtime_table_fallback_object == 0) {
+        const long page_size = sysconf(_SC_PAGESIZE);
+        const size_t size = page_size > 0
+            ? static_cast<size_t>(page_size) * 2
+            : 0x2000;
+        void* fallback = mmap(
+            nullptr,
+            size,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+            -1,
+            0
+        );
+        if (fallback != MAP_FAILED) {
+            memset(fallback, 0, size);
+            g_runtime_table_fallback_object =
+                reinterpret_cast<uintptr_t>(fallback);
+        }
+    }
     struct sigaction action {};
     action.sa_sigaction = packer_relocation_handler;
     action.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -743,14 +1203,53 @@ bool read_user_string(
     size_t capacity
 ) {
     if (address == 0 || buffer == nullptr || capacity < 2) return false;
-    const auto* source = reinterpret_cast<const char*>(address);
-    for (size_t index = 0; index + 1 < capacity; ++index) {
-        const char value = source[index];
-        buffer[index] = value;
-        if (value == '\0') return true;
+    struct iovec local {
+        buffer,
+        capacity - 1
+    };
+    struct iovec remote {
+        reinterpret_cast<void*>(address),
+        capacity - 1
+    };
+    const long copied = syscall(
+        SYS_process_vm_readv,
+        getpid(),
+        &local,
+        1,
+        &remote,
+        1,
+        0
+    );
+    if (copied <= 0) return false;
+    for (size_t index = 0; index < static_cast<size_t>(copied); ++index) {
+        if (buffer[index] == '\0') return true;
     }
-    buffer[capacity - 1] = '\0';
     return false;
+}
+
+bool write_user_memory(
+    uintptr_t address,
+    const void* source,
+    size_t size
+) {
+    if (address == 0 || source == nullptr || size == 0) return false;
+    struct iovec local {
+        const_cast<void*>(source),
+        size
+    };
+    struct iovec remote {
+        reinterpret_cast<void*>(address),
+        size
+    };
+    return syscall(
+        SYS_process_vm_writev,
+        getpid(),
+        &local,
+        1,
+        &remote,
+        1,
+        0
+    ) == static_cast<long>(size);
 }
 
 bool is_virtual_proc_gateway_path(const char* path) {

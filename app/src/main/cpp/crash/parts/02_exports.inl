@@ -40,20 +40,37 @@ void capture_previous_segv_action(const struct sigaction* action) {
 
 extern "C" void install_native_crash_trace(const char* path) {
     if (path == nullptr || path[0] == '\0') return;
-    if (!diagnostic_enabled(
-            "NESTSPACE_CRASH_TRACE",
-            "debug.nestspace.crash_trace"
-        )) {
-        return;
-    }
-    g_trace_fd = open(path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
-    if (g_trace_fd < 0) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "cannot open trace file: %s",
-            path
+    const bool trace_enabled = diagnostic_enabled(
+        "NESTSPACE_CRASH_TRACE",
+        "debug.nestspace.crash_trace"
+    );
+    const bool fatal_signal_trace_enabled = diagnostic_enabled(
+        "NESTSPACE_FATAL_SIGNAL_TRACE",
+        "debug.nestspace.fatal_signal_trace"
+    );
+    __android_log_print(
+        ANDROID_LOG_DEBUG,
+        kLogTag,
+        "trace path=%s enabled=%d fatal_signal=%d",
+        path,
+        trace_enabled ? 1 : 0,
+        fatal_signal_trace_enabled ? 1 : 0
+    );
+    if (trace_enabled) {
+        g_trace_fd = open(
+            path,
+            O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC,
+            0600
         );
+        if (g_trace_fd < 0) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "cannot open trace file: %s",
+                path
+            );
+        }
+    } else if (!g_packer_relocation_guard_requested) {
         return;
     }
 
@@ -75,10 +92,7 @@ extern "C" void install_native_crash_trace(const char* path) {
         )) {
         install_packer_relocation_guard();
     }
-    if (diagnostic_enabled(
-            "NESTSPACE_FATAL_SIGNAL_TRACE",
-            "debug.nestspace.fatal_signal_trace"
-        )) {
+    if (trace_enabled && fatal_signal_trace_enabled) {
         install_handler(SIGABRT);
         install_handler(SIGSEGV);
         install_handler(SIGBUS);

@@ -195,19 +195,13 @@ bool is_virtual_native_library_path(
     const Environment* environment
 ) {
     if (actual == nullptr || environment == nullptr) return false;
-    if (!environment->native_library_dir.empty() &&
+    // Only the installed APK's native-library directory is system-owned.
+    // Libraries unpacked beside application data (including runtime boot
+    // helpers) remain app-private and must not be presented as 1000:1000.
+    return !environment->native_library_dir.empty() &&
         environment->native_library_dir !=
             environment->virtual_native_library_dir &&
-        starts_with_prefix(actual, environment->native_library_dir)) {
-        return true;
-    }
-    return std::any_of(
-        environment->runtime_library_dirs.begin(),
-        environment->runtime_library_dirs.end(),
-        [actual](const std::string& directory) {
-            return starts_with_prefix(actual, directory);
-        }
-    );
+        starts_with_prefix(actual, environment->native_library_dir);
 }
 
 }  // namespace
@@ -769,6 +763,29 @@ int open_virtual_proc_for_pid(
     __system_property_get("debug.nestspace.debug_virtual_maps", debug_maps);
     if (strcmp(debug_maps, "1") == 0 &&
         strcmp(path, "/proc/self/maps") == 0) {
+        const std::string dump_path =
+            environment->data_root + "/.nestspace/virtual-maps.txt";
+        const int dump_fd = static_cast<int>(syscall(
+            SYS_openat,
+            AT_FDCWD,
+            dump_path.c_str(),
+            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+            0600
+        ));
+        if (dump_fd >= 0) {
+            size_t written = 0;
+            while (written < content.size()) {
+                const long count = syscall(
+                    SYS_write,
+                    dump_fd,
+                    content.data() + written,
+                    content.size() - written
+                );
+                if (count <= 0) break;
+                written += static_cast<size_t>(count);
+            }
+            syscall(SYS_close, dump_fd);
+        }
         static std::atomic<int> map_dump_count{0};
         const int dump_index =
             map_dump_count.fetch_add(1, std::memory_order_relaxed);

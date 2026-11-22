@@ -89,10 +89,53 @@ object NativeEnvironmentBridge {
         }
     }
 
+    fun installDexFileTrace() {
+        if (!ensureLoaded()) return
+        runCatching {
+            nativeInstallDexFileTrace()
+        }.onFailure {
+            Log.w(TAG, "install DexFile trace failed", it)
+        }
+    }
+
+    fun captureProcessDex(dataRoot: String): List<String> {
+        if (!ensureLoaded()) return emptyList()
+        return runCatching {
+            nativeCaptureProcessDex(dataRoot)?.toList().orEmpty()
+        }.onFailure {
+            Log.w(TAG, "capture process DEX failed", it)
+        }.getOrDefault(emptyList())
+    }
+
+    fun dumpRuntimeCode(dataRoot: String): Int {
+        if (!ensureLoaded()) return 0
+        return runCatching {
+            nativeDumpRuntimeCode(dataRoot)
+        }.onFailure {
+            Log.w(TAG, "dump runtime code failed", it)
+        }.getOrDefault(0)
+    }
+
     fun setPackerGuard(enabled: Boolean) {
         if (!ensureLoaded()) return
         runCatching { nativeSetPackerGuard(enabled) }
             .onFailure { Log.w(TAG, "set packer guard failed", it) }
+    }
+
+    fun installLateJniCompatibility() {
+        if (!ensureLoaded()) return
+        runCatching { nativeInstallLateJniCompatibility() }
+            .onFailure {
+                Log.w(TAG, "install late JNI compatibility failed", it)
+            }
+    }
+
+    fun installCompleteStaticFieldResolver() {
+        if (!ensureLoaded()) return
+        runCatching { nativeInstallCompleteStaticFieldResolver() }
+            .onFailure {
+                Log.w(TAG, "install complete static field resolver failed", it)
+            }
     }
 
     fun installKillGuard() {
@@ -333,9 +376,15 @@ object NativeEnvironmentBridge {
 
     @JvmStatic
     private external fun nativeInstallCrashTrace(path: String)
+    private external fun nativeInstallDexFileTrace()
+    private external fun nativeCaptureProcessDex(dataRoot: String): Array<String>?
+    private external fun nativeDumpRuntimeCode(dataRoot: String): Int
 
     @JvmStatic
     private external fun nativeSetPackerGuard(enabled: Boolean)
+
+    private external fun nativeInstallLateJniCompatibility()
+    private external fun nativeInstallCompleteStaticFieldResolver()
 
     @JvmStatic
     private external fun nativeInstallKillGuard(): Boolean

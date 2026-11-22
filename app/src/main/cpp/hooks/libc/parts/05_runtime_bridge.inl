@@ -313,6 +313,111 @@ int hook_fclose(FILE* file) {
     return g_real.fclose ? g_real.fclose(file) : fclose(file);
 }
 
+size_t hook_strlen(const char* value) {
+    const bool trace = string_trace_enabled();
+    const bool page_aligned = value != nullptr &&
+        (reinterpret_cast<uintptr_t>(value) & 0xfffU) == 0;
+    if (trace || page_aligned) {
+        const uintptr_t caller = reinterpret_cast<uintptr_t>(
+            __builtin_return_address(0)
+        );
+        Dl_info info{};
+        const bool resolved = g_real.dladdr != nullptr &&
+            g_real.dladdr(reinterpret_cast<void*>(caller), &info) != 0;
+        const uintptr_t base = resolved
+            ? reinterpret_cast<uintptr_t>(info.dli_fbase)
+            : 0;
+        char bytes[32] = {};
+        struct iovec local {
+            bytes,
+            sizeof(bytes)
+        };
+        struct iovec remote {
+            const_cast<char*>(value),
+            sizeof(bytes)
+        };
+        const long copied = value == nullptr
+            ? -1
+            : syscall(
+                SYS_process_vm_readv,
+                getpid(),
+                &local,
+                1,
+                &remote,
+                1,
+                0
+            );
+        const int copied_errno = copied < 0 ? errno : 0;
+        struct sigaction bus_action {};
+        if (g_real.sigactionCall != nullptr) {
+            g_real.sigactionCall(SIGBUS, nullptr, &bus_action);
+        }
+        if (trace) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                "NestSpaceNative",
+                "target-strlen value=%p caller=%p offset=%016" PRIxPTR
+                " bytes=%ld errno=%d bus_handler=%p bus_flags=%08x module=%s "
+                "%02x%02x%02x%02x%02x%02x%02x%02x"
+                "%02x%02x%02x%02x%02x%02x%02x%02x",
+                value,
+                reinterpret_cast<void*>(caller),
+                base == 0 ? 0 : caller - base,
+                copied,
+                copied_errno,
+                (bus_action.sa_flags & SA_SIGINFO) != 0
+                    ? reinterpret_cast<void*>(bus_action.sa_sigaction)
+                    : reinterpret_cast<void*>(bus_action.sa_handler),
+                bus_action.sa_flags,
+                resolved && info.dli_fname != nullptr ? info.dli_fname : "?",
+                static_cast<unsigned char>(bytes[0]),
+                static_cast<unsigned char>(bytes[1]),
+                static_cast<unsigned char>(bytes[2]),
+                static_cast<unsigned char>(bytes[3]),
+                static_cast<unsigned char>(bytes[4]),
+                static_cast<unsigned char>(bytes[5]),
+                static_cast<unsigned char>(bytes[6]),
+                static_cast<unsigned char>(bytes[7]),
+                static_cast<unsigned char>(bytes[8]),
+                static_cast<unsigned char>(bytes[9]),
+                static_cast<unsigned char>(bytes[10]),
+                static_cast<unsigned char>(bytes[11]),
+                static_cast<unsigned char>(bytes[12]),
+                static_cast<unsigned char>(bytes[13]),
+                static_cast<unsigned char>(bytes[14]),
+                static_cast<unsigned char>(bytes[15])
+            );
+        }
+        if (page_aligned && copied < 0) {
+            const long page_size = sysconf(_SC_PAGESIZE);
+            if (page_size > 0) {
+                void* replacement = mmap(
+                    const_cast<char*>(value),
+                    static_cast<size_t>(page_size),
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                    -1,
+                    0
+                );
+                if (replacement != MAP_FAILED) {
+                    memset(
+                        replacement,
+                        0,
+                        static_cast<size_t>(page_size)
+                    );
+                    __android_log_print(
+                        ANDROID_LOG_WARN,
+                        "NestSpaceNative",
+                        "restored stale string page=%p",
+                        replacement
+                    );
+                }
+            }
+        }
+    }
+    return g_real.strlenCall ? g_real.strlenCall(value) : strlen(value);
+}
+
 int hook_property_get(const char* name, char* value) {
     record_hook_event(kHookEventProperty);
     if (name != nullptr && property_trace_enabled()) {
@@ -490,7 +595,7 @@ int hook_dladdr(const void* address, Dl_info* info) {
     if (result == 0 || info == nullptr || info->dli_fname == nullptr) {
         return result;
     }
-    static thread_local char path[4096];
+    char path[4096] = {};
     ssize_t mapped_length = -1;
     if (virtual_path_from_actual(
             info->dli_fname,
@@ -498,7 +603,30 @@ int hook_dladdr(const void* address, Dl_info* info) {
             sizeof(path),
             &mapped_length
         )) {
-        info->dli_fname = path;
+        char trace[PROP_VALUE_MAX] = {};
+        __system_property_get(
+            "debug.nestspace.loader_path_trace",
+            trace
+        );
+        if (strcmp(trace, "1") == 0) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                "NestSpaceNative",
+                "target-dladdr address=%p actual=%s virtual=%s",
+                address,
+                info->dli_fname,
+                path
+            );
+        }
+        // dladdr consumers may retain more than one module path and compare
+        // pointers from separate calls. Keep each mapping stable for the
+        // process lifetime instead of reusing one thread-local buffer.
+        static std::mutex path_lock;
+        static std::unordered_map<std::string, std::string> stable_paths;
+        std::lock_guard<std::mutex> lock(path_lock);
+        auto& stable = stable_paths[info->dli_fname];
+        if (stable.empty()) stable = path;
+        info->dli_fname = stable.c_str();
     }
     return result;
 }

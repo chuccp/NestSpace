@@ -123,6 +123,9 @@
     if (strcmp(name, "memset") == 0 && object_diagnostics_enabled()) {
         return reinterpret_cast<void*>(hook_memset);
     }
+    if (strcmp(name, "strlen") == 0 && string_guard_enabled()) {
+        return reinterpret_cast<void*>(hook_strlen);
+    }
     if (strcmp(name, "fopen") == 0) return reinterpret_cast<void*>(hook_fopen);
     if (strcmp(name, "fopen64") == 0) return reinterpret_cast<void*>(hook_fopen64);
     if (strcmp(name, "fclose") == 0) return reinterpret_cast<void*>(hook_fclose);
@@ -181,7 +184,8 @@
     if (strcmp(name, "mmap") == 0 && jit_trace_enabled()) {
         return reinterpret_cast<void*>(hook_mmap);
     }
-    if (strcmp(name, "munmap") == 0 && jit_trace_enabled()) {
+    if (strcmp(name, "munmap") == 0 &&
+        (jit_trace_enabled() || retain_small_code_mappings_enabled())) {
         return reinterpret_cast<void*>(hook_munmap);
     }
     if (strcmp(name, "mprotect") == 0 && jit_trace_enabled()) {

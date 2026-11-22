@@ -39,6 +39,8 @@
 | --- | --- |
 | [架构与限制](architecture.md) | 容器实现、进程模型和已知边界 |
 | [单 APK 兼容运行时设计](single-apk-android-compatibility-runtime.md) | 免 Root 条件下的统一环境、Native Facade 和分阶段改造方案 |
+| [加固运行与原生 Android 复原研究](hardened-runtime-recovery.md) | 运行期 DEX 恢复结论、加固启动链和剩余原生环境差异 |
+| [加固运行时复原总结](hardened-runtime-summary.md) | 当前暂停点、根因证据、代码检查点、禁止重复实验和下一次接续步骤 |
 | [插件平台与 Java SDK](plugin-center.md) | Java SDK、Agent Tools/Hook、文件与密钥、任务/事件、UI、LLM Provider、目标版本匹配和插件中心计划 |
 | [插件编写指南](plugin-authoring.md) | 从创建源码插件到 Manifest、Java API、声明式设置、Host API、运行时代理、调试和发布 |
 | [整体性能审计与修改建议](performance-audit-and-improvement-plan.md) | 容器启动、Hook、进程池、截图和 target 热路径的性能优化路线 |

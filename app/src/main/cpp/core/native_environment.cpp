@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -170,6 +171,76 @@ void install_identity_jni_hooks(JNIEnv* env) {
     });
 }
 
+void suppress_runtime_native_exit(JNIEnv* env, jclass, jint status) {
+    __android_log_print(
+        ANDROID_LOG_WARN,
+        "NestSpaceNative",
+        "contained target Runtime.nativeExit status=%d",
+        static_cast<int>(status)
+    );
+    if (env == nullptr || env->ExceptionCheck()) return;
+    jclass throwable_class = env->FindClass("java/lang/Throwable");
+    jclass log_class = env->FindClass("android/util/Log");
+    jmethodID throwable_init = throwable_class == nullptr
+        ? nullptr
+        : env->GetMethodID(throwable_class, "<init>", "()V");
+    jmethodID stack_trace = log_class == nullptr
+        ? nullptr
+        : env->GetStaticMethodID(
+            log_class,
+            "getStackTraceString",
+            "(Ljava/lang/Throwable;)Ljava/lang/String;"
+        );
+    jobject throwable = throwable_init == nullptr
+        ? nullptr
+        : env->NewObject(throwable_class, throwable_init);
+    auto text = stack_trace == nullptr || throwable == nullptr
+        ? static_cast<jstring>(nullptr)
+        : static_cast<jstring>(
+            env->CallStaticObjectMethod(log_class, stack_trace, throwable)
+        );
+    if (text != nullptr) {
+        const char* chars = env->GetStringUTFChars(text, nullptr);
+        if (chars != nullptr) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                "NestSpaceNative",
+                "contained exit stack=%s",
+                chars
+            );
+            env->ReleaseStringUTFChars(text, chars);
+        }
+        env->DeleteLocalRef(text);
+    }
+    if (throwable != nullptr) env->DeleteLocalRef(throwable);
+    if (log_class != nullptr) env->DeleteLocalRef(log_class);
+    if (throwable_class != nullptr) env->DeleteLocalRef(throwable_class);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+void install_runtime_exit_guard(JNIEnv* env) {
+    if (env == nullptr) return;
+    jclass runtime_class = env->FindClass("java/lang/Runtime");
+    if (runtime_class == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return;
+    }
+    const JNINativeMethod method{
+        const_cast<char*>("nativeExit"),
+        const_cast<char*>("(I)V"),
+        reinterpret_cast<void*>(suppress_runtime_native_exit)
+    };
+    const jint result = env->RegisterNatives(runtime_class, &method, 1);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    __android_log_print(
+        ANDROID_LOG_DEBUG,
+        "NestSpaceNative",
+        "contained Runtime.nativeExit installed=%d",
+        static_cast<int>(result)
+    );
+    env->DeleteLocalRef(runtime_class);
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -293,7 +364,15 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
 
     nestspace::restore_hooks();
     nestspace::publish_environment(std::move(environment));
-    install_identity_jni_hooks(env);
+    char disable_binder_identity[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.disable_binder_identity",
+        disable_binder_identity
+    );
+    if (strcmp(disable_binder_identity, "1") != 0) {
+        install_identity_jni_hooks(env);
+    }
+    install_runtime_exit_guard(env);
     nestspace::install_jni_registration_hook(env);
     nestspace::refresh_hooks(false);
     static std::mutex watcher_lock;

@@ -13,8 +13,10 @@ import com.coke.nestspace.container.intent.ContainerIntentResolver
 import com.coke.nestspace.container.job.ContainerJobScheduler
 import com.coke.nestspace.container.loader.ContainerClassLoader
 import com.coke.nestspace.container.loader.ApkClassIndex
+import com.coke.nestspace.container.loader.CompleteClassBridge
 import com.coke.nestspace.container.loader.NativeLibs
 import com.coke.nestspace.container.loader.PluginClassPathResolver
+import com.coke.nestspace.container.loader.ProcessDexBridge
 import com.coke.nestspace.container.loader.RuntimeDexPathClassLoader
 import com.coke.nestspace.container.loader.SharedLibraries
 import com.coke.nestspace.container.loader.withContainerClassLoader
@@ -354,6 +356,7 @@ class ContainerSession private constructor(
     private val resources: Resources,
     val context: ContainerContext,
     val application: Application,
+    private val bootstrapApplication: Application?,
     val hostContext: Context,
     private val activityThread: Any,
     private val hostProcessState: HostProcessState,
@@ -474,6 +477,7 @@ class ContainerSession private constructor(
     }
 
     private val targetHosts = ConcurrentHashMap<Activity, StageAActivity>()
+    private val onCreateFieldRetry = ThreadLocal<Boolean>()
     private val identityLock = Any()
     private var hostIdentityDepth = 0
     private var hostIdentitySuspended = false
@@ -488,6 +492,9 @@ class ContainerSession private constructor(
     }
     private var fastNativeHookPump: ScheduledFuture<*>? = null
     private var slowNativeHookPump: ScheduledFuture<*>? = null
+    private var publishedLoadedApk: Any? = null
+    private val activityDexLock = Any()
+    private var activityDexCaptured = false
 
     @Volatile
     var navigator: StageAActivity? = null
@@ -545,8 +552,13 @@ class ContainerSession private constructor(
             providerManager.install()
         }
         startupCoordinator.run(AndroidStartupPhase.APPLICATION_CREATE) {
-            application.onCreate()
+            (bootstrapApplication ?: application).onCreate()
         }
+        refreshProcessDexBeforeActivity(
+            AndroidStartupPhase.PROCESS_DEX,
+            "application-created"
+        )
+        publishTargetOpPackage(application)
         refreshNativeHooks()
         startupCoordinator.run(AndroidStartupPhase.APPLICATION_COMPATIBILITY) {
             runtimeProfile?.afterApplicationCreated(
@@ -578,31 +590,46 @@ class ContainerSession private constructor(
                 application
             )
         }
-        runCatching {
-            withContainerClassLoader(loader) {
-                RuntimeBootGraphRecovery.apply(
-                    context = context,
-                    packageName = spec.packageName,
-                    dataRoot = virtualEnvironment.dataRoot,
-                    classLoader = loader
-                )
+        refreshProcessDexBeforeActivity(
+            AndroidStartupPhase.PROCESS_DEX,
+            "startup-compatibility-complete"
+        )
+        if (ExternalApplicationBootstrap.lastRealApplication != null) {
+            Log.d(TAG, "boot graph recovery skipped for external bootstrap")
+        } else {
+            runCatching {
+                withContainerClassLoader(loader) {
+                    RuntimeBootGraphRecovery.apply(
+                        context = context,
+                        packageName = spec.packageName,
+                        dataRoot = virtualEnvironment.dataRoot,
+                        classLoader = loader
+                    )
+                }
+            }.onSuccess { result ->
+                if (result != null) {
+                    Log.d(
+                        TAG,
+                        "boot graph recovery applied=${result.applied} " +
+                            "skipped=${result.skipped} errors=${result.errors}"
+                    )
+                }
+            }.onFailure {
+                Log.w(TAG, "boot graph recovery failed", it)
             }
-        }.onSuccess { result ->
-            if (result != null) {
-                Log.d(
-                    TAG,
-                    "boot graph recovery applied=${result.applied} " +
-                        "skipped=${result.skipped} errors=${result.errors}"
-                )
-            }
-        }.onFailure {
-            Log.w(TAG, "boot graph recovery failed", it)
         }
         // Target Application.onCreate often registers its own uncaught
         // exception handler (crash reporting) that terminates the host process.
         // Re-install the guard so target-thread failures stay contained.
         startupCoordinator.run(AndroidStartupPhase.CRASH_GUARD) {
             TargetCrashGuard.install(force = true)
+        }
+        if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                "debug.nestspace.clear_native_environment_before_activity"
+            ) == "1"
+        ) {
+            NativeEnvironmentBridge.clear()
+            Log.w(TAG, "cleared native environment before first activity")
         }
         startupCoordinator.mark(AndroidStartupPhase.READY, 0L)
         startNativeHookPump()
@@ -621,6 +648,9 @@ class ContainerSession private constructor(
 
     internal fun refreshNativeHooks(scanElfFallback: Boolean = false) {
         if (!NativeHookTrial.enabled) return
+        if (ExternalApplicationBootstrap.lastRealApplication != null) {
+            return
+        }
         val snapshot = NativeEnvironmentBridge.refreshHooks(scanElfFallback) ?: return
         if (snapshot.hookCount == lastNativeHookCount &&
             snapshot.scannedModuleCount == lastNativeScannedCount &&
@@ -650,6 +680,7 @@ class ContainerSession private constructor(
 
     /** Coalesces lifecycle-triggered refreshes onto the native worker. */
     internal fun scheduleNativeHookRefresh() {
+        if (ExternalApplicationBootstrap.lastRealApplication != null) return
         if (!nativeRefreshPending.compareAndSet(false, true)) return
         runCatching {
             nativeHookExecutor.execute {
@@ -666,6 +697,7 @@ class ContainerSession private constructor(
     }
 
     private fun startNativeHookPump() {
+        if (ExternalApplicationBootstrap.lastRealApplication != null) return
         synchronized(nativeHookExecutor) {
             if (fastNativeHookPump != null || slowNativeHookPump != null) return
             fastNativeHookPump = nativeHookExecutor.scheduleAtFixedRate(
@@ -837,8 +869,91 @@ class ContainerSession private constructor(
             val appInfoField = bound.javaClass.getDeclaredField("appInfo")
             appInfoField.isAccessible = true
             appInfoField.set(bound, context.applicationInfo)
+            if (ExternalApplicationBootstrap.lastRealApplication != null) {
+                val targetLoadedApk = bound.javaClass.getDeclaredField("info")
+                    .apply { isAccessible = true }
+                    .get(bound)
+                if (targetLoadedApk != null) {
+                    applyTargetLoadedApkIdentity(targetLoadedApk, loader)
+                    publishedLoadedApk = targetLoadedApk
+                    val packages = threadClass.getDeclaredField("mPackages")
+                        .apply { isAccessible = true }
+                        .get(activityThread)
+                    if (packages is MutableMap<*, *>) {
+                        @Suppress("UNCHECKED_CAST")
+                        (packages as MutableMap<String, Any>)[spec.packageName] =
+                            java.lang.ref.WeakReference(targetLoadedApk)
+                    }
+                    Log.d(
+                        TAG,
+                        "published target LoadedApk application=${application.javaClass.name}"
+                    )
+                }
+            }
         }.onFailure {
             Log.w(TAG, "publish bound application info failed", it)
+        }
+    }
+
+    private fun createTargetLoadedApk(
+        activityThread: Any,
+        targetLoader: ClassLoader
+    ): Any {
+        val activityThreadClass = Class.forName("android.app.ActivityThread")
+        val compatibilityClass = Class.forName(
+            "android.content.res.CompatibilityInfo"
+        )
+        val compatibility = compatibilityClass
+            .getField("DEFAULT_COMPATIBILITY_INFO")
+            .get(null)
+        val loadedApkClass = Class.forName("android.app.LoadedApk")
+        val loadedApk = loadedApkClass
+            .getDeclaredConstructor(
+                activityThreadClass,
+                ApplicationInfo::class.java,
+                compatibilityClass,
+                ClassLoader::class.java,
+                Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType
+            )
+            .apply { isAccessible = true }
+            .newInstance(
+                activityThread,
+                context.applicationInfo,
+                compatibility,
+                targetLoader,
+                false,
+                true,
+                false
+            )
+        applyTargetLoadedApkIdentity(loadedApk, targetLoader)
+        return loadedApk
+    }
+
+    private fun applyTargetLoadedApkIdentity(
+        loadedApk: Any,
+        targetLoader: ClassLoader
+    ) {
+        mapOf(
+            "mApplication" to (
+                ExternalApplicationBootstrap.lastRealApplication ?: application
+            ),
+            "mApplicationInfo" to context.applicationInfo,
+            "mClassLoader" to targetLoader,
+            "mDefaultClassLoader" to targetLoader,
+            "mPackageName" to spec.packageName,
+            "mAppDir" to spec.baseApkPath,
+            "mResDir" to spec.baseApkPath,
+            "mDataDir" to context.dataDir.absolutePath,
+            "mResources" to resources
+        ).forEach { (name, value) ->
+            runCatching {
+                findField(loadedApk.javaClass, name)
+                    ?.set(loadedApk, value)
+            }.onFailure {
+                Log.w(TAG, "initialize target LoadedApk field failed: $name", it)
+            }
         }
     }
 
@@ -974,18 +1089,37 @@ class ContainerSession private constructor(
             "resolve activity requested=$className info=${info.name} " +
                 "target=${info.targetActivity}"
         )
+        if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                "debug.nestspace.crash_trace"
+            ) == "1"
+        ) {
+            NativeEnvironmentBridge.installCrashTrace(spec.dataDir)
+        }
+        refreshProcessDexBeforeActivity(
+            AndroidStartupPhase.PROCESS_DEX,
+            "first-activity"
+        )
+        val preparePauseMs = NativeEnvironmentBridge
+            .readPropertyForDiagnostics(
+                "debug.nestspace.activity_prepare_pause_ms"
+            )
+            ?.toLongOrNull()
+            ?.coerceAtLeast(0L)
+            ?: 0L
+        if (preparePauseMs > 0L) {
+            Log.w(
+                TAG,
+                "pausing before target Activity class load for ${preparePauseMs}ms"
+            )
+            logClassLoaderShape("session", loader)
+            application.classLoader?.let {
+                logClassLoaderShape("application", it)
+            }
+            Thread.sleep(preparePauseMs)
+        }
         val activityClass = fallbackActivityClass
             ?: (info.targetActivity?.takeIf { it.isNotBlank() } ?: info.name)
         val targetClass = loader.loadClass(activityClass).asSubclass(Activity::class.java)
-        if (info.screenOrientation !=
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        ) {
-            runCatching {
-                host.requestedOrientation = info.screenOrientation
-            }.onFailure {
-                Log.w(TAG, "target orientation apply failed: ${info.name}", it)
-            }
-        }
         runtimeProfile?.beforeTargetActivity(
             applicationSpec,
             loader,
@@ -1074,12 +1208,66 @@ class ContainerSession private constructor(
         try {
             instrumentation.callActivityOnCreate(target, savedState)
         } catch (t: Throwable) {
+            inspectMissingField(t, loader)
+            val continueAfterFieldOperation =
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.continue_after_oncreate_field_error"
+                ) == "1" &&
+                    generateSequence(t) { it.cause }
+                        .any { cause ->
+                            cause.message?.contains(
+                                "AGET_OBJECT",
+                                ignoreCase = true
+                            ) == true ||
+                                cause.message?.contains(
+                                    "DoFieldOperate",
+                                    ignoreCase = true
+                                ) == true
+                        }
+            if (continueAfterFieldOperation) {
+                Log.w(
+                    TAG,
+                    "continuing target Activity after field operation failure",
+                    t
+                )
+                return target
+            }
+            val retryAfterFieldFailure =
+                onCreateFieldRetry.get() != true &&
+                    generateSequence(t) { it.cause }
+                        .any { cause ->
+                            cause.message?.contains(
+                                "DoFieldOperate",
+                                ignoreCase = true
+                            ) == true ||
+                                cause.message?.contains(
+                                    "AGET_OBJECT",
+                                    ignoreCase = true
+                            ) == true
+                        }
             // A throwing target onCreate leaves the Activity attached to the
             // host token; without cleanup targetHosts would retain it for the
             // life of the container process.
             targetHosts.remove(target)
             runCatching { instrumentation.callActivityOnDestroy(target) }
                 .onFailure { Log.w(TAG, "cleanup failed target destroy", it) }
+            if (retryAfterFieldFailure) {
+                Log.w(TAG, "retrying target Activity after field failure", t)
+                onCreateFieldRetry.set(true)
+                try {
+                    Log.w(TAG, "retrying target Activity after field operation")
+                    Thread.sleep(100L)
+                    return createActivityLocked(
+                        host,
+                        className,
+                        sourceIntent,
+                        savedState,
+                        fallbackActivityClass
+                    )
+                } finally {
+                    onCreateFieldRetry.remove()
+                }
+            }
             if (fallbackActivityClass == null && info.targetActivity != null) {
                 val concreteAliasClass = runCatching {
                     loader.loadClass(info.name)
@@ -1105,6 +1293,61 @@ class ContainerSession private constructor(
             }
             throw t
         }
+        val activityCalledField = runCatching {
+            Activity::class.java
+                .getDeclaredField("mCalled")
+                .apply { isAccessible = true }
+        }.getOrNull()
+        val activityCalled = activityCalledField
+            ?.let { runCatching { it.getBoolean(target) }.getOrNull() }
+            ?: true
+        if (!activityCalled) {
+            Log.w(
+                TAG,
+                "target Activity returned without calling super.onCreate: " +
+                    target.javaClass.name
+            )
+            val postCreatePauseMs = NativeEnvironmentBridge
+                .readPropertyForDiagnostics(
+                    "debug.nestspace.activity_post_create_pause_ms"
+                )
+                ?.toLongOrNull()
+                ?.coerceAtLeast(0L)
+                ?: 0L
+            if (postCreatePauseMs > 0L) {
+                Log.w(
+                    TAG,
+                    "pausing after target Activity onCreate for ${postCreatePauseMs}ms"
+                )
+                Thread.sleep(postCreatePauseMs)
+            }
+            if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.activity_oncreate_recovery"
+                ) == "1"
+            ) {
+                runCatching {
+                    Activity::class.java
+                        .getDeclaredMethod("onCreate", Bundle::class.java)
+                        .apply { isAccessible = true }
+                        .invoke(target, savedState)
+                }.onFailure {
+                    Log.w(TAG, "framework Activity onCreate fallback failed", it)
+                }
+                runCatching {
+                    instrumentation.callActivityOnCreate(target, savedState)
+                }.onFailure {
+                    Log.w(TAG, "target Activity onCreate retry failed", it)
+                }
+                if (activityCalledField != null &&
+                    !runCatching { activityCalledField.getBoolean(target) }
+                        .getOrDefault(true)
+                ) {
+                    runCatching {
+                        activityCalledField.setBoolean(target, true)
+                    }
+                }
+            }
+        }
         Log.d(
             TAG,
             "target created ${target.javaClass.name} " +
@@ -1112,6 +1355,46 @@ class ContainerSession private constructor(
                 "finishing=${target.isFinishing}"
         )
         return target
+    }
+
+    private fun inspectMissingField(error: Throwable, loader: ClassLoader) {
+        if (error !is NoSuchFieldError ||
+            NativeEnvironmentBridge.readPropertyForDiagnostics(
+                "debug.nestspace.inspect_missing_fields"
+            ) != "1"
+        ) {
+            return
+        }
+        val message = error.message.orEmpty()
+        val owner = Regex("""class "L([^;]+);"""")
+            .find(message)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.replace('/', '.')
+            ?: return
+        val fieldName = Regex("""field "([^"]+)"""")
+            .find(message)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return
+        val type = Regex("""no "([^"]+)" field""")
+            .find(message)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: "?"
+        val resolved = runCatching { loader.loadClass(owner) }.getOrNull()
+        val fields = resolved
+            ?.let { runCatching { it.declaredFields.toList() }.getOrNull() }
+            .orEmpty()
+        Log.e(
+            TAG,
+            "missing field inspection owner=$owner type=$type name=$fieldName " +
+                "classLoader=${resolved?.classLoader?.javaClass?.name}@" +
+                "${System.identityHashCode(resolved?.classLoader)} " +
+                "fields=${fields.size} present=${fields.any { it.name == fieldName }} " +
+                "matching=${fields.filter { it.name == fieldName }.joinToString { it.type.name }}",
+            error
+        )
     }
 
     private fun launchActivityThroughFramework(
@@ -1156,15 +1439,19 @@ class ContainerSession private constructor(
                     Boolean::class.javaPrimitiveType
                 )
                 .apply { isAccessible = true }
-            val targetLoadedApk = loadedApkConstructor.newInstance(
-                thread,
-                context.applicationInfo,
-                compatibility,
-                loader,
-                false,
-                true,
-                false
-            )
+            val targetLoadedApk = publishedLoadedApk
+                ?: loadedApkConstructor.newInstance(
+                    thread,
+                    context.applicationInfo,
+                    compatibility,
+                    loader,
+                    false,
+                    true,
+                    false
+                ).also {
+                    applyTargetLoadedApkIdentity(it, loader)
+                    publishedLoadedApk = it
+                }
             mapOf(
                 "mApplication" to application,
                 "mApplicationInfo" to context.applicationInfo,
@@ -1530,6 +1817,12 @@ class ContainerSession private constructor(
     }
 
     private fun logJniSurface(activity: Activity) {
+        if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                "debug.nestspace.jni_surface_log"
+            ) != "1"
+        ) {
+            return
+        }
         var type: Class<*>? = activity.javaClass
         var depth = 0
         while (type != null && depth < 8 && type != Activity::class.java) {
@@ -1662,6 +1955,144 @@ class ContainerSession private constructor(
         themeField.set(activity, theme)
     }
 
+    private fun logClassLoaderShape(label: String, candidate: ClassLoader) {
+        runCatching {
+            val base = Class.forName("dalvik.system.BaseDexClassLoader")
+            val pathList = base.getDeclaredField("pathList").apply {
+                isAccessible = true
+            }.get(candidate)
+            val elementsField = Class.forName("dalvik.system.DexPathList")
+                .getDeclaredField("dexElements")
+                .apply { isAccessible = true }
+            val elements = elementsField.get(pathList) as? Array<*>
+            Log.d(
+                TAG,
+                "runtime dex shape $label loaderId=${System.identityHashCode(candidate)} " +
+                    "loader=${candidate.javaClass.name} " +
+                    "parent=${candidate.parent?.javaClass?.name} " +
+                    "pathListId=${System.identityHashCode(pathList)} " +
+                    "elements=${elements?.size ?: -1}"
+            )
+            elements?.forEachIndexed { index, value ->
+                if (value == null) {
+                    Log.d(TAG, "runtime dex element $label[$index]=null")
+                    return@forEachIndexed
+                }
+                val elementClass = Class.forName(
+                    "dalvik.system.DexPathList\$Element"
+                )
+                val dexFile = runCatching {
+                    elementClass.getDeclaredField("dexFile").apply {
+                        isAccessible = true
+                    }.get(value)
+                }.getOrNull()
+                val path = runCatching {
+                    elementClass.getDeclaredField("path").apply {
+                        isAccessible = true
+                    }.get(value)
+                }.getOrNull()
+                val dexFileClass = dexFile?.javaClass
+                val fileName = dexFileClass?.declaredFields
+                    ?.firstOrNull { it.name == "mFileName" }
+                    ?.apply { isAccessible = true }
+                    ?.let { runCatching { it.get(dexFile) }.getOrNull() }
+                val cookie = dexFileClass?.declaredFields
+                    ?.firstOrNull { it.name == "mCookie" }
+                    ?.apply { isAccessible = true }
+                    ?.let { runCatching { it.get(dexFile) }.getOrNull() }
+                val internalCookie = dexFileClass?.declaredFields
+                    ?.firstOrNull { it.name == "mInternalCookie" }
+                    ?.apply { isAccessible = true }
+                    ?.let { runCatching { it.get(dexFile) }.getOrNull() }
+                Log.d(
+                    TAG,
+                    "runtime dex element $label[$index] " +
+                        "elementId=${System.identityHashCode(value)} " +
+                        "path=$path " +
+                        "dexId=${dexFile?.let(System::identityHashCode)} " +
+                        "fileName=$fileName " +
+                        "cookieId=${cookie?.let(System::identityHashCode)} " +
+                        "cookieSize=${(cookie as? LongArray)?.size ?: -1} " +
+                        "cookie=${(cookie as? LongArray)?.joinToString(",")} " +
+                        "internalCookieId=${internalCookie?.let(System::identityHashCode)} " +
+                        "internalCookieSize=${(internalCookie as? LongArray)?.size ?: -1} " +
+                        "internalCookie=${(internalCookie as? LongArray)?.joinToString(",")}"
+                )
+            }
+        }.onFailure {
+            Log.w(TAG, "runtime dex shape $label unavailable", it)
+        }
+    }
+
+    /**
+     * ActivityThread normally creates the application context with the
+     * installed package as mOpPackageName. The container creates it with the
+     * host package first so framework services remain valid while the wrapper
+     * application initializes. Once the app has completed onCreate, expose the
+     * target name to target/native code.
+     */
+    private fun publishTargetOpPackage(application: Application) {
+        runCatching {
+            var current: Context = application
+            while (current is ContextWrapper) {
+                current = current.baseContext
+            }
+            var type: Class<*>? = current.javaClass
+            var field: Field? = null
+            while (type != null && field == null) {
+                field = runCatching {
+                    type!!.getDeclaredField("mOpPackageName").apply {
+                        isAccessible = true
+                    }
+                }.getOrNull()
+                type = type.superclass
+            }
+            val targetField = field ?: return@runCatching
+            targetField.set(current, spec.packageName)
+            Log.d(
+                TAG,
+                "published target op package=${spec.packageName}"
+            )
+        }.onFailure {
+            Log.w(TAG, "publish target op package failed", it)
+        }
+    }
+
+    private fun refreshProcessDexBeforeActivity(
+        phase: AndroidStartupPhase,
+        reason: String
+    ) {
+        if (ExternalApplicationBootstrap.lastRealApplication == null) return
+        if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                "debug.nestspace.disable_process_dex_bridge"
+            ) == "1"
+        ) {
+            return
+        }
+        if (reason == "first-activity") {
+            synchronized(activityDexLock) {
+                if (activityDexCaptured) return
+                activityDexCaptured = true
+            }
+        }
+        startupCoordinator.runOptional(phase) {
+            val added = ProcessDexBridge.bindTargetDex(
+                targetLoader = loader,
+                targetPackage = spec.packageName,
+                entryApplication = application.javaClass.name,
+                launcherActivity = spec.launcherActivity,
+                dataRoot = File(spec.dataDir)
+            )
+            CompleteClassBridge.prepare(File(spec.dataDir), loader)
+            Log.d(
+                TAG,
+                "process DEX refresh reason=$reason added=$added"
+            )
+        }?.let {
+            Log.w(TAG, "process DEX refresh failed reason=$reason", it)
+        }
+    }
+
     private fun hostToken(host: Activity): IBinder =
         Activity::class.java
             .getDeclaredField("mToken")
@@ -1741,8 +2172,15 @@ class ContainerSession private constructor(
                     processSentinel?.markPhase(phase.name)
                 }
             )
+            if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.dexfile_trace"
+                ) == "1"
+            ) {
+                NativeEnvironmentBridge.installDexFileTrace()
+            }
             val classLoaderStartedAt = SystemClock.elapsedRealtime()
             HiddenApiCompat.ensure()
+            applyTargetRuntimeIdentity(spec)
             val hostProcessState = HostProcessState.capture(
                 hostResources = HostIdentity.resources
                     ?: runCatching { host.resources }.getOrNull(),
@@ -1780,10 +2218,60 @@ class ContainerSession private constructor(
             } else {
                 PluginClassPathResolver.Mount.EMPTY
             }
+            val externalApplicationName = spec.applicationInfo.className
+            val externalApplication =
+                ExternalApplicationBootstrap.isExternalApplication(
+                    externalApplicationName,
+                    spec.packageName
+                )
+            val useDynamicExternalLoader =
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.external_dynamic_loader"
+                ) == "1"
+            val useApkOnlyExternalClasspath =
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.external_apk_only_classpath"
+                ) == "1"
+            val useCompleteExternalClasspath =
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.external_complete_classpath"
+                ) == "1"
+            val cachedExternalEntry = ExternalApplicationBootstrap.cachedEntryName(
+                dataRoot,
+                spec.baseApkPath
+            )
+            val bootstrapDex = if (
+                externalApplication && cachedExternalEntry != null
+            ) {
+                ProcessDexBridge.cachedDexFilesContaining(
+                    dataRoot,
+                    listOf(cachedExternalEntry)
+                )
+            } else {
+                emptyList()
+            }
             // Keep the platform loader as parent and the target APK first so
             // hardened startup code sees the same class path shape as a
             // directly installed app.
-            val classPath = (listOf(baseClassPath) + pluginMount.apkPaths)
+            val selectedClassPath = if (externalApplication) {
+                // A normal installed application has its APK (and split
+                // APKs) on the code path. On later launches, add only the DEX
+                // defining the cached concrete Application so the wrapper can
+                // mount it without changing the platform loader shape.
+                if (useApkOnlyExternalClasspath) {
+                    apkPaths
+                } else if (useCompleteExternalClasspath) {
+                    apkPaths + ProcessDexBridge.cachedDexFiles(dataRoot)
+                        .map(File::getAbsolutePath)
+                } else if (useDynamicExternalLoader) {
+                    apkPaths
+                } else {
+                    apkPaths + bootstrapDex.map(File::getAbsolutePath)
+                }
+            } else {
+                listOf(baseClassPath)
+            }
+            val classPath = (selectedClassPath + pluginMount.apkPaths)
                 .filter { it.isNotBlank() }
                 .joinToString(File.pathSeparator)
             val nativeAbis = spec.nativeAbis
@@ -1850,44 +2338,59 @@ class ContainerSession private constructor(
                 spec.packageName
             )
 
-            val nativeSearchPath = (
+            val installedNativeSearchDirectories =
                 listOfNotNull(runtimeNativeLibs?.absolutePath) +
-                    runtimeNativeLibraries.directories.map(File::getAbsolutePath) +
+                    if (externalApplication) {
+                        listOfNotNull(
+                            nativeAbi?.let {
+                                "${spec.baseApkPath}!/lib/$it"
+                            }
+                        )
+                    } else {
+                        runtimeNativeLibraries.directories
+                            .map(File::getAbsolutePath)
+                    }
+            val nativeSearchPath = (
+                installedNativeSearchDirectories +
                     pluginMount.nativeLibraryDirs
                 )
                 .distinct()
                 .joinToString(File.pathSeparator)
                 .ifBlank { null }
-            val cachedExternalEntry = ExternalApplicationBootstrap.cachedEntryName(
-                dataRoot,
-                spec.baseApkPath
-            )
-            val externalApplication = ExternalApplicationBootstrap.isExternalApplication(
-                spec.applicationInfo.className,
-                spec.packageName
-            )
-            val useDirectExternalLoader =
-                externalApplication && cachedExternalEntry != null
-            var loader: ClassLoader = if (useDirectExternalLoader) {
-                PathClassLoader(
-                    classPath,
-                    nativeSearchPath,
-                    ClassLoader.getSystemClassLoader().parent
-                )
+            var loader: ClassLoader = if (externalApplication) {
+                if (useDynamicExternalLoader) {
+                    RuntimeDexPathClassLoader(
+                        classPath,
+                        nativeSearchPath,
+                        ClassLoader.getSystemClassLoader().parent,
+                        dataRoot,
+                        File(dataRoot, "code_cache")
+                    )
+                } else {
+                    createExternalApplicationClassLoader(
+                        classPath,
+                        nativeSearchPath,
+                        ClassLoader.getSystemClassLoader().parent,
+                        appInfo.targetSdkVersion,
+                        appInfo.dataDir,
+                        sharedLibraryPaths
+                    )
+                }
             } else {
                 RuntimeDexPathClassLoader(
                     classPath,
                     nativeSearchPath,
                     ClassLoader.getSystemClassLoader().parent,
                     dataRoot,
-                    File(dataRoot, "code_cache"),
-                    cachedExternalEntry
+                    File(dataRoot, "code_cache")
                 )
             }
             Log.d(
                 TAG,
                 "initial class loader=${loader.javaClass.name} " +
-                    "directExternal=$useDirectExternalLoader"
+                    "external=$externalApplication " +
+                    "bootstrapDex=${bootstrapDex.size} " +
+                    "cachedExternalEntry=${cachedExternalEntry ?: "<none>"}"
             )
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_CODE)
             appInfo.dataDir = "/data/user/0/${spec.packageName}"
@@ -1933,14 +2436,21 @@ class ContainerSession private constructor(
             runCatching {
                 appInfo.javaClass
                     .getField("splitSourceDirs")
-                    .set(appInfo, spec.splitApkPaths.toTypedArray())
+                    .set(
+                        appInfo,
+                        spec.splitApkPaths
+                            .takeIf { it.isNotEmpty() }
+                            ?.toTypedArray()
+                    )
             }
             // Some packers expose their decrypted runtime DEX through the
             // AppComponentFactory hook that Android normally calls while
             // creating LoadedApk. Manually attached virtual applications skip
             // that framework path, so run the hook before attaching the target.
             loader = ContainerCompat.installRuntimeClassLoader(spec, loader, appInfo)
-            exposeVirtualClassPath(loader, installLayout)
+            if (!externalApplication) {
+                exposeVirtualClassPath(loader, installLayout)
+            }
             // Some native packers replace the VM hidden-API policy while
             // installing their runtime loader. Re-apply the exemption before
             // the Activity attachment path uses framework-private fields.
@@ -2029,14 +2539,19 @@ class ContainerSession private constructor(
             // Application: the PackageManager handed to it must already be an
             // ApplicationPackageManager with mPM pointing at the container's
             // IPackageManager (some security SDKs read that field from JNI).
-            SystemServiceIdentity.install(
-                spec = spec,
-                hostPackage = HostIdentity.packageName,
-                contexts = listOf(host.applicationContext, context),
-                targetResources = resources,
-                registry = virtualPackages,
-                permissions = context.permissions
-            )
+            if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.disable_system_service_identity"
+                ) != "1"
+            ) {
+                SystemServiceIdentity.install(
+                    spec = spec,
+                    hostPackage = HostIdentity.packageName,
+                    contexts = listOf(host.applicationContext, context),
+                    targetResources = resources,
+                    registry = virtualPackages,
+                    permissions = context.permissions
+                )
+            }
             val virtualPackageManager = ContainerPackageManager(
                 host.applicationContext,
                 spec,
@@ -2077,21 +2592,26 @@ class ContainerSession private constructor(
             context.virtualEnvironment = virtualEnvironment
             VirtualEnvironmentRegistry.install(virtualEnvironment)
             appInfo.uid = virtualEnvironment.observedUid
-            NativeEnvironmentBridge.install(
-                virtualEnvironment,
-                VirtualEnvironmentRegistry.identitySnapshot(),
-                HostIdentity.packageName,
-                HostIdentity.application
-                    ?.applicationInfo
-                    ?.sourceDir
-                    .orEmpty(),
-                HostIdentity.application
-                    ?.applicationInfo
-                    ?.nativeLibraryDir
-                    .orEmpty(),
-                runtimeNativeLibraries.directories.map(File::getAbsolutePath),
-                runtimeNativeLibraries.files.map(File::getAbsolutePath)
-            )
+            if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.disable_native_environment"
+                ) != "1"
+            ) {
+                NativeEnvironmentBridge.install(
+                    virtualEnvironment,
+                    VirtualEnvironmentRegistry.identitySnapshot(),
+                    HostIdentity.packageName,
+                    HostIdentity.application
+                        ?.applicationInfo
+                        ?.sourceDir
+                        .orEmpty(),
+                    HostIdentity.application
+                        ?.applicationInfo
+                        ?.nativeLibraryDir
+                        .orEmpty(),
+                    runtimeNativeLibraries.directories.map(File::getAbsolutePath),
+                    runtimeNativeLibraries.files.map(File::getAbsolutePath)
+                )
+            }
             if (com.coke.nestspace.BuildConfig.DEBUG) {
                 runCatching {
                     File(dataRoot, "native-maps.txt").writeText(
@@ -2109,8 +2629,18 @@ class ContainerSession private constructor(
             // Packer checks run during Application class loading. Install the
             // process guard before attachBaseContext, not only before the
             // first target Activity is created.
-            NativeEnvironmentBridge.setPackerGuard(false)
+            NativeEnvironmentBridge.setPackerGuard(
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.runtime_table_guard"
+                ) == "1"
+            )
             NativeEnvironmentBridge.installCrashTrace(spec.dataDir)
+            if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.dexfile_trace"
+                ) == "1"
+            ) {
+                NativeEnvironmentBridge.installDexFileTrace()
+            }
             NativeEnvironmentBridge.snapshot()?.let { native ->
                 Log.d(
                     TAG,
@@ -2186,7 +2716,9 @@ class ContainerSession private constructor(
                     .getField("splitSourceDirs")
                     .set(
                         appInfo,
-                        installLayout.virtualSplitApkPaths.toTypedArray()
+                        installLayout.virtualSplitApkPaths
+                            .takeIf { it.isNotEmpty() }
+                            ?.toTypedArray()
                     )
             }
             // Native runtime loaders may run package checks in JNI_OnLoad
@@ -2217,10 +2749,31 @@ class ContainerSession private constructor(
                 loader,
                 context
             )
-            NativeEnvironmentBridge.installSyscallGateway()
+            if (externalApplication) {
+                if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                        "debug.nestspace.force_syscall_gateway"
+                    ) == "1"
+                ) {
+                    val installed =
+                        NativeEnvironmentBridge.installSyscallGateway()
+                    Log.d(
+                        TAG,
+                        "syscall gateway for external bootstrap installed=$installed"
+                    )
+                } else {
+                    // External bootstrap wrappers inspect seccomp and
+                    // inline-hook state before unpacking their code.
+                    Log.d(TAG, "syscall gateway skipped for external bootstrap")
+                }
+            } else {
+                NativeEnvironmentBridge.installSyscallGateway()
+            }
+            if (externalApplication && bootstrapDex.isNotEmpty()) {
+                warmResourceClasses(loader)
+            }
             ContainerLaunchProgress.advance(LaunchProgressStage.ATTACHING_APPLICATION)
             val applicationAttachStartedAt = SystemClock.elapsedRealtime()
-            val application = ProcessNameCompat.withProcessName(spec.targetProcessName) {
+            val attachedApplication = ProcessNameCompat.withProcessName(spec.targetProcessName) {
                 withContainerClassLoader(loader) {
                     attachApplication(
                         spec,
@@ -2230,6 +2783,50 @@ class ContainerSession private constructor(
                         runtimeNativeLibraries
                     )
                 }
+            }
+            val application = if (externalApplication) {
+                ExternalApplicationBootstrap.lastRealApplication
+                    ?: attachedApplication
+            } else {
+                attachedApplication
+            }
+            if (externalApplication &&
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.disable_process_dex_bridge"
+                ) != "1"
+            ) {
+                ProcessDexBridge.bindTargetDex(
+                    targetLoader = loader,
+                    targetPackage = spec.packageName,
+                    entryApplication = application.javaClass.name,
+                    launcherActivity = spec.launcherActivity,
+                    dataRoot = File(spec.dataDir)
+                )
+                CompleteClassBridge.prepare(File(spec.dataDir), loader)
+                if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                        "debug.nestspace.complete_field_resolver"
+                    ) == "1"
+                ) {
+                    NativeEnvironmentBridge.installCompleteStaticFieldResolver()
+                }
+                if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                        "debug.nestspace.dump_runtime_code"
+                    ) == "1"
+                ) {
+                    NativeEnvironmentBridge.dumpRuntimeCode(spec.dataDir)
+                }
+            }
+            if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.native_field_fallback"
+                ) in setOf("1", "trace", "value") ||
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.runtime_field_hook"
+                ) == "1"
+            ) {
+                NativeEnvironmentBridge.installLateJniCompatibility()
+            }
+            if (externalApplication) {
+                warmResourceClasses(loader)
             }
             startupCoordinator.mark(
                 AndroidStartupPhase.APPLICATION_ATTACH,
@@ -2269,6 +2866,9 @@ class ContainerSession private constructor(
                         resources = resources,
                         context = context,
                         application = application,
+                        bootstrapApplication = attachedApplication.takeIf {
+                            it !== application
+                        },
                         hostContext = host.applicationContext,
                         activityThread = activityThread,
                         hostProcessState = hostProcessState,
@@ -2295,6 +2895,7 @@ class ContainerSession private constructor(
          * may call PackageManager from JNI_OnLoad, which runs during class
          * loading and before attachBaseContext.
          */
+        @SuppressLint("BlockedPrivateApi")
         private fun publishVirtualIdentity(
             activityThread: Any,
             context: Context,
@@ -2334,9 +2935,24 @@ class ContainerSession private constructor(
                             .set(loadedApk, loader)
                     }
                     runCatching {
+                        loadedApkClass.getDeclaredField("mDefaultClassLoader")
+                            .apply { isAccessible = true }
+                            .set(loadedApk, loader)
+                    }
+                    runCatching {
                         loadedApkClass.getDeclaredField("mDataDir")
                             .apply { isAccessible = true }
                             .set(loadedApk, context.applicationInfo.dataDir)
+                    }
+                    runCatching {
+                        loadedApkClass.getDeclaredField("mAppDir")
+                            .apply { isAccessible = true }
+                            .set(loadedApk, context.applicationInfo.sourceDir)
+                    }
+                    runCatching {
+                        loadedApkClass.getDeclaredField("mResDir")
+                            .apply { isAccessible = true }
+                            .set(loadedApk, context.applicationInfo.publicSourceDir)
                     }
                 }
             }.onFailure { Log.w(TAG, "prepublish appInfo failed", it) }
@@ -2417,6 +3033,259 @@ class ContainerSession private constructor(
             }
         }
 
+        /**
+         * Direct installs initialize ART with the target package's target SDK.
+         * The host process starts with NestSpace's own value, which also
+         * changes linker namespaces and compatibility branches in hardened
+         * runtimes. Each container slot hosts one target, so mirror the value
+         * before creating its class loader.
+         */
+        private fun applyTargetRuntimeIdentity(spec: ContainerLaunchSpec) {
+            val targetSdk = spec.applicationInfo.targetSdkVersion
+            if (targetSdk <= 0) return
+            runCatching {
+                val type = Class.forName("dalvik.system.VMRuntime")
+                val runtime = type.getMethod("getRuntime").invoke(null)
+                val getter = type.getMethod("getTargetSdkVersion")
+                val previous = getter.invoke(runtime) as Int
+                if (previous != targetSdk) {
+                    type.getMethod(
+                        "setTargetSdkVersion",
+                        Int::class.javaPrimitiveType
+                    ).invoke(runtime, targetSdk)
+                }
+                Log.d(
+                    TAG,
+                    "target SDK version previous=$previous target=$targetSdk"
+                )
+                runCatching {
+                    type.getMethod(
+                        "setProcessPackageName",
+                        String::class.java
+                    ).invoke(runtime, spec.packageName)
+                }.onFailure {
+                    Log.w(TAG, "target runtime package name failed", it)
+                }
+                runCatching {
+                    type.getMethod(
+                        "setProcessDataDirectory",
+                        String::class.java
+                    ).invoke(runtime, "/data/user/0/${spec.packageName}")
+                }.onFailure {
+                    Log.w(TAG, "target runtime data directory failed", it)
+                }
+                Log.d(
+                    TAG,
+                    "target runtime identity package=${spec.packageName} " +
+                        "dataDir=/data/user/0/${spec.packageName}"
+                )
+            }.onFailure {
+                Log.w(TAG, "target SDK version apply failed target=$targetSdk", it)
+            }
+        }
+
+        /**
+         * Recreate the loader shape produced by LoadedApk for an installed app.
+         * Shared libraries belong in their own loaders; putting their jars in
+         * the application's dex path changes the ART class-loader context and
+         * prevents image/OAT reuse.
+         */
+        private fun createExternalApplicationClassLoader(
+            classPath: String,
+            nativeSearchPath: String?,
+            parent: ClassLoader?,
+            targetSdkVersion: Int,
+            permittedDataDir: String,
+            sharedLibraryPaths: List<String>
+        ): ClassLoader = runCatching {
+            if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.standard_path_loader"
+                ) == "1"
+            ) {
+                return@runCatching PathClassLoader(
+                    classPath,
+                    nativeSearchPath,
+                    parent
+                )
+            }
+            val applicationLoadersClass = Class.forName(
+                "android.app.ApplicationLoaders"
+            )
+            val applicationLoaders = applicationLoadersClass
+                .getMethod("getDefault")
+                .invoke(null)
+            val createSharedLibrary = applicationLoadersClass
+                .getDeclaredMethod(
+                    "getSharedLibraryClassLoaderWithSharedLibraries",
+                    String::class.java,
+                    Int::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType,
+                    String::class.java,
+                    String::class.java,
+                    ClassLoader::class.java,
+                    String::class.java,
+                    List::class.java,
+                    List::class.java
+                )
+                .apply { isAccessible = true }
+            val permittedPath = permittedDataDir
+                .takeIf { it.isNotBlank() }
+                .orEmpty()
+            val sharedLibraryLoaders = sharedLibraryPaths.map { path ->
+                createSharedLibrary.invoke(
+                    applicationLoaders,
+                    path,
+                    targetSdkVersion,
+                    false,
+                    nativeSearchPath,
+                    permittedPath,
+                    null,
+                    null,
+                    null,
+                    null
+                ) as ClassLoader
+            }
+            val createApplicationLoader = applicationLoadersClass
+                .getDeclaredMethod(
+                    "getClassLoaderWithSharedLibraries",
+                    String::class.java,
+                    Int::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType,
+                    String::class.java,
+                    String::class.java,
+                    ClassLoader::class.java,
+                    String::class.java,
+                    List::class.java,
+                    List::class.java,
+                    List::class.java
+                )
+                .apply { isAccessible = true }
+            createApplicationLoader.invoke(
+                applicationLoaders,
+                classPath,
+                targetSdkVersion,
+                false,
+                nativeSearchPath,
+                permittedPath,
+                parent,
+                null,
+                sharedLibraryLoaders,
+                null,
+                null
+            ) as ClassLoader
+        }.onFailure {
+            Log.w(TAG, "framework class-loader shape failed", it)
+        }.getOrElse {
+            PathClassLoader(classPath, nativeSearchPath, parent)
+        }
+
+        private fun createExternalShellContext(
+            sourceContextImpl: Any,
+            fallback: Context,
+            resources: android.content.res.Resources,
+            targetLoader: ClassLoader,
+            targetPackageName: String,
+            targetApplicationInfo: ApplicationInfo
+        ): Context = runCatching {
+            val packageInfo = findField(
+                sourceContextImpl.javaClass,
+                "mPackageInfo"
+            )?.get(sourceContextImpl)
+                ?: error("ContextImpl package info not found")
+            val dataDir = targetApplicationInfo.dataDir
+            mapOf(
+                "mResources" to resources,
+                "mClassLoader" to targetLoader,
+                "mDefaultClassLoader" to targetLoader,
+                "mApplicationInfo" to targetApplicationInfo,
+                "mPackageName" to targetPackageName,
+                "mAppDir" to targetApplicationInfo.sourceDir,
+                "mResDir" to targetApplicationInfo.sourceDir,
+                "mDataDir" to dataDir
+            ).forEach { (name, value) ->
+                findField(packageInfo.javaClass, name)?.set(packageInfo, value)
+            }
+            val contextImplClass = Class.forName("android.app.ContextImpl")
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val activityThread = activityThreadClass
+                .getMethod("currentActivityThread")
+                .invoke(null)
+            val loadedApkClass = Class.forName("android.app.LoadedApk")
+            val createAppContext = contextImplClass.declaredMethods
+                .firstOrNull {
+                    it.name == "createAppContext" &&
+                        it.parameterCount == 3 &&
+                        it.parameterTypes[0] == activityThreadClass &&
+                        it.parameterTypes[1] == loadedApkClass
+                }
+                ?.apply { isAccessible = true }
+            if (createAppContext != null) {
+                createAppContext.invoke(
+                    null,
+                    activityThread,
+                    packageInfo,
+                    targetPackageName
+                ) as Context
+            } else {
+                val createWithoutOpPackage = contextImplClass
+                    .getDeclaredMethod(
+                        "createAppContext",
+                        activityThreadClass,
+                        loadedApkClass
+                    )
+                    .apply { isAccessible = true }
+                createWithoutOpPackage.invoke(
+                    null,
+                    activityThread,
+                    packageInfo
+                ) as Context
+            }
+        }.onFailure {
+            Log.w(TAG, "create external shell ContextImpl failed", it)
+        }.getOrDefault(fallback)
+
+        private fun warmResourceClasses(loader: ClassLoader) {
+            val pathList = findField(loader.javaClass, "pathList")
+                ?.let { runCatching { it.get(loader) }.getOrNull() }
+            val elements = pathList
+                ?.let { findField(it.javaClass, "dexElements") }
+                ?.let { runCatching { it.get(pathList) as? Array<*> }.getOrNull() }
+                .orEmpty()
+            val names = elements.asSequence()
+                .filterNotNull()
+                .mapNotNull { element ->
+                    runCatching {
+                        findField(element.javaClass, "dexFile")
+                            ?.get(element) as? dalvik.system.DexFile
+                    }.getOrNull()
+                }
+                .flatMap { dex ->
+                    runCatching { dex.entries().asSequence() }
+                        .getOrDefault(emptySequence())
+                }
+                .distinct()
+                .filter { name ->
+                    val simple = name.substringAfterLast('.')
+                    simple == "R" || simple.startsWith("R$")
+                }
+                .toList()
+            CompleteClassBridge.recordClassNames(loader, names)
+            var initialized = 0
+            names.forEach { name ->
+                runCatching {
+                    val type = Class.forName(name, true, loader)
+                    type.declaredFields
+                    initialized += 1
+                }.onFailure {
+                    Log.w(TAG, "resource class warm-up failed: $name", it)
+                }
+            }
+            Log.d(
+                TAG,
+                "resource classes warmed=$initialized/${names.size}"
+            )
+        }
+
         private fun exposeVirtualClassPath(
             loader: ClassLoader,
             layout: VirtualInstallLayout
@@ -2490,6 +3359,7 @@ class ContainerSession private constructor(
             return null
         }
 
+
         private fun attachApplication(
             spec: ContainerLaunchSpec,
             loader: ClassLoader,
@@ -2532,10 +3402,19 @@ class ContainerSession private constructor(
                         ?.apply { isAccessible = true }
                         ?.get(bound)
                     val virtualDataRoot = File("/data/user/0/${spec.packageName}")
+                    // ContextImpl reads the File fields, not just mDataDir.
+                    // Keep every data-directory representation on the target
+                    // package so external wrapper startup cannot cache host
+                    // paths in its static fields.
                     val loadedApkValues = linkedMapOf<String, Any?>(
                         "mAppDir" to spec.baseApkPath,
                         "mResDir" to spec.baseApkPath,
                         "mDataDir" to virtualDataRoot.absolutePath,
+                        "mDataDirFile" to virtualDataRoot,
+                        "mDeviceProtectedDataDirFile" to File(
+                            "/data/user_de/0/${spec.packageName}"
+                        ),
+                        "mCredentialProtectedDataDirFile" to virtualDataRoot,
                         "mPackageName" to spec.packageName,
                         "mApplicationInfo" to context.applicationInfo,
                         "mClassLoader" to loader,
@@ -2580,6 +3459,14 @@ class ContainerSession private constructor(
                     Log.w(TAG, "prepare hardened ContextImpl failed", it)
                 }
             }
+            val shellContext = createExternalShellContext(
+                attachContextImpl,
+                attachContextImpl as? Context ?: hardenedAttachContext,
+                context.resources,
+                loader,
+                spec.packageName,
+                spec.applicationInfo
+            )
             val externalApplicationName = applicationSpec.applicationInfo.className
             if (ExternalApplicationBootstrap.isExternalApplication(
                     externalApplicationName,
@@ -2589,13 +3476,9 @@ class ContainerSession private constructor(
                 val externalApplication = try {
                     ExternalApplicationBootstrap.attach(
                         loader,
-                        attachContextImpl as? Context ?: hardenedAttachContext,
+                        shellContext,
                         requireNotNull(externalApplicationName),
                         spec.packageName,
-                        runtimeNativeLibraries,
-                        ApkClassIndex.classNames(
-                            listOf(spec.baseApkPath) + spec.splitApkPaths
-                        ),
                         spec.baseApkPath,
                         File(spec.dataDir)
                     )
@@ -2605,23 +3488,26 @@ class ContainerSession private constructor(
                     }
                 }
                 externalApplication?.let { application ->
+                    // External wrappers commonly retain the bootstrap Context
+                    // statically. Replace only those exact references after
+                    // attach so later target callbacks use the virtual context.
+                    ExternalApplicationBootstrap.rebindStaticContexts(
+                        application.javaClass,
+                        shellContext,
+                        context
+                    )
+                    ExternalApplicationBootstrap.rebindApplicationContext(
+                        application,
+                        context
+                    )
+                    ExternalApplicationBootstrap.lastRealApplication?.let {
+                        ExternalApplicationBootstrap.rebindApplicationContext(
+                            it,
+                            context
+                        )
+                    }
                     if (context is ContainerContext) {
                         context.targetApplication = application
-                        runCatching {
-                            val baseField = android.content.ContextWrapper::class.java
-                                .getDeclaredField("mBase")
-                                .apply { isAccessible = true }
-                            baseField.set(application, context)
-                            ExternalApplicationBootstrap.lastRealApplication?.let { real ->
-                                baseField.set(real, context)
-                            }
-                        }.onFailure {
-                            Log.w(
-                                TAG,
-                                "restore external Application context failed",
-                                it
-                            )
-                        }
                     }
                     NativeEnvironmentBridge.installKillGuard()
                     return application

@@ -10,6 +10,10 @@ add_library(
     hooks/libc/native_libc_hooks.cpp
     hooks/elf/native_elf_hooks.cpp
     crash/native_crash_trace.cpp
+    core/dex_file_trace.cpp
+    core/process_dex_capture.cpp
+    core/complete_static_field.cpp
+    core/late_jni_trace.cpp
 )
 
 target_include_directories(

@@ -184,6 +184,41 @@ bool property_trace_enabled() {
     return enabled;
 }
 
+bool string_trace_enabled() {
+    static const bool enabled = [] {
+        if (getenv("NESTSPACE_STRING_TRACE") != nullptr) return true;
+        char value[PROP_VALUE_MAX] = {};
+        __system_property_get("debug.nestspace.string_trace", value);
+        return strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+bool string_guard_enabled() {
+    static const bool enabled = [] {
+        if (getenv("NESTSPACE_DISABLE_STRING_GUARD") != nullptr) return false;
+        char value[PROP_VALUE_MAX] = {};
+        __system_property_get("debug.nestspace.string_guard", value);
+        return strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool retain_small_code_mappings_enabled() {
+    static const bool enabled = [] {
+        if (getenv("NESTSPACE_RETAIN_SMALL_CODE_MAPPINGS") != nullptr) {
+            return true;
+        }
+        char value[PROP_VALUE_MAX] = {};
+        __system_property_get(
+            "debug.nestspace.retain_small_code_mappings",
+            value
+        );
+        return strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 void install_target_clear_cache_hook(uintptr_t base) {
     if (base == 0 || !jit_trace_enabled()) return;
     std::call_once(g_target_clear_cache_hook_once, [base] {
@@ -672,6 +707,19 @@ void* hook_malloc(size_t size) {
         ? g_real.mallocCall(size)
         : malloc(size);
     if (!object_diagnostics_enabled()) return result;
+    if (size >= 0x1000 && result != nullptr) {
+        const uintptr_t caller = reinterpret_cast<uintptr_t>(
+            __builtin_return_address(0)
+        );
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "target-large-alloc size=%zu pointer=%p caller=%016" PRIxPTR,
+            size,
+            result,
+            caller
+        );
+    }
     if (size == kDiagnosticObjectSize) {
         track_diagnostic_object(
             result,
@@ -687,6 +735,21 @@ void* hook_calloc(size_t count, size_t size) {
         ? g_real.callocCall(count, size)
         : calloc(count, size);
     if (!object_diagnostics_enabled()) return result;
+    if (count != 0 &&
+        size != 0 &&
+        count <= SIZE_MAX / size &&
+        count * size >= 0x1000 &&
+        result != nullptr) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "target-large-calloc count=%zu element=%zu pointer=%p caller=%016" PRIxPTR,
+            count,
+            size,
+            result,
+            reinterpret_cast<uintptr_t>(__builtin_return_address(0))
+        );
+    }
     if (count != 0 &&
         size != 0 &&
         count <= SIZE_MAX / size &&
@@ -720,6 +783,16 @@ void* hook_realloc(void* pointer, size_t size) {
     void* result = g_real.reallocCall
         ? g_real.reallocCall(pointer, size)
         : realloc(pointer, size);
+    if (size >= 0x10000 && result != nullptr) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "target-large-realloc old=%p size=%zu pointer=%p",
+            pointer,
+            size,
+            result
+        );
+    }
     if (was_tracked) forget_diagnostic_object(pointer);
     if (size == kDiagnosticObjectSize) {
         track_diagnostic_object(
