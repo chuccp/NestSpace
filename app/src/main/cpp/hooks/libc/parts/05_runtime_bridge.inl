@@ -565,6 +565,16 @@ int iterate_phdr_callback(
 ) {
     auto* context = static_cast<IteratePhdrContext*>(data);
     if (context == nullptr || context->callback == nullptr) return 0;
+    const Environment* environment = current_environment();
+    if (environment != nullptr && info->dlpi_name != nullptr &&
+        nestspace::host_runtime_path_matches(
+            info->dlpi_name,
+            environment
+        )) {
+        // Keep loader enumeration consistent with a directly installed app:
+        // host implementation modules are not part of the target process API.
+        return 0;
+    }
     struct dl_phdr_info copy = *info;
     ssize_t mapped_length = -1;
     if (info->dlpi_name != nullptr &&
@@ -644,6 +654,12 @@ void* hook_dlopen(const char* filename, int flags) {
     void* handle = g_real.dlopen
         ? g_real.dlopen(actual, flags)
         : dlopen(actual, flags);
+    if (handle == nullptr && actual != nullptr &&
+        actual[0] == '/' && g_real.dlopen != nullptr) {
+        if (preload_dependency_closure(actual, g_real.dlopen) > 0) {
+            handle = g_real.dlopen(actual, flags);
+        }
+    }
     if (handle != nullptr && current_environment() != nullptr) {
         refresh_loaded_modules();
     }

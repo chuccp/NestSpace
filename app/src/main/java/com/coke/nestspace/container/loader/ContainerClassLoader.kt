@@ -1,6 +1,10 @@
 package com.coke.nestspace.container.loader
 
 import dalvik.system.PathClassLoader
+import java.io.InputStream
+import java.net.URL
+import java.util.Collections
+import java.util.Enumeration
 
 /**
  * Child-first class loader for a virtual app.
@@ -25,6 +29,24 @@ class ContainerClassLoader(
 ) : PathClassLoader(dexPath, librarySearchPath, parent) {
 
     private val lock = Any()
+    private val resources = ClassPathResourceFinder(dexPath)
+
+    override fun findResource(name: String): URL? =
+        resources.findResource(name) ?: super.findResource(name)
+
+    override fun findResources(name: String): Enumeration<URL> =
+        resourceEnumeration(
+            resources.findResources(name) +
+                runCatching {
+                    Collections.list(super.findResources(name))
+                }.getOrDefault(emptyList())
+        )
+
+    override fun getResource(name: String): URL? =
+        resources.findResource(name) ?: super.getResource(name)
+
+    override fun getResourceAsStream(name: String): InputStream? =
+        resources.openResource(name) ?: super.getResourceAsStream(name)
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
         synchronized(lock) {

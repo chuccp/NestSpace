@@ -639,6 +639,13 @@ ssize_t copy_virtual_path(
 
 }  // namespace
 
+bool host_runtime_path_matches(
+    const std::string& value,
+    const Environment* environment
+) {
+    return is_host_runtime_path(value, environment);
+}
+
 std::atomic<int> g_virtual_proc_reads{0};
 std::atomic<int> g_property_reads{0};
 std::atomic<int> g_dlopen_calls{0};

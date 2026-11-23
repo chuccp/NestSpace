@@ -122,6 +122,10 @@ bool virtual_path_from_actual(
     size_t size,
     ssize_t* result
 );
+bool host_runtime_path_matches(
+    const std::string& value,
+    const Environment* environment
+);
 bool proc_fd_number(const char* path, int* fd);
 const char* fd_virtual_path(int fd);
 void copy_fd_path(int old_fd, int new_fd);
@@ -368,6 +372,9 @@ int hook_open(const char* path, int flags, ...);
 int hook_open64(const char* path, int flags, ...);
 int hook_openat(int dirfd, const char* path, int flags, ...);
 int hook_openat64(int dirfd, const char* path, int flags, ...);
+int hook_getresuid(uid_t* real, uid_t* effective, uid_t* saved);
+int hook_getresgid(gid_t* real, gid_t* effective, gid_t* saved);
+int hook_getgroups(int size, gid_t* groups);
 int hook_mkdir(const char* path, mode_t mode);
 int hook_mkdirat(int dirfd, const char* path, mode_t mode);
 int hook_rmdir(const char* path);
@@ -427,6 +434,10 @@ void record_hook_event(jint event);
 void record_syscall_event(jlong number);
 HookState refresh_hooks(bool scan_elf_fallback);
 void refresh_loaded_modules();
+int preload_dependency_closure(
+    const char* root_path,
+    DlopenFunction open_library
+);
 void request_loaded_modules_refresh();
 HookState hook_state();
 void restore_hooks();

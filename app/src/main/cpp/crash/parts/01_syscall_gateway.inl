@@ -6,66 +6,14 @@ void handle_openat_syscall(ucontext_t* context) {
     );
     const int flags = static_cast<int>(context->uc_mcontext.regs[2]);
     const mode_t mode = static_cast<mode_t>(context->uc_mcontext.regs[3]);
-    const uintptr_t pc = static_cast<uintptr_t>(context->uc_mcontext.pc);
-    const uintptr_t window_start = (pc & ~3U) - 16;
-    unsigned int code[12] {};
-    if (g_self_mem_fd >= 0) {
-        syscall(
-            SYS_pread64,
-            g_self_mem_fd,
-            code,
-            sizeof(code),
-            window_start
-        );
-    }
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        kLogTag,
-        "syscall-openat code pc=%p lr=%p "
-        "%08x %08x %08x %08x %08x %08x "
-        "%08x %08x %08x %08x %08x %08x",
-        reinterpret_cast<void*>(pc),
-        reinterpret_cast<void*>(context->uc_mcontext.regs[30]),
-        code[0],
-        code[1],
-        code[2],
-        code[3],
-        code[4],
-        code[5],
-        code[6],
-        code[7],
-        code[8],
-        code[9],
-        code[10],
-        code[11]
-    );
-
     char original[PATH_MAX] = {};
     if (!read_user_string(path_address, original, sizeof(original))) {
         context->uc_mcontext.regs[0] =
             static_cast<uintptr_t>(-EFAULT);
         return;
     }
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        kLogTag,
-        "syscall-openat entered path=%s dirfd=%d flags=%x mode=%o",
-        original,
-        dirfd,
-        static_cast<unsigned int>(flags),
-        static_cast<unsigned int>(mode)
-    );
-
     const long cached_fd = duplicate_gateway_fd_template(original, flags);
     if (cached_fd >= 0 || cached_fd != -ENOENT) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "syscall-openat cached path=%s flags=%x result=%ld",
-            original,
-            static_cast<unsigned int>(flags),
-            cached_fd
-        );
         context->uc_mcontext.regs[0] =
             static_cast<uintptr_t>(cached_fd);
         return;
@@ -87,23 +35,63 @@ void handle_openat_syscall(ucontext_t* context) {
     request.mode = mode;
     strncpy(request.path, actual, sizeof(request.path) - 1);
     const long returned = call_syscall_broker(&request);
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        kLogTag,
-        "syscall-openat requested=%s actual=%s flags=%x mode=%o "
-        "result=%ld mapped=%d",
-        original,
-        actual,
-        static_cast<unsigned int>(flags),
-        static_cast<unsigned int>(mode),
-        returned,
-        mapped ? 1 : 0
-    );
     context->uc_mcontext.regs[0] =
         static_cast<uintptr_t>(returned);
 }
 
-void handle_rt_sigaction_syscall(ucontext_t* context) {
+bool handle_identity_syscall(ucontext_t* context) {
+    if (context == nullptr || nestspace::current_environment() == nullptr) {
+        return false;
+    }
+    const uintptr_t number = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[8]
+    );
+    if (number == SYS_getuid ||
+        number == SYS_geteuid ||
+        number == SYS_getgid ||
+        number == SYS_getegid) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(
+            nestspace::current_environment()->observed_uid
+        );
+        return true;
+    }
+#ifdef SYS_getresuid
+    if (number == SYS_getresuid) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(
+            nestspace::hook_getresuid(
+                reinterpret_cast<uid_t*>(context->uc_mcontext.regs[0]),
+                reinterpret_cast<uid_t*>(context->uc_mcontext.regs[1]),
+                reinterpret_cast<uid_t*>(context->uc_mcontext.regs[2])
+            )
+        );
+        return true;
+    }
+#endif
+#ifdef SYS_getresgid
+    if (number == SYS_getresgid) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(
+            nestspace::hook_getresgid(
+                reinterpret_cast<gid_t*>(context->uc_mcontext.regs[0]),
+                reinterpret_cast<gid_t*>(context->uc_mcontext.regs[1]),
+                reinterpret_cast<gid_t*>(context->uc_mcontext.regs[2])
+            )
+        );
+        return true;
+    }
+#endif
+    if (number == SYS_getgroups) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(
+            nestspace::hook_getgroups(
+                static_cast<int>(context->uc_mcontext.regs[0]),
+                reinterpret_cast<gid_t*>(context->uc_mcontext.regs[1])
+            )
+        );
+        return true;
+    }
+    return false;
+}
+
+[[maybe_unused]] void handle_rt_sigaction_syscall(ucontext_t* context) {
     if (context == nullptr) return;
     GatewayRequest request {};
     request.type = kGatewayRtSigaction;
@@ -130,23 +118,10 @@ void handle_rt_sigaction_syscall(ucontext_t* context) {
         }
     }
     const long returned = call_syscall_broker(&request);
-    if (request.signal_number == SIGSYS) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "syscall-rt_sigaction signal=%d action=%p old_action=%p "
-            "size=%zu result=%ld",
-            request.signal_number,
-            reinterpret_cast<void*>(request.action_address),
-            reinterpret_cast<void*>(request.old_action_address),
-            request.signal_set_size,
-            returned
-        );
-    }
     context->uc_mcontext.regs[0] = static_cast<uintptr_t>(returned);
 }
 
-void handle_rt_sigprocmask_syscall(ucontext_t* context) {
+[[maybe_unused]] void handle_rt_sigprocmask_syscall(ucontext_t* context) {
     if (context == nullptr) return;
     const int how = static_cast<int>(context->uc_mcontext.regs[0]);
     const auto set_address = static_cast<uintptr_t>(
@@ -194,16 +169,6 @@ void handle_rt_sigprocmask_syscall(ucontext_t* context) {
     }
     updated &= ~(1ULL << (SIGSYS - 1));
     memcpy(&context->uc_sigmask, &updated, sizeof(updated));
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        kLogTag,
-        "syscall rt_sigprocmask how=%d requested=%016llx"
-        " current=%016llx updated=%016llx",
-        how,
-        static_cast<unsigned long long>(requested),
-        static_cast<unsigned long long>(current),
-        static_cast<unsigned long long>(updated)
-    );
     context->uc_mcontext.regs[0] = 0;
 }
 
@@ -453,31 +418,15 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
     const uintptr_t syscall_number = context == nullptr
         ? 0
         : static_cast<uintptr_t>(context->uc_mcontext.regs[8]);
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        kLogTag,
-        "syscall gateway trap number=%lu tid=%d handler=%p",
-        static_cast<unsigned long>(syscall_number),
-        static_cast<int>(gettid()),
-        reinterpret_cast<void*>(syscall_guard_handler)
-    );
     if (syscall_number == SYS_openat &&
         g_syscall_gateway_pause.exchange(
             false,
             std::memory_order_acq_rel
         )) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "syscall gateway pausing at pc=%p lr=%p",
-            context == nullptr
-                ? nullptr
-                : reinterpret_cast<void*>(context->uc_mcontext.pc),
-            context == nullptr
-                ? nullptr
-                : reinterpret_cast<void*>(context->uc_mcontext.regs[30])
-        );
         syscall(SYS_tgkill, getpid(), gettid(), SIGSTOP);
+    }
+    if (handle_identity_syscall(context)) {
+        return;
     }
     if (syscall_number == SYS_openat) {
         handle_openat_syscall(context);
@@ -487,27 +436,12 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
         const int fd = static_cast<int>(context->uc_mcontext.regs[0]);
         if (fd == g_syscall_broker_request_write ||
             fd == g_syscall_broker_response_read) {
-            __android_log_print(
-                ANDROID_LOG_WARN,
-                kLogTag,
-                "preserved syscall broker fd=%d from target close",
-                fd
-            );
             context->uc_mcontext.regs[0] = 0;
             return;
         }
     }
 #if defined(__NR_close_range)
     if (syscall_number == __NR_close_range && context != nullptr) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "preserved syscall broker descriptors from close_range "
-            "first=%lu last=%lu flags=%lu",
-            static_cast<unsigned long>(context->uc_mcontext.regs[0]),
-            static_cast<unsigned long>(context->uc_mcontext.regs[1]),
-            static_cast<unsigned long>(context->uc_mcontext.regs[2])
-        );
         context->uc_mcontext.regs[0] = 0;
         return;
     }
@@ -526,13 +460,6 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
 #endif
 #if defined(__NR_seccomp)
     if (syscall_number == __NR_seccomp && context != nullptr) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "blocked target seccomp operation=%lu flags=%lu",
-            static_cast<unsigned long>(context->uc_mcontext.regs[0]),
-            static_cast<unsigned long>(context->uc_mcontext.regs[1])
-        );
         context->uc_mcontext.regs[0] =
             static_cast<uintptr_t>(-EPERM);
         return;
@@ -541,11 +468,6 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
     if (syscall_number == __NR_prctl && context != nullptr) {
         const int option = static_cast<int>(context->uc_mcontext.regs[0]);
         if (option == PR_SET_SECCOMP) {
-            __android_log_print(
-                ANDROID_LOG_WARN,
-                kLogTag,
-                "blocked target seccomp prctl"
-            );
             context->uc_mcontext.regs[0] =
                 static_cast<uintptr_t>(-EPERM);
             return;
@@ -553,12 +475,6 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
     }
 #if defined(__NR_execve)
     if (syscall_number == __NR_execve && context != nullptr) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "blocked target execve path=%p",
-            reinterpret_cast<void*>(context->uc_mcontext.regs[0])
-        );
         context->uc_mcontext.regs[0] =
             static_cast<uintptr_t>(-ENOENT);
         return;
@@ -566,13 +482,6 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
 #endif
 #if defined(__NR_execveat)
     if (syscall_number == __NR_execveat && context != nullptr) {
-        __android_log_print(
-            ANDROID_LOG_WARN,
-            kLogTag,
-            "blocked target execveat dirfd=%ld path=%p",
-            static_cast<long>(context->uc_mcontext.regs[0]),
-            reinterpret_cast<void*>(context->uc_mcontext.regs[1])
-        );
         context->uc_mcontext.regs[0] =
             static_cast<uintptr_t>(-ENOENT);
         return;
@@ -590,26 +499,6 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
         : static_cast<uintptr_t>(
             context->uc_mcontext.regs[signal_in_arg1 ? 1 : 2]
         );
-    __android_log_print(
-        ANDROID_LOG_WARN,
-        kLogTag,
-        "guarded target syscall=%lu tid=%d arg0=%016lx arg1=%016lx "
-        "arg2=%016lx pc=%016lx",
-        static_cast<unsigned long>(syscall_number),
-        static_cast<int>(syscall(SYS_gettid)),
-        context == nullptr
-            ? 0UL
-            : static_cast<unsigned long>(context->uc_mcontext.regs[0]),
-        context == nullptr
-            ? 0UL
-            : static_cast<unsigned long>(context->uc_mcontext.regs[1]),
-        context == nullptr
-            ? 0UL
-            : static_cast<unsigned long>(context->uc_mcontext.regs[2]),
-        context == nullptr
-            ? 0UL
-            : static_cast<unsigned long>(context->uc_mcontext.pc)
-    );
     if (g_trace_fd >= 0 && context != nullptr) {
         static constexpr char kHeader[] = "exit-syscall\n";
         write(g_trace_fd, kHeader, sizeof(kHeader) - 1);
@@ -828,6 +717,65 @@ bool install_kill_guard_filter() {
     return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
 }
 
+bool install_identity_gateway_filter() {
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_geteuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getegid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#if defined(__NR_getresuid)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getresuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_getresgid)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getresgid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_getgroups)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgroups, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program {
+        static_cast<unsigned short>(
+            sizeof(filter) / sizeof(filter[0])
+        ),
+        filter
+    };
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        return false;
+    }
+    install_syscall_handler();
+    sigset_t unblock {};
+    sigemptyset(&unblock);
+    sigaddset(&unblock, SIGSYS);
+    sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+    const long result = syscall(
+        SYS_seccomp,
+        SECCOMP_SET_MODE_FILTER,
+        0,
+        &program
+    );
+    g_syscall_gateway_active.store(
+        result == 0,
+        std::memory_order_release
+    );
+    __android_log_print(
+        result == 0 ? ANDROID_LOG_DEBUG : ANDROID_LOG_WARN,
+        kLogTag,
+        "identity syscall gateway result=%ld errno=%d",
+        result,
+        result == 0 ? 0 : errno
+    );
+    return result == 0;
+}
+
 [[maybe_unused]] bool install_openat_gateway_filter() {
 #if defined(__NR_openat)
     __android_log_print(
@@ -907,6 +855,26 @@ bool install_kill_guard_filter() {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_geteuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getegid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#if defined(__NR_getresuid)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getresuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_getresgid)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getresgid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_getgroups)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgroups, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
 #if defined(__NR_rt_sigaction)
         BPF_JUMP(
             BPF_JMP | BPF_JEQ | BPF_K,
@@ -1040,6 +1008,10 @@ bool install_kill_guard_filter() {
         action_result == 0 ? current.sa_flags : 0,
         reinterpret_cast<void*>(syscall_guard_handler)
     );
+    // attachBaseContext has finished creating the target's storage and
+    // platform worker threads. Synchronize the identity filter across those
+    // existing threads as well as the current thread so direct syscalls made
+    // by device-id and networking SDKs see the same virtual identity.
     const long install_result = syscall(
         SYS_seccomp,
         SECCOMP_SET_MODE_FILTER,

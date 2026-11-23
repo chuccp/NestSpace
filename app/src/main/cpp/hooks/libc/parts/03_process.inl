@@ -60,22 +60,15 @@ int hook_getgroups(int size, gid_t* groups) {
             ? g_real.getgroups(size, groups)
             : getgroups(size, groups);
     }
-    std::vector<gid_t> virtual_groups;
-    virtual_groups.reserve(environment->supplementary_groups.size());
-    for (const int group : environment->supplementary_groups) {
-        virtual_groups.push_back(static_cast<gid_t>(group));
-    }
-    if (virtual_groups.empty()) {
-        virtual_groups = {
-            9997,
-            static_cast<gid_t>(environment->observed_uid + 10000),
-            static_cast<gid_t>(environment->observed_uid + 40000),
-        };
-    }
+    const size_t configured_count =
+        environment->supplementary_groups.size();
+    const int count = static_cast<int>(
+        configured_count == 0 ? 3 : configured_count
+    );
     if (size == 0) {
-        return static_cast<int>(virtual_groups.size());
+        return count;
     }
-    if (size < static_cast<int>(virtual_groups.size())) {
+    if (size < count) {
         errno = EINVAL;
         return -1;
     }
@@ -83,8 +76,18 @@ int hook_getgroups(int size, gid_t* groups) {
         errno = EFAULT;
         return -1;
     }
-    std::copy(virtual_groups.begin(), virtual_groups.end(), groups);
-    return static_cast<int>(virtual_groups.size());
+    if (configured_count == 0) {
+        groups[0] = 9997;
+        groups[1] = static_cast<gid_t>(environment->observed_uid + 10000);
+        groups[2] = static_cast<gid_t>(environment->observed_uid + 40000);
+    } else {
+        for (size_t index = 0; index < configured_count; ++index) {
+            groups[index] = static_cast<gid_t>(
+                environment->supplementary_groups[index]
+            );
+        }
+    }
+    return count;
 }
 
 int hook_capget(

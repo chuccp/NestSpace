@@ -86,6 +86,15 @@ class ContainerContext(
     var jobScheduler: JobScheduler? = null
     var virtualRegistry: VirtualPackageRegistry? = null
 
+    /**
+     * Android exposes the app's LoadedApk as ContextImpl.mPackageInfo. Target
+     * frameworks use this standard reflection path to install a wrapper around
+     * LoadedApk.mClassLoader during Application.onCreate. Keep the field and
+     * resolve components through it so those wrappers stay in effect.
+     */
+    @Suppress("unused")
+    private var mPackageInfo: Any? = null
+
     /** Virtual grant model for this target package (shared by PM/context). */
     val permissions: ContainerPermissions = ContainerPermissions(
         hostContext = base.applicationContext,
@@ -622,7 +631,8 @@ class ContainerContext(
 
     override fun getPackageResourcePath(): String = resourceApkPath
 
-    override fun getClassLoader(): ClassLoader = targetClassLoader
+    override fun getClassLoader(): ClassLoader =
+        packageInfoClassLoader() ?: targetClassLoader
 
     override fun getResources(): Resources = targetResources
 
@@ -633,6 +643,22 @@ class ContainerContext(
     override fun getApplicationContext(): Context = targetApplication ?: this
 
     override fun getTheme(): Resources.Theme = targetTheme ?: super.getTheme()
+
+    fun bindPackageInfo(packageInfo: Any?) {
+        mPackageInfo = packageInfo
+    }
+
+    internal fun currentClassLoader(): ClassLoader =
+        packageInfoClassLoader() ?: targetClassLoader
+
+    private fun packageInfoClassLoader(): ClassLoader? {
+        val packageInfo = mPackageInfo ?: return null
+        return runCatching {
+            packageInfo.javaClass
+                .getMethod("getClassLoader")
+                .invoke(packageInfo) as? ClassLoader
+        }.getOrNull()
+    }
 
     /**
      * Some Activities rewrite their base context through
@@ -704,6 +730,7 @@ class ContainerContext(
         wrapped.broadcastManager = broadcastManager
         wrapped.jobScheduler = jobScheduler
         wrapped.virtualRegistry = virtualRegistry
+        wrapped.mPackageInfo = mPackageInfo
         return wrapped
     }
 

@@ -139,35 +139,67 @@ jint virtual_binder_calling_pid(JNIEnv*, jclass) {
     return static_cast<jint>(getpid());
 }
 
+jint virtual_process_group(JNIEnv*, jclass, jint pid) {
+    if (pid <= 0) pid = static_cast<jint>(getpid());
+    const pid_t group = getpgid(static_cast<pid_t>(pid));
+    if (group > 0) return static_cast<jint>(group);
+    const pid_t self_group = getpgid(0);
+    return self_group > 0 ? static_cast<jint>(self_group) : pid;
+}
+
 void install_identity_jni_hooks(JNIEnv* env) {
     static std::once_flag once;
     std::call_once(once, [env] {
         jclass binder = env->FindClass("android/os/Binder");
-        if (binder == nullptr) return;
-        JNINativeMethod methods[] = {
-            {
-                const_cast<char*>("getCallingUid"),
-                const_cast<char*>("()I"),
-                reinterpret_cast<void*>(virtual_binder_calling_uid)
-            },
-            {
-                const_cast<char*>("getCallingPid"),
-                const_cast<char*>("()I"),
-                reinterpret_cast<void*>(virtual_binder_calling_pid)
-            },
-        };
-        const jint result = env->RegisterNatives(
-            binder,
-            methods,
-            static_cast<jint>(sizeof(methods) / sizeof(methods[0]))
-        );
-        env->DeleteLocalRef(binder);
-        __android_log_print(
-            result == JNI_OK ? ANDROID_LOG_DEBUG : ANDROID_LOG_WARN,
-            "NestSpaceNative",
-            "Binder identity natives installed result=%d",
-            result
-        );
+        if (binder != nullptr) {
+            JNINativeMethod methods[] = {
+                {
+                    const_cast<char*>("getCallingUid"),
+                    const_cast<char*>("()I"),
+                    reinterpret_cast<void*>(virtual_binder_calling_uid)
+                },
+                {
+                    const_cast<char*>("getCallingPid"),
+                    const_cast<char*>("()I"),
+                    reinterpret_cast<void*>(virtual_binder_calling_pid)
+                },
+            };
+            const jint result = env->RegisterNatives(
+                binder,
+                methods,
+                static_cast<jint>(sizeof(methods) / sizeof(methods[0]))
+            );
+            env->DeleteLocalRef(binder);
+            __android_log_print(
+                result == JNI_OK ? ANDROID_LOG_DEBUG : ANDROID_LOG_WARN,
+                "NestSpaceNative",
+                "Binder identity natives installed result=%d",
+                result
+            );
+        }
+
+        jclass process = env->FindClass("android/os/Process");
+        if (process != nullptr) {
+            JNINativeMethod methods[] = {
+                {
+                    const_cast<char*>("getProcessGroup"),
+                    const_cast<char*>("(I)I"),
+                    reinterpret_cast<void*>(virtual_process_group)
+                },
+            };
+            const jint result = env->RegisterNatives(
+                process,
+                methods,
+                static_cast<jint>(sizeof(methods) / sizeof(methods[0]))
+            );
+            env->DeleteLocalRef(process);
+            __android_log_print(
+                result == JNI_OK ? ANDROID_LOG_DEBUG : ANDROID_LOG_WARN,
+                "NestSpaceNative",
+                "Process group native installed result=%d",
+                result
+            );
+        }
     });
 }
 

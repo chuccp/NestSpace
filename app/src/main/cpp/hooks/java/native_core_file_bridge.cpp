@@ -230,8 +230,33 @@ jstring canonicalize_path(
     const std::string actual = mapped_path(virtual_path.c_str());
     char resolved[PATH_MAX] = {};
     if (::realpath(actual.c_str(), resolved) == nullptr) {
-        throw_io_exception(env, virtual_path);
-        return nullptr;
+        // Java's canonicalize contract differs from POSIX realpath: the final
+        // components do not have to exist yet. Providers commonly canonicalize
+        // configured cache subdirectories before creating them. Canonicalize
+        // the nearest existing ancestor and append the remaining components.
+        std::string existing = actual;
+        std::string suffix;
+        while (::realpath(existing.c_str(), resolved) == nullptr) {
+            if (existing == "/" || existing.empty()) {
+                throw_io_exception(env, virtual_path);
+                return nullptr;
+            }
+            const size_t separator = existing.find_last_of('/');
+            if (separator == std::string::npos) {
+                throw_io_exception(env, virtual_path);
+                return nullptr;
+            }
+            suffix = "/" + existing.substr(separator + 1) + suffix;
+            existing = separator == 0
+                ? "/"
+                : existing.substr(0, separator);
+        }
+        const size_t base_length = strlen(resolved);
+        if (base_length + suffix.size() >= sizeof(resolved)) {
+            throw_io_exception(env, virtual_path);
+            return nullptr;
+        }
+        memcpy(resolved + base_length, suffix.data(), suffix.size() + 1);
     }
     char virtual_result[PATH_MAX + 1] = {};
     ssize_t length = 0;

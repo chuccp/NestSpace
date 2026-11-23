@@ -805,7 +805,13 @@ open class StageAActivity : Activity() {
         if (mirrorRequested) {
             setTheme(R.style.Theme_Virtual_Container_Mirror)
         }
-        super.onCreate(savedInstanceState)
+        // The host window hierarchy and its FragmentManager belong to the
+        // container, not to the target Activity. Android's restore path
+        // instantiates saved Fragments with the host ClassLoader before
+        // onRestoreInstanceState, so target-only Fragment names would crash the
+        // slot process. Target state is persisted separately in
+        // TargetStateStore and restored after the Activity exists.
+        super.onCreate(null)
         ContainerSessions.restoreHostFrameworkState(this, restoreTheme = false)
         hostStateId = TargetStateStore.nextHostId()
         active = this
@@ -1553,7 +1559,7 @@ open class StageAActivity : Activity() {
         // BadParcelableException and kills the slot process. Target lifecycle
         // state is restored separately from TargetStateStore below, so a
         // failed host hierarchy restore only loses transient view state.
-        runCatching { super.onRestoreInstanceState(savedInstanceState) }
+        runCatching { super.onRestoreInstanceState(Bundle()) }
             .onFailure { Log.w(TAG, "host state restore failed", it) }
         current?.let { callTargetRestoreState(it) }
     }

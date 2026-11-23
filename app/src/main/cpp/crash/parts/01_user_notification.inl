@@ -534,7 +534,7 @@ void* user_notification_loop(void*) {
     }
 }
 
-bool install_user_notify_gateway() {
+[[maybe_unused]] bool install_user_notify_gateway() {
 #if defined(SYS_seccomp) && defined(__NR_openat)
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
         return false;

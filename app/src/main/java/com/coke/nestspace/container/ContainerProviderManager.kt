@@ -453,7 +453,7 @@ class ContainerProviderManager(
     }
 
     private fun createProvider(info: ProviderInfo): ContentProvider {
-        val cls = session.loader.loadClass(info.name)
+        val cls = session.activeClassLoader.loadClass(info.name)
             .asSubclass(ContentProvider::class.java)
         return cls.getDeclaredConstructor().newInstance()
     }

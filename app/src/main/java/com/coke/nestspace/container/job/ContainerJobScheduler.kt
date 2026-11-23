@@ -218,7 +218,8 @@ class ContainerJobScheduler(
         synchronized(services) {
             services[info.name]?.let { return it }
             return try {
-                val cls = session.loader.loadClass(info.name).asSubclass(JobService::class.java)
+                val cls = session.activeClassLoader.loadClass(info.name)
+                    .asSubclass(JobService::class.java)
                 val service = cls.getDeclaredConstructor().newInstance()
                 attachBaseContext(service)
                 setField(service, listOf("mApplication"), session.application)

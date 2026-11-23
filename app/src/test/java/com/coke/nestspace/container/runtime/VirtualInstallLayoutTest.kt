@@ -30,6 +30,14 @@ class VirtualInstallLayoutTest {
         assertEquals(first, second)
         assertTrue(first.virtualBaseApkPath.startsWith("/data/app/"))
         assertTrue(first.virtualBaseApkPath.endsWith("/base.apk"))
+        assertTrue(
+            first.virtualBaseApkPath.matches(
+                Regex(
+                    "^/data/app/~~[A-Za-z0-9_-]{22}==/" +
+                        "com\\.example\\.target-[A-Za-z0-9_-]{22}==/base\\.apk$"
+                )
+            )
+        )
         assertEquals(
             "/split_config.arm64_v8a.apk",
             first.virtualSplitApkPaths.single()
@@ -75,6 +83,21 @@ class VirtualInstallLayoutTest {
         )
         assertTrue(
             layout.virtualNativeLibraryDir.orEmpty().endsWith("/lib/arm64")
+        )
+    }
+
+    @Test
+    fun encodesAndroidInstallTokensWithoutUnsafePathCharacters() {
+        val token = VirtualInstallLayoutFactory.androidPathToken(
+            "ffffffffffffffffffffffffffffffff"
+        )
+
+        assertEquals(24, token.length)
+        assertTrue(token.endsWith("=="))
+        assertTrue(
+            token.removeSuffix("==").all {
+                it.isLetterOrDigit() || it == '-' || it == '_'
+            }
         )
     }
 

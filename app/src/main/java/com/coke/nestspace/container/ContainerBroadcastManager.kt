@@ -379,7 +379,7 @@ class ContainerBroadcastManager(
         state: ResultState
     ) {
         val receiver = try {
-            session.loader.loadClass(target.info.name)
+            session.activeClassLoader.loadClass(target.info.name)
                 .asSubclass(BroadcastReceiver::class.java)
                 .getDeclaredConstructor()
                 .newInstance()

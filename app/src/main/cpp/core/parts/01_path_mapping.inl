@@ -204,11 +204,40 @@ bool is_virtual_native_library_path(
         starts_with_prefix(actual, environment->native_library_dir);
 }
 
+bool is_virtual_installed_apk_path(
+    const char* actual,
+    const Environment* environment
+) {
+    if (actual == nullptr || environment == nullptr) return false;
+    if (!environment->actual_base_apk_path.empty() &&
+        (strcmp(actual, environment->actual_base_apk_path.c_str()) == 0 ||
+         strcmp(
+             actual,
+             data_alias_path(environment->actual_base_apk_path).c_str()
+         ) == 0)) {
+        return true;
+    }
+    return std::any_of(
+        environment->actual_split_apk_paths.begin(),
+        environment->actual_split_apk_paths.end(),
+        [actual](const std::string& path) {
+            return strcmp(actual, path.c_str()) == 0 ||
+                strcmp(actual, data_alias_path(path).c_str()) == 0;
+        }
+    );
+}
+
 }  // namespace
 
 void virtualize_target_file_stat(const char* actual, struct stat* value) {
     const Environment* environment = current_environment();
     if (value == nullptr || environment == nullptr) {
+        return;
+    }
+    if (is_virtual_installed_apk_path(actual, environment)) {
+        value->st_uid = 1000;
+        value->st_gid = 1000;
+        value->st_mode = (value->st_mode & S_IFMT) | 0644;
         return;
     }
     if (is_virtual_native_library_path(actual, environment)) {
@@ -246,6 +275,12 @@ void virtualize_target_file_stat(const char* actual, struct stat* value) {
 void virtualize_target_statx(const char* actual, struct statx* value) {
     const Environment* environment = current_environment();
     if (value == nullptr || environment == nullptr) {
+        return;
+    }
+    if (is_virtual_installed_apk_path(actual, environment)) {
+        value->stx_uid = 1000;
+        value->stx_gid = 1000;
+        value->stx_mode = (value->stx_mode & S_IFMT) | 0644;
         return;
     }
     if (is_virtual_native_library_path(actual, environment)) {
@@ -312,6 +347,20 @@ bool virtual_path_from_actual(
             size,
             environment->virtual_native_library_dir,
             actual + environment->native_library_dir.size()
+        );
+        return true;
+    }
+    if (!environment->native_library_dir_alias.empty() &&
+        starts_with_prefix(
+            actual,
+            environment->native_library_dir_alias
+        ) &&
+        !environment->virtual_native_library_dir.empty()) {
+        *result = copy_virtual_path(
+            buffer,
+            size,
+            environment->virtual_native_library_dir,
+            actual + environment->native_library_dir_alias.size()
         );
         return true;
     }
@@ -580,6 +629,13 @@ std::string virtualized_proc_content(
                 environment->native_library_dir,
                 environment->virtual_native_library_dir
             );
+            if (!environment->native_library_dir_alias.empty()) {
+                replace_all(
+                    &value,
+                    environment->native_library_dir_alias,
+                    environment->virtual_native_library_dir
+                );
+            }
         }
         const size_t runtime_count = std::min(
             environment->runtime_library_dirs.size(),
@@ -640,6 +696,13 @@ std::string virtualized_proc_content(
                 environment->native_library_dir,
                 environment->virtual_native_library_dir
             );
+            if (!environment->native_library_dir_alias.empty()) {
+                replace_all(
+                    &value,
+                    environment->native_library_dir_alias,
+                    environment->virtual_native_library_dir
+                );
+            }
         }
         const size_t runtime_count = std::min(
             environment->runtime_library_dirs.size(),
@@ -683,6 +746,13 @@ std::string virtualized_proc_content(
                 environment->native_library_dir,
                 environment->virtual_native_library_dir
             );
+            if (!environment->native_library_dir_alias.empty()) {
+                replace_all(
+                    &value,
+                    environment->native_library_dir_alias,
+                    environment->virtual_native_library_dir
+                );
+            }
         }
         const size_t runtime_count = std::min(
             environment->runtime_library_dirs.size(),

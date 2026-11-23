@@ -296,7 +296,7 @@ class ContainerServiceManager(
         val key = normalize(info.name)
         records[key]?.let { if (!it.destroyed) return it }
         return try {
-            val serviceClass = session.loader.loadClass(info.name)
+            val serviceClass = session.activeClassLoader.loadClass(info.name)
                 .asSubclass(Service::class.java)
             val service = serviceClass.getDeclaredConstructor().newInstance()
             attachBaseContext(service)

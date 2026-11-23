@@ -6,8 +6,12 @@ import dalvik.system.InMemoryDexClassLoader
 import dalvik.system.PathClassLoader
 import android.os.Build
 import java.io.File
+import java.io.InputStream
 import java.lang.reflect.Array as ReflectionArray
+import java.net.URL
 import java.nio.ByteBuffer
+import java.util.Collections
+import java.util.Enumeration
 
 /**
  * A PathClassLoader that can see runtime-generated DEX while an Application
@@ -23,6 +27,7 @@ class RuntimeDexPathClassLoader(
 ) : PathClassLoader(dexPath, librarySearchPath, parent) {
     private val lock = Any()
     private val resolvingFallback = ThreadLocal<Boolean>()
+    private val resources = ClassPathResourceFinder(dexPath)
     private var mergedDexSignature: String? = null
     private var fallbackDexLoader: ClassLoader? = null
     private val hostClassLoader =
@@ -41,6 +46,23 @@ class RuntimeDexPathClassLoader(
         )
         return resolved ?: fallback
     }
+
+    override fun findResource(name: String): URL? =
+        resources.findResource(name) ?: super.findResource(name)
+
+    override fun findResources(name: String): Enumeration<URL> =
+        resourceEnumeration(
+            resources.findResources(name) +
+                runCatching {
+                    Collections.list(super.findResources(name))
+                }.getOrDefault(emptyList())
+        )
+
+    override fun getResource(name: String): URL? =
+        resources.findResource(name) ?: super.getResource(name)
+
+    override fun getResourceAsStream(name: String): InputStream? =
+        resources.openResource(name) ?: super.getResourceAsStream(name)
 
     private fun findLibraryOnSearchPath(name: String): String? {
         val fileName = System.mapLibraryName(name)

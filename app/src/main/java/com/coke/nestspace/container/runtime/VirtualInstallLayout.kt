@@ -61,8 +61,18 @@ object VirtualInstallLayoutFactory {
         val fingerprint = sha256(
             "$packageName|$versionCode|$signature"
         )
-        val installRoot = "/data/app/${fingerprint.take(16)}/" +
-            "$packageName-${fingerprint.take(16)}"
+        // Android's package manager stores current installs below two
+        // URL-safe Base64 path tokens. Keeping the same shape matters to
+        // integrity SDKs that validate packageManager/ApplicationInfo and
+        // /proc maps against the platform's installation layout.
+        val installToken = androidPathToken(
+            sha256("$fingerprint|install")
+        )
+        val packageToken = androidPathToken(
+            sha256("$fingerprint|package")
+        )
+        val installRoot = "/data/app/~~$installToken/" +
+            "$packageName-$packageToken"
         // When the imported APK is the system's real installed copy, use its
         // actual /data/app path. Packers often reject a synthetic package path
         // that looks valid but does not exist on the filesystem.
@@ -109,4 +119,40 @@ object VirtualInstallLayoutFactory {
         MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte) }
+
+    /**
+     * 128 bits encoded with the URL-safe alphabet used by package manager
+     * install directory names. Manual encoding keeps the implementation
+     * available below API 26, where java.util.Base64 is unavailable.
+     */
+    internal fun androidPathToken(fingerprint: String): String {
+        val alphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        val bytes = ByteArray(16) { index ->
+            fingerprint.substring(index * 2, index * 2 + 2)
+                .toInt(16)
+                .toByte()
+        }
+        val encoded = buildString(22) {
+            var bitBuffer = 0
+            var bitCount = 0
+            for (byte in bytes) {
+                bitBuffer = (bitBuffer shl 8) or (byte.toInt() and 0xff)
+                bitCount += 8
+                while (bitCount >= 6) {
+                    bitCount -= 6
+                    append(alphabet[(bitBuffer shr bitCount) and 0x3f])
+                }
+                if (bitCount == 0) {
+                    bitBuffer = 0
+                } else {
+                    bitBuffer = bitBuffer and ((1 shl bitCount) - 1)
+                }
+            }
+            if (bitCount > 0) {
+                append(alphabet[(bitBuffer shl (6 - bitCount)) and 0x3f])
+            }
+        }
+        return "$encoded=="
+    }
 }

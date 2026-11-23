@@ -10,6 +10,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
+import com.coke.nestspace.container.identity.ContainerIdentity
 import com.coke.nestspace.container.loader.NativeLibs
 import com.coke.nestspace.engine.SpaceStore
 import java.io.File
@@ -129,6 +130,13 @@ internal object ContainerSpecFactory {
         val dataDir = File(File(root, "data"), sanitize(packageName))
             .resolve(sanitize(instanceId))
         dataDir.mkdirs()
+        val applicationInfo = installed?.applicationInfo ?: descriptor.applicationInfo
+        // The target package is not registered with the platform
+        // ResourcesManager. Preserve the parsed label so framework callers
+        // using PackageItemInfo.loadLabel() do not try to reopen a virtual
+        // /data/app path through the host ApplicationPackageManager.
+        applicationInfo.nonLocalizedLabel = app.label
+        descriptor.packageInfo.applicationInfo = applicationInfo
         mapOf(
             "files" to 0x1f9,
             "cache" to 0x5f9,
@@ -166,8 +174,12 @@ internal object ContainerSpecFactory {
                 firstInstallTime = packageFirstInstallTime
                 lastUpdateTime = packageLastUpdateTime
             },
-            applicationInfo = installed?.applicationInfo ?: descriptor.applicationInfo,
-            targetUid = installed?.uid ?: descriptor.applicationInfo.uid,
+            applicationInfo = applicationInfo,
+            // Imported APKs can be assigned a placeholder UID in the SDK
+            // sandbox range by getPackageArchiveInfo(). The running process
+            // still belongs to the host kernel UID, and self-queries must stay
+            // consistent with that truth.
+            targetUid = installed?.uid ?: ContainerIdentity.hostUid(),
             dataDir = dataDir.absolutePath,
             activityTheme = activity.theme,
             applicationTheme = descriptor.applicationInfo.theme,

@@ -85,7 +85,7 @@ data class VirtualIdentitySnapshot(
 internal object VirtualEnvironmentFactory {
     private fun observedUid(spec: ContainerLaunchSpec): Int {
         if (spec.targetUid > 0) return spec.targetUid
-        return 10_000 + (spec.packageName.hashCode() and 0x3fff)
+        return ContainerIdentity.hostUid()
     }
 
     fun create(

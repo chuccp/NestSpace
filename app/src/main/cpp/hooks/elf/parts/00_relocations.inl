@@ -225,11 +225,16 @@ bool target_object(const char* name) {
     const std::string_view basename = slash == std::string_view::npos
         ? path
         : path.substr(slash + 1);
-    // Framework file/database bridges execute inside system native libraries.
-    // Their PLT must be virtualized even though the libraries themselves are
-    // not packaged with the target APK.
+    // Framework file/database resource bridges execute inside system native
+    // libraries. Their PLT must be virtualized even though the libraries
+    // themselves are not packaged with the target APK. In particular,
+    // ResourcesManager loads ApplicationInfo.sourceDir through libandroidfw,
+    // so an installed-path view is not complete until this path is readable by
+    // the framework's own APK loader.
     if (basename == "libjavacore.so" ||
         basename == "libandroid_runtime.so" ||
+        basename == "libandroidfw.so" ||
+        basename == "libziparchive.so" ||
         basename == "libsqlite.so" ||
         basename == "libsqlcipher.so") {
         return true;

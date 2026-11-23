@@ -77,8 +77,10 @@ internal object TargetWebViewIdentityHook {
 
     fun install(context: Context): Boolean = runCatching {
         val app = hostContext(context)
-        val userAgent = readValidCache(app) ?: computeAndStore(app)
-            ?: return@runCatching false
+        // The host process validates and refreshes this cache before launch.
+        // Starting Chromium in a container process here would prevent the
+        // target Application from choosing its own WebView data directory.
+        val userAgent = readCachedUserAgent(app) ?: return@runCatching false
         System.setProperty("http.agent", userAgent)
         System.getProperty("http.agent") == userAgent
     }.onSuccess { installed ->
@@ -89,9 +91,7 @@ internal object TargetWebViewIdentityHook {
 
     private fun readValidCache(context: Context): String? {
         val prefs = prefs(context)
-        val userAgent = prefs.getString(KEY_USER_AGENT, null)
-            ?.takeIf(::isUsable)
-            ?: return null
+        val userAgent = readCachedUserAgent(context) ?: return null
         val providerPackage = prefs.getString(KEY_PROVIDER_PACKAGE, null)
             ?.takeIf { it.isNotBlank() }
             ?: return null
@@ -100,6 +100,9 @@ internal object TargetWebViewIdentityHook {
         val currentUpdatedAt = providerUpdatedAt(context, providerPackage) ?: return null
         return userAgent.takeIf { currentUpdatedAt == updatedAt }
     }
+
+    private fun readCachedUserAgent(context: Context): String? =
+        prefs(context).getString(KEY_USER_AGENT, null)?.takeIf(::isUsable)
 
     private fun computeAndStore(context: Context): String? {
         val userAgent = WebSettings.getDefaultUserAgent(context)

@@ -377,6 +377,14 @@ class ContainerSession private constructor(
     var headless: Boolean = false
     var mirrorDisplayId: Int = -1
 
+    /**
+     * Android resolves components through the LoadedApk's current class loader,
+     * not the immutable loader captured when the process was attached. Target
+     * frameworks can replace that loader during Application.onCreate.
+     */
+    internal val activeClassLoader: ClassLoader
+        get() = context.currentClassLoader()
+
     val instrumentation: ContainerInstrumentation = ContainerInstrumentation { this }
 
     val broadcastManager: ContainerBroadcastManager by lazy {
@@ -864,13 +872,14 @@ class ContainerSession private constructor(
             val appInfoField = bound.javaClass.getDeclaredField("appInfo")
             appInfoField.isAccessible = true
             appInfoField.set(bound, context.applicationInfo)
-            if (ExternalApplicationBootstrap.lastRealApplication != null) {
-                val targetLoadedApk = bound.javaClass.getDeclaredField("info")
-                    .apply { isAccessible = true }
-                    .get(bound)
-                if (targetLoadedApk != null) {
+            val targetLoadedApk = bound.javaClass.getDeclaredField("info")
+                .apply { isAccessible = true }
+                .get(bound)
+            if (targetLoadedApk != null) {
+                context.bindPackageInfo(targetLoadedApk)
+                publishedLoadedApk = targetLoadedApk
+                if (ExternalApplicationBootstrap.lastRealApplication != null) {
                     applyTargetLoadedApkIdentity(targetLoadedApk, loader)
-                    publishedLoadedApk = targetLoadedApk
                     val packages = threadClass.getDeclaredField("mPackages")
                         .apply { isAccessible = true }
                         .get(activityThread)
@@ -1048,7 +1057,10 @@ class ContainerSession private constructor(
     private fun activateProcessIdentityLocked() {
         if (!hostIdentitySuspended) return
         ProcessNameCompat.setPersistent(spec.targetProcessName)
-        publishVirtualIdentity(activityThread, context, loader)
+        // The target Application may have installed a framework-standard
+        // ClassLoader wrapper during onCreate. Re-publishing process identity
+        // must not overwrite that wrapper with the base APK loader.
+        publishVirtualIdentity(activityThread, context, activeClassLoader)
         publishAsProcessApplication()
         hostIdentitySuspended = false
         Log.d(TAG, "activated target process identity")
@@ -1110,7 +1122,8 @@ class ContainerSession private constructor(
         }
         val activityClass = fallbackActivityClass
             ?: (info.targetActivity?.takeIf { it.isNotBlank() } ?: info.name)
-        val targetClass = loader.loadClass(activityClass).asSubclass(Activity::class.java)
+        val targetClass = activeClassLoader.loadClass(activityClass)
+            .asSubclass(Activity::class.java)
         runtimeProfile?.beforeTargetActivity(
             applicationSpec,
             loader,
@@ -1446,7 +1459,7 @@ class ContainerSession private constructor(
             mapOf(
                 "mApplication" to application,
                 "mApplicationInfo" to context.applicationInfo,
-                "mClassLoader" to loader,
+                "mClassLoader" to context.currentClassLoader(),
                 "mPackageName" to spec.packageName,
                 "mAppDir" to spec.baseApkPath,
                 "mResDir" to spec.baseApkPath,
@@ -2252,6 +2265,20 @@ class ContainerSession private constructor(
                 .distinct()
                 .joinToString(File.pathSeparator)
                 .ifBlank { null }
+            // JNA resolves libraries through java.library.path and
+            // jna.library.path instead of ClassLoader.findLibrary(). Publish
+            // the same target-native search path so libraries loaded through
+            // JNA follow normal Android native-library semantics too.
+            nativeSearchPath?.let { path ->
+                val existing = System.getProperty("jna.library.path").orEmpty()
+                System.setProperty(
+                    "jna.library.path",
+                    listOf(path, existing)
+                        .filter(String::isNotBlank)
+                        .distinct()
+                        .joinToString(File.pathSeparator)
+                )
+            }
             var loader: ClassLoader = if (externalApplication) {
                 if (useDynamicExternalLoader) {
                     RuntimeDexPathClassLoader(
@@ -2602,8 +2629,8 @@ class ContainerSession private constructor(
             // imported files. From this point on, expose the stable installed-
             // app path to the target so packers cannot observe a half-virtual
             // package whose code path and PackageManager metadata disagree.
-            appInfo.sourceDir = spec.baseApkPath
-            appInfo.publicSourceDir = spec.baseApkPath
+            appInfo.sourceDir = installLayout.virtualBaseApkPath
+            appInfo.publicSourceDir = installLayout.virtualBaseApkPath
             appInfo.nativeLibraryDir = exposedNativeLibraryDir
             runCatching {
                 appInfo.javaClass
@@ -2643,25 +2670,6 @@ class ContainerSession private constructor(
                 loader,
                 context
             )
-            if (externalApplication) {
-                if (NativeEnvironmentBridge.readPropertyForDiagnostics(
-                        "debug.nestspace.force_syscall_gateway"
-                    ) == "1"
-                ) {
-                    val installed =
-                        NativeEnvironmentBridge.installSyscallGateway()
-                    Log.d(
-                        TAG,
-                        "syscall gateway for external bootstrap installed=$installed"
-                    )
-                } else {
-                    // External bootstrap wrappers inspect seccomp and
-                    // inline-hook state before unpacking their code.
-                    Log.d(TAG, "syscall gateway skipped for external bootstrap")
-                }
-            } else {
-                NativeEnvironmentBridge.installSyscallGateway()
-            }
             ContainerLaunchProgress.advance(LaunchProgressStage.ATTACHING_APPLICATION)
             val applicationAttachStartedAt = SystemClock.elapsedRealtime()
             val attachedApplication = ProcessNameCompat.withProcessName(spec.targetProcessName) {
@@ -2674,6 +2682,22 @@ class ContainerSession private constructor(
                         runtimeNativeLibraries
                     )
                 }
+            }
+            // Native storage and platform libraries initialize their own
+            // thread pools and file locks in attachBaseContext. Installing a
+            // syscall trap before that point can deadlock those initializers
+            // on real devices, so enforce direct-syscall identity immediately
+            // after the base Application attachment completes.
+            if (!externalApplication ||
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.force_syscall_gateway"
+                ) == "1"
+            ) {
+                NativeEnvironmentBridge.installSyscallGateway()
+            } else {
+                // External bootstrap wrappers inspect seccomp and inline-hook
+                // state before unpacking their code.
+                Log.d(TAG, "syscall gateway skipped for external bootstrap")
             }
             val application = if (externalApplication) {
                 ExternalApplicationBootstrap.lastRealApplication
@@ -2755,7 +2779,7 @@ class ContainerSession private constructor(
                         startupCoordinator = startupCoordinator,
                         environmentValidation = environmentValidation,
                         intents = intents,
-                        packageManager = packageManager,
+                        packageManager = virtualPackageManager,
                         virtualPackages = virtualPackages
                     ).also {
                         it.patchHostContextPackageManager(host.applicationContext)
@@ -2829,7 +2853,7 @@ class ContainerSession private constructor(
                     runCatching {
                         loadedApkClass.getDeclaredField("mResDir")
                             .apply { isAccessible = true }
-                            .set(loadedApk, context.applicationInfo.publicSourceDir)
+                            .set(loadedApk, context.packageResourcePath)
                     }
                 }
             }.onFailure { Log.w(TAG, "prepublish appInfo failed", it) }

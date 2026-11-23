@@ -111,6 +111,7 @@ object SystemServiceIdentity {
     private var inputMethodInstalled = false
     private var storageInstalled = false
     private var networkManagementInstalled = false
+    private var bluetoothInstalled = false
 
     /**
      * Arms a one-shot hook for the root target page. It is set only while the
@@ -252,6 +253,11 @@ object SystemServiceIdentity {
             networkManagementInstalled = true
             runCatching { installNetworkManagementBridge() }
                 .onFailure { Log.w(TAG, "NetworkManagement proxy failed", it) }
+        }
+        if (!bluetoothInstalled) {
+            bluetoothInstalled = true
+            runCatching { installBluetoothPermissionProxy() }
+                .onFailure { Log.w(TAG, "Bluetooth permission proxy failed", it) }
         }
 
         // Containers created earlier may already hold an ApplicationPackageManager.
@@ -569,6 +575,32 @@ object SystemServiceIdentity {
         Log.d(TAG, "$label service proxies=$patched")
     }
 
+    /**
+     * WebView's audio initializer queries Bluetooth profile state without
+     * asking the host for BLUETOOTH_CONNECT first. A denied host permission
+     * then escapes as an uncaught Java exception on a Chromium worker thread
+     * and kills the process. Preserve the normal binder result when allowed;
+     * otherwise report the same disconnected state as a device with Bluetooth
+     * unavailable.
+     */
+    private fun installBluetoothPermissionProxy() {
+        val adapterClass = loadClass("android.bluetooth.BluetoothAdapter") ?: return
+        val adapter = method(adapterClass, "getDefaultAdapter")?.invoke(null) ?: return
+        val iface = loadClass("android.bluetooth.IBluetooth") ?: return
+        val instanceField = declaredField(adapter.javaClass, "mService") ?: return
+        val delegate = instanceField.get(adapter) ?: return
+        if (Proxy.isProxyClass(delegate.javaClass)) return
+
+        val proxy = Proxy.newProxyInstance(
+            iface.classLoader,
+            arrayOf(iface),
+            BluetoothPermissionHandler(delegate)
+        )
+        instanceField.set(adapter, proxy)
+        declaredField(adapterClass, "sService")?.set(null, proxy)
+        Log.d(TAG, "Bluetooth IBluetooth permission proxy installed")
+    }
+
     private fun installInputMethodProxy(contexts: List<Context>) {
         val iface = loadClass("com.android.internal.view.IInputMethodManager")
         val invoker = loadClass(
@@ -726,9 +758,13 @@ object SystemServiceIdentity {
                 val permission = virtualPermissions?.checkSelfPermission(
                     Manifest.permission.POST_NOTIFICATIONS
                 )
-                if (permission != PackageManager.PERMISSION_GRANTED) {
-                    return false
-                }
+                // NotificationManagerService enforces same-package identity
+                // from Binder attribution. The target package is virtual, so
+                // forwarding this package-less query from the host UID throws
+                // SecurityException and aborts the rest of Activity.onResume().
+                // Answer from the container's Android permission state instead.
+                return permission == null ||
+                    permission == PackageManager.PERMISSION_GRANTED
             }
             if (isNotificationReadMethod(method.name)) {
                 return invokeDelegate(delegate, method, args)
@@ -768,6 +804,43 @@ object SystemServiceIdentity {
                 return invokeDelegate(delegate, method, args)
             }
             return fallback.invoke(proxy, method, args)
+        }
+    }
+
+    private class BluetoothPermissionHandler(
+        private val delegate: Any
+    ) : InvocationHandler {
+        override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
+            if (method.declaringClass == Any::class.java) {
+                return when (method.name) {
+                    "equals" -> proxy === args?.firstOrNull()
+                    "hashCode" -> System.identityHashCode(proxy)
+                    "toString" -> "ContainerBluetooth(${delegate.javaClass.name})"
+                    else -> null
+                }
+            }
+            return try {
+                invokeDelegate(delegate, method, args)
+            } catch (security: SecurityException) {
+                Log.w(
+                    TAG,
+                    "Bluetooth ${method.name} denied; returning unavailable state",
+                    security
+                )
+                unavailableValue(method.returnType)
+            }
+        }
+
+        private fun unavailableValue(type: Class<*>): Any? = when (type) {
+            Boolean::class.javaPrimitiveType -> false
+            Byte::class.javaPrimitiveType -> 0.toByte()
+            Short::class.javaPrimitiveType -> 0.toShort()
+            Int::class.javaPrimitiveType -> 0
+            Long::class.javaPrimitiveType -> 0L
+            Float::class.javaPrimitiveType -> 0f
+            Double::class.javaPrimitiveType -> 0.0
+            Char::class.javaPrimitiveType -> '\u0000'
+            else -> null
         }
     }
 

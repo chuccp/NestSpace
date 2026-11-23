@@ -53,10 +53,10 @@ object VirtualEnvironmentValidator {
                 "Application UID ${facts.applicationUid} != observed ${environment.observedUid}"
             )
         }
-        if (facts.processUid != environment.hostUid) {
+        if (facts.processUid != environment.observedUid) {
             issues += error(
                 "PROCESS_UID_MISMATCH",
-                "Process UID ${facts.processUid} != host ${environment.hostUid}"
+                "Process UID ${facts.processUid} != observed ${environment.observedUid}"
             )
         }
         if (facts.processPid != environment.virtualPid) {
@@ -119,10 +119,11 @@ object VirtualEnvironmentValidator {
                     "Native PID ${native.configuredPid} != ${environment.virtualPid}"
                 )
             }
-            if (native.processUid != environment.hostUid) {
+            if (native.processUid != environment.observedUid) {
                 issues += error(
                     "NATIVE_PROCESS_UID_MISMATCH",
-                    "Native process UID ${native.processUid} != ${environment.hostUid}"
+                    "Native process UID ${native.processUid} != " +
+                        environment.observedUid
                 )
             }
         }

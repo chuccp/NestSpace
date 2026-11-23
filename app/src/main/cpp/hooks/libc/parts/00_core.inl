@@ -550,18 +550,26 @@ void log_target_open(
         "debug.nestspace.target_open_trace",
         enabled
     );
-    if (strcmp(enabled, "1") != 0 ||
-        (strncmp(
+    const bool target_data_path = strncmp(
             requested,
             environment->target_data_root
                 .c_str(),
             environment->target_data_root.size()
-        ) != 0 &&
-         strncmp(
+        ) == 0 ||
+        strncmp(
             requested,
             environment->target_data_alias.c_str(),
             environment->target_data_alias.size()
-        ) != 0)) {
+        ) == 0;
+    const bool installed_package_path =
+        !environment->virtual_base_apk_path.empty() &&
+        strncmp(
+            requested,
+            environment->virtual_base_apk_path.c_str(),
+            environment->virtual_base_apk_path.size()
+        ) == 0;
+    if (strcmp(enabled, "1") != 0 ||
+        (!target_data_path && !installed_package_path)) {
         return;
     }
     __android_log_print(
