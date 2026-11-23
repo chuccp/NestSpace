@@ -648,6 +648,10 @@ public class MainActivity extends Activity {
             startActivity(new Intent(this, HookProbeActivity.class)
                 .putExtra("uid_list", true))
         );
+        findViewById(R.id.run_integrity_probe_home).setOnClickListener(v ->
+            startActivity(new Intent(this, HookProbeActivity.class)
+                .putExtra("integrity_probe", true))
+        );
         findViewById(R.id.query_worker_provider).setOnClickListener(v -> {
             try (Cursor cursor = getContentResolver().query(
                 Uri.parse("content://com.coke.testapp.workerprovider/hello"),

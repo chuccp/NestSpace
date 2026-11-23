@@ -63,6 +63,13 @@
                             android:layout_width="match_parent"
                             android:layout_weight="0"
                             android:text="@string/home_uid_detail" />
+
+                        <Button
+                            android:id="@+id/run_integrity_probe_home"
+                            style="@style/TestApp.Button"
+                            android:layout_width="match_parent"
+                            android:layout_weight="0"
+                            android:text="@string/run_integrity_probe" />
                     </LinearLayout>
 
                     <TextView

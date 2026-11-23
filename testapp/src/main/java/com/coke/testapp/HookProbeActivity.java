@@ -59,6 +59,10 @@ public class HookProbeActivity extends Activity {
             showUidList();
             return;
         }
+        if (getIntent().getBooleanExtra("integrity_probe", false)) {
+            showIntegrityProbe();
+            return;
+        }
         try {
             NativeProbe.ensureLoaded();
         } catch (Throwable error) {
@@ -106,6 +110,42 @@ public class HookProbeActivity extends Activity {
             )
         );
         setContentView(root);
+    }
+
+    private void showIntegrityProbe() {
+        IntegrityProbe.Result result = IntegrityProbe.run(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(24, 24, 24, 16);
+
+        TextView title = new TextView(this);
+        title.setText("BDMS 风格完整性检测\n" +
+            (result.passed ? "整体结果: PASS" : "整体结果: FAIL"));
+        title.setTextSize(18);
+        title.setGravity(Gravity.START);
+        title.setPadding(0, 0, 0, 16);
+        root.addView(title);
+
+        ListView list = new ListView(this);
+        list.setAdapter(new ArrayAdapter<>(
+            this,
+            android.R.layout.simple_list_item_1,
+            result.rows
+        ));
+        root.addView(
+            list,
+            new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        );
+        setContentView(root);
+        Log.i(
+            "IntegrityProbe",
+            String.join("\n", result.rows) +
+                "\noverall=" + (result.passed ? "PASS" : "FAIL")
+        );
     }
 
     private String buildReport() {
