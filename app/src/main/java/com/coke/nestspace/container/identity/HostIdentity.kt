@@ -28,6 +28,12 @@ object HostIdentity {
     @Volatile
     private var capturedExternalCacheDir: File? = null
 
+    @Volatile
+    private var capturedBaseApkPath: String? = null
+
+    @Volatile
+    private var capturedNativeLibraryDir: String? = null
+
     /**
      * Slot processes alternate between target and host Resource identities.
      * Freeze the values before a virtual session can publish its Application
@@ -38,6 +44,12 @@ object HostIdentity {
         val appContext = context.applicationContext
         if (capturedApplication == null) {
             capturedApplication = appContext as? Application
+        }
+        if (capturedBaseApkPath == null) {
+            capturedBaseApkPath = appContext.applicationInfo.sourceDir
+        }
+        if (capturedNativeLibraryDir == null) {
+            capturedNativeLibraryDir = appContext.applicationInfo.nativeLibraryDir
         }
         if (capturedResources == null) {
             val current = appContext.resources
@@ -79,6 +91,12 @@ object HostIdentity {
 
     val externalCacheDir: File?
         get() = capturedExternalCacheDir
+
+    val baseApkPath: String
+        get() = capturedBaseApkPath.orEmpty()
+
+    val nativeLibraryDir: String
+        get() = capturedNativeLibraryDir.orEmpty()
 
     private fun isHostResources(resources: Resources): Boolean =
         runCatching {

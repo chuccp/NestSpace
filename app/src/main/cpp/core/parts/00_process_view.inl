@@ -496,10 +496,12 @@ bool is_host_runtime_path(
         line.find(host) != std::string::npos) {
         return true;
     }
-    const std::array<std::string, 5> host_roots = {
+    const std::array<std::string, 7> host_roots = {
         "/data/data/" + host,
         "/data/user/0/" + host,
         "/data/user_de/0/" + host,
+        "/data/misc/profiles/cur/0/" + host,
+        "/data/misc/profiles/ref/0/" + host,
         "/storage/emulated/0/Android/data/" + host,
         "/sdcard/Android/data/" + host,
     };

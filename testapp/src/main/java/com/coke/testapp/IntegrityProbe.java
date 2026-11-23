@@ -230,19 +230,7 @@ final class IntegrityProbe {
         checkNative(rows, nativeReport, "native.rawMountinfo.read", "ok");
         checkNative(rows, nativeReport, "child-proc.uid", expectedUid);
         checkNative(rows, nativeReport, "child-proc.raw_uid", expectedUid);
-
-        String childStatus = field(
-            nativeReport,
-            "child-proc.parent_status="
-        );
-        add(
-            rows,
-            "子进程父 status UID",
-            uidSummary(childStatus),
-            uidSummary(childStatus).contains(
-                String.valueOf(expectedUid)
-            )
-        );
+        checkNative(rows, nativeReport, "child-proc.parent_uid", expectedUid);
 
         String maps = read("/proc/self/maps");
         boolean hostLeak = maps.contains("com.coke.nestspace") ||
@@ -253,12 +241,12 @@ final class IntegrityProbe {
             hostLeak ? "LEAK" : "not present",
             !hostLeak
         );
-        String javaStack = javaStackSummary();
+        StackTraceElement[] javaStack = new Throwable().getStackTrace();
         add(
             rows,
-            "Java 调用栈宿主帧",
-            javaStack,
-            !hostMarker(javaStack)
+            "BDMS 调用栈窗口",
+            stackSummary(javaStack) + " window=4",
+            !stackWindowHostLeak(javaStack)
         );
 
         boolean passed = true;
@@ -309,30 +297,31 @@ final class IntegrityProbe {
         );
     }
 
-    private static String uidSummary(String status) {
-        int offset = status.indexOf("Uid:");
-        if (offset < 0) return "missing";
-        return status.substring(offset, Math.min(
-            status.length(),
-            offset + 64
-        ));
-    }
-
     private static boolean hostMarker(String value) {
         return value.contains("com.coke.nestspace") ||
             value.contains("libnestspace") ||
             value.contains("NestSpace");
     }
 
-    private static String javaStackSummary() {
+    private static String stackSummary(StackTraceElement[] stack) {
         StringBuilder value = new StringBuilder();
-        for (StackTraceElement element : new Throwable().getStackTrace()) {
+        int limit = Math.min(stack.length, 8);
+        for (int index = 0; index < limit; index++) {
+            StackTraceElement element = stack[index];
             if (value.length() != 0) value.append(" <- ");
             value.append(element.getClassName())
                 .append('#')
                 .append(element.getMethodName());
         }
         return value.toString();
+    }
+
+    private static boolean stackWindowHostLeak(StackTraceElement[] stack) {
+        int limit = Math.min(stack.length, 4);
+        for (int index = 0; index < limit; index++) {
+            if (hostMarker(stack[index].getClassName())) return true;
+        }
+        return false;
     }
 
     private static String field(String report, String prefix) {

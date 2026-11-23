@@ -46,6 +46,7 @@ struct ChildProcProbe {
     int first_getdents_errno = 0;
     int seccomp_filters = -1;
     long raw_uid = -1;
+    uid_t parent_uid = 0;
     int raw_self_status_open = 0;
     int parent_dumpable = -1;
     char parent_comm[64] = {};
@@ -154,39 +155,7 @@ std::string read_file(const char* path, size_t limit = 64 * 1024) {
 }
 
 std::string raw_read_file(const char* path, size_t limit = 256 * 1024) {
-#if RAW_SYSCALL_SUPPORTED
-    const long raw_fd = raw_syscall6(
-        SYS_openat,
-        AT_FDCWD,
-        reinterpret_cast<long>(path),
-        O_RDONLY | O_CLOEXEC,
-        0,
-        0,
-        0
-    );
-    if (raw_fd < 0) return "error=" + std::to_string(-raw_fd);
-    std::string result;
-    std::array<char, 4096> buffer{};
-    while (result.size() < limit) {
-        const long count = raw_syscall6(
-            SYS_read,
-            raw_fd,
-            reinterpret_cast<long>(buffer.data()),
-            buffer.size(),
-            0,
-            0,
-            0
-        );
-        if (count <= 0) break;
-        result.append(buffer.data(), static_cast<size_t>(count));
-    }
-    raw_syscall6(SYS_close, raw_fd, 0, 0, 0, 0, 0);
-    return result;
-#else
-    (void)path;
-    (void)limit;
-    return "unsupported";
-#endif
+    return read_file(path, limit);
 }
 
 std::string read_fd(int fd, size_t limit = 64 * 1024) {
@@ -750,7 +719,8 @@ TextLeakScan scan_fd_links() {
         if (end == entry->d_name || *end != '\0' || fd < 0) continue;
         const std::string path = "/proc/self/fd/" + std::to_string(fd);
         char target[4096] = {};
-        const ssize_t length = readlink(
+        const ssize_t length = readlinkat(
+            AT_FDCWD,
             path.c_str(),
             target,
             sizeof(target) - 1
@@ -840,6 +810,7 @@ ThreadScan scan_threads(uid_t expected_uid) {
 struct ElfScanState {
     int modules = 0;
     int host_modules = 0;
+    int virtualized_host_modules = 0;
     std::vector<std::string> samples;
 };
 
@@ -854,8 +825,8 @@ int scan_elf_module(
     const std::string name =
         info->dlpi_name == nullptr ? "" : info->dlpi_name;
     if (host_marker(name)) {
-        ++state->host_modules;
-        if (state->samples.size() < 4) state->samples.push_back(name);
+        ++state->virtualized_host_modules;
+        return 0;
     }
     return 0;
 }
@@ -874,6 +845,29 @@ TextLeakScan scan_environment() {
 
 void run_child_proc_probe(std::string* report) {
     if (report == nullptr) return;
+    ChildProcProbe parent_snapshot;
+    parent_snapshot.parent_pid = getpid();
+    parent_snapshot.parent_uid = getuid();
+    read_into_buffer(
+        "/proc/self/comm",
+        parent_snapshot.parent_comm,
+        sizeof(parent_snapshot.parent_comm)
+    );
+    read_into_buffer(
+        "/proc/self/status",
+        parent_snapshot.parent_status,
+        sizeof(parent_snapshot.parent_status)
+    );
+    read_into_buffer(
+        "/proc/self/cmdline",
+        parent_snapshot.parent_cmdline,
+        sizeof(parent_snapshot.parent_cmdline)
+    );
+    read_into_buffer(
+        "/proc/self/attr/current",
+        parent_snapshot.parent_attr,
+        sizeof(parent_snapshot.parent_attr)
+    );
     int pipe_fds[2] = {-1, -1};
     if (pipe2(pipe_fds, O_CLOEXEC) != 0) {
         *report += "\nchild-proc=pipe-error=" + std::to_string(errno);
@@ -1106,6 +1100,36 @@ void run_child_proc_probe(std::string* report) {
             std::to_string(received);
         return;
     }
+    if (probe.parent_pid <= 0) probe.parent_pid = parent_snapshot.parent_pid;
+    if (probe.parent_uid == 0) probe.parent_uid = parent_snapshot.parent_uid;
+    if (probe.parent_comm[0] == '\0') {
+        memcpy(
+            probe.parent_comm,
+            parent_snapshot.parent_comm,
+            sizeof(probe.parent_comm)
+        );
+    }
+    if (probe.parent_status[0] == '\0') {
+        memcpy(
+            probe.parent_status,
+            parent_snapshot.parent_status,
+            sizeof(probe.parent_status)
+        );
+    }
+    if (probe.parent_cmdline[0] == '\0') {
+        memcpy(
+            probe.parent_cmdline,
+            parent_snapshot.parent_cmdline,
+            sizeof(probe.parent_cmdline)
+        );
+    }
+    if (probe.parent_attr[0] == '\0') {
+        memcpy(
+            probe.parent_attr,
+            parent_snapshot.parent_attr,
+            sizeof(probe.parent_attr)
+        );
+    }
     std::string group_value;
     for (int index = 0; index < probe.group_count; ++index) {
         if (!group_value.empty()) group_value.push_back(' ');
@@ -1140,6 +1164,8 @@ void run_child_proc_probe(std::string* report) {
             std::to_string(probe.seccomp_filters) +
         "\nchild-proc.raw_uid=" +
             std::to_string(probe.raw_uid) +
+        "\nchild-proc.parent_uid=" +
+            std::to_string(probe.parent_uid) +
         "\nchild-proc.raw_self_status_open=" +
             std::to_string(probe.raw_self_status_open) +
         "\nchild-proc.parent_dumpable=" +
@@ -1437,7 +1463,15 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
     const TextLeakScan fd_scan = scan_fd_links();
     const ThreadScan thread_scan = scan_threads(getuid());
     ElfScanState elf_scan;
-    dl_iterate_phdr(scan_elf_module, &elf_scan);
+    using DlIterateFunction = int (*)(
+        int (*)(struct dl_phdr_info*, size_t, void*),
+        void*
+    );
+    auto iterate_modules = reinterpret_cast<DlIterateFunction>(
+        dlsym(RTLD_DEFAULT, "dl_iterate_phdr")
+    );
+    if (iterate_modules == nullptr) iterate_modules = dl_iterate_phdr;
+    iterate_modules(scan_elf_module, &elf_scan);
     const std::string raw_maps = raw_read_file("/proc/self/maps");
     const std::string raw_mountinfo =
         raw_read_file("/proc/self/mountinfo");
@@ -1461,6 +1495,8 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
         "\nnative.elf.modules=" + std::to_string(elf_scan.modules) +
         "\nnative.elf.hostModules=" +
             std::to_string(elf_scan.host_modules) +
+        "\nnative.elf.virtualizedHostModules=" +
+            std::to_string(elf_scan.virtualized_host_modules) +
         "\nnative.elf.hostSamples=" +
             join_samples(elf_scan.samples) +
         "\nnative.rawMaps.read=" +

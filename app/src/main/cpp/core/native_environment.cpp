@@ -372,6 +372,47 @@ void install_runtime_exit_guard(JNIEnv* env) {
     env->DeleteLocalRef(runtime_class);
 }
 
+void virtualize_environment_path(const char* name) {
+    if (name == nullptr) return;
+    const char* current = getenv(name);
+    if (current == nullptr || current[0] == '\0') return;
+    char mapped[PATH_MAX] = {};
+    ssize_t mapped_length = -1;
+    if (!nestspace::virtual_path_from_actual(
+            current,
+            mapped,
+            sizeof(mapped),
+            &mapped_length
+        )) {
+        return;
+    }
+    if (setenv(name, mapped, 1) != 0) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "virtualize environment failed name=%s errno=%d",
+            name,
+            errno
+        );
+    }
+}
+
+void virtualize_process_environment() {
+    static constexpr const char* kPathVariables[] = {
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "HOME",
+        "CLASSPATH",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "JAVA_TOOL_OPTIONS",
+    };
+    for (const char* name : kPathVariables) {
+        virtualize_environment_path(name);
+    }
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -495,6 +536,7 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
 
     nestspace::restore_hooks();
     nestspace::publish_environment(std::move(environment));
+    virtualize_process_environment();
     char disable_binder_identity[PROP_VALUE_MAX] = {};
     __system_property_get(
         "debug.nestspace.disable_binder_identity",

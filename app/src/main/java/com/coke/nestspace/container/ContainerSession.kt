@@ -2517,14 +2517,8 @@ class ContainerSession private constructor(
                     virtualEnvironment,
                     VirtualEnvironmentRegistry.identitySnapshot(),
                     HostIdentity.packageName,
-                    HostIdentity.application
-                        ?.applicationInfo
-                        ?.sourceDir
-                        .orEmpty(),
-                    HostIdentity.application
-                        ?.applicationInfo
-                        ?.nativeLibraryDir
-                        .orEmpty(),
+                    HostIdentity.baseApkPath,
+                    HostIdentity.nativeLibraryDir,
                     runtimeNativeLibraries.directories.map(File::getAbsolutePath),
                     runtimeNativeLibraries.files.map(File::getAbsolutePath)
                 )

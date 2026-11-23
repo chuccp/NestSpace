@@ -426,11 +426,12 @@ void respond_user_notification(
             virtual_path,
             &rewritten
         );
-        std::string actual_proc_path;
-        const bool proc_path = notification_proc_path(
+        const bool virtual_proc = notification_proc_path(
             virtual_path,
             static_cast<pid_t>(request.pid)
-        ) &&
+        );
+        std::string actual_proc_path;
+        const bool proc_path = virtual_proc &&
             gateway_proc_path(
                 virtual_path,
                 static_cast<pid_t>(request.pid),
@@ -472,11 +473,12 @@ void respond_user_notification(
             virtual_path,
             &rewritten
         );
-        std::string actual_proc_path;
-        const bool proc_path = notification_proc_path(
+        const bool virtual_proc = notification_proc_path(
             virtual_path,
             static_cast<pid_t>(request.pid)
-        ) &&
+        );
+        std::string actual_proc_path;
+        const bool proc_path = virtual_proc &&
             gateway_proc_path(
                 virtual_path,
                 static_cast<pid_t>(request.pid),

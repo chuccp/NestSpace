@@ -337,6 +337,39 @@ bool virtual_path_from_actual(
         )) {
         return true;
     }
+    if (exact(
+            environment->host_base_apk_path,
+            environment->virtual_base_apk_path
+        )) {
+        return true;
+    }
+    if (!environment->host_package_name.empty() &&
+        starts_with_prefix(actual, "/data/app/") &&
+        strstr(
+            actual,
+            ("/" + environment->host_package_name + "-").c_str()
+        ) != nullptr) {
+        *result = copy_virtual_path(
+            buffer,
+            size,
+            environment->virtual_base_apk_path,
+            ""
+        );
+        return true;
+    }
+    if (starts_with_prefix(
+            actual,
+            environment->host_native_library_dir
+        ) &&
+        !environment->virtual_native_library_dir.empty()) {
+        *result = copy_virtual_path(
+            buffer,
+            size,
+            environment->virtual_native_library_dir,
+            actual + environment->host_native_library_dir.size()
+        );
+        return true;
+    }
     if (starts_with_prefix(
             actual,
             environment->native_library_dir
@@ -388,6 +421,20 @@ bool virtual_path_from_actual(
         return true;
     };
 
+    const std::string host_data_root =
+        "/data/user/0/" + environment->host_package_name;
+    const std::string host_data_alias =
+        "/data/data/" + environment->host_package_name;
+    const std::string host_runtime_root =
+        host_data_root + "/files/vspace";
+    const std::string host_runtime_alias =
+        host_data_alias + "/files/vspace";
+    if (rewrite(host_runtime_root, environment->target_data_root) ||
+        rewrite(host_runtime_alias, environment->target_data_root) ||
+        rewrite(host_data_root, environment->target_data_root) ||
+        rewrite(host_data_alias, environment->target_data_alias)) {
+        return true;
+    }
     if (rewrite(environment->actual_device_root, environment->target_device_root)) {
         return true;
     }
@@ -729,6 +776,42 @@ std::string virtualized_proc_content(
             "mountinfo"
         );
         std::string value = read_text_file(proc_mountinfo.c_str());
+        const std::string host_profile_root =
+            "/data/misc/profiles/cur/0/" +
+            environment->host_package_name;
+        const std::string host_profile_reference =
+            "/data/misc/profiles/ref/0/" +
+            environment->host_package_name;
+        replace_all(
+            &value,
+            host_profile_root,
+            "/data/misc/profiles/cur/0/" + environment->package_name
+        );
+        replace_all(
+            &value,
+            host_profile_reference,
+            "/data/misc/profiles/ref/0/" + environment->package_name
+        );
+        replace_all(
+            &value,
+            "/misc/profiles/cur/0/" + environment->host_package_name,
+            "/misc/profiles/cur/0/" + environment->package_name
+        );
+        replace_all(
+            &value,
+            "/misc/profiles/ref/0/" + environment->host_package_name,
+            "/misc/profiles/ref/0/" + environment->package_name
+        );
+        replace_all(
+            &value,
+            "/misc/profiles/cur/" + environment->host_package_name,
+            "/misc/profiles/cur/" + environment->package_name
+        );
+        replace_all(
+            &value,
+            "/misc/profiles/ref/" + environment->host_package_name,
+            "/misc/profiles/ref/" + environment->package_name
+        );
         replace_all(
             &value,
             environment->actual_base_apk_path,
