@@ -2737,7 +2737,7 @@ class ContainerSession private constructor(
                     contextPackageName = context.packageName,
                     applicationPackageName = application.packageName,
                     applicationUid = application.applicationInfo.uid,
-                    processUid = ContainerIdentity.hostUid(),
+                    processUid = android.os.Process.myUid(),
                     processPid = android.os.Process.myPid(),
                     contextDataDir = context.dataDir.absolutePath,
                     applicationDataDir = application.applicationInfo.dataDir,

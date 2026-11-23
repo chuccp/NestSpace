@@ -156,7 +156,8 @@ object SystemServiceIdentity {
         this.hostPackage = hostPackage
         targetPackageInfo = spec.packageInfo
         targetAppInfo = spec.applicationInfo
-        targetUid = ContainerIdentity.virtualUidFor(spec.packageName)
+        targetUid = spec.targetUid.takeIf { it >= 10_000 }
+            ?: ContainerIdentity.virtualUidFor(spec.packageName)
         this.targetResources = targetResources
         this.registry = registry
         virtualPermissions = permissions

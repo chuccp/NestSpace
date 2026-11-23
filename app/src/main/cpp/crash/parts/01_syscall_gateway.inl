@@ -39,6 +39,256 @@ void handle_openat_syscall(ucontext_t* context) {
         static_cast<uintptr_t>(returned);
 }
 
+bool resolve_gateway_path(
+    const char* requested,
+    pid_t client_pid,
+    std::string* resolved,
+    bool* rewrite_identity
+) {
+    if (requested == nullptr || resolved == nullptr ||
+        rewrite_identity == nullptr) {
+        return false;
+    }
+    std::string mapped;
+    const bool path_mapped = nestspace::rewrite_target_path(
+        requested,
+        &mapped
+    );
+    const bool virtual_proc = notification_proc_path(
+        requested,
+        client_pid
+    );
+    std::string actual_proc;
+    const bool proc_mapped = virtual_proc &&
+        gateway_proc_path(requested, client_pid, &actual_proc);
+    *resolved = proc_mapped
+        ? actual_proc
+        : (path_mapped ? mapped : requested);
+    *rewrite_identity = path_mapped || virtual_proc;
+    return true;
+}
+
+void handle_fstatat_syscall(ucontext_t* context) {
+    if (context == nullptr) return;
+    const int dirfd = static_cast<int>(context->uc_mcontext.regs[0]);
+    const auto path_address = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[1]
+    );
+    const auto result_address = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[2]
+    );
+    const int flags = static_cast<int>(context->uc_mcontext.regs[3]);
+    char original[PATH_MAX] = {};
+    if (!read_user_string(path_address, original, sizeof(original))) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EFAULT);
+        return;
+    }
+    std::string path;
+    bool rewrite_identity = false;
+    if (!resolve_gateway_path(
+            original,
+            getpid(),
+            &path,
+            &rewrite_identity
+        )) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EINVAL);
+        return;
+    }
+    GatewayRequest request {};
+    request.type = notification_proc_path(original, getpid())
+        ? kGatewayVirtualFstatat
+        : kGatewayFstatat;
+    request.client_pid = getpid();
+    request.dirfd = dirfd;
+    request.flags = flags;
+    request.rewrite_identity = rewrite_identity ? 1 : 0;
+    strncpy(request.path, path.c_str(), sizeof(request.path) - 1);
+    GatewayResponse response {};
+    const long result = call_syscall_broker(
+        &request,
+        nullptr,
+        &response
+    );
+    if (result == 0 && response.payload_size != 0) {
+        struct stat value {};
+        memcpy(
+            &value,
+            response.payload,
+            std::min(response.payload_size, sizeof(value))
+        );
+        nestspace::virtualize_target_file_stat(
+            notification_proc_path(original, getpid())
+                ? original
+                : path.c_str(),
+            &value
+        );
+        memcpy(
+            reinterpret_cast<void*>(result_address),
+            &value,
+            std::min(response.payload_size, sizeof(value))
+        );
+    }
+    context->uc_mcontext.regs[0] = static_cast<uintptr_t>(result);
+}
+
+void handle_statx_syscall(ucontext_t* context) {
+    if (context == nullptr) return;
+    const int dirfd = static_cast<int>(context->uc_mcontext.regs[0]);
+    const auto path_address = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[1]
+    );
+    const int flags = static_cast<int>(context->uc_mcontext.regs[2]);
+    const unsigned int mask = static_cast<unsigned int>(
+        context->uc_mcontext.regs[3]
+    );
+    const auto result_address = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[4]
+    );
+    char original[PATH_MAX] = {};
+    if (!read_user_string(path_address, original, sizeof(original))) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EFAULT);
+        return;
+    }
+    std::string path;
+    bool rewrite_identity = false;
+    if (!resolve_gateway_path(
+            original,
+            getpid(),
+            &path,
+            &rewrite_identity
+        )) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EINVAL);
+        return;
+    }
+    GatewayRequest request {};
+    request.type = notification_proc_path(original, getpid())
+        ? kGatewayVirtualStatx
+        : kGatewayStatx;
+    request.client_pid = getpid();
+    request.dirfd = dirfd;
+    request.flags = flags;
+    request.mask = mask;
+    request.rewrite_identity = rewrite_identity ? 1 : 0;
+    strncpy(request.path, path.c_str(), sizeof(request.path) - 1);
+    GatewayResponse response {};
+    const long result = call_syscall_broker(
+        &request,
+        nullptr,
+        &response
+    );
+    if (result == 0 && response.payload_size != 0) {
+        struct statx value {};
+        memcpy(
+            &value,
+            response.payload,
+            std::min(response.payload_size, sizeof(value))
+        );
+        nestspace::virtualize_target_statx(
+            notification_proc_path(original, getpid())
+                ? original
+                : path.c_str(),
+            &value
+        );
+        memcpy(
+            reinterpret_cast<void*>(result_address),
+            &value,
+            std::min(response.payload_size, sizeof(value))
+        );
+    }
+    context->uc_mcontext.regs[0] = static_cast<uintptr_t>(result);
+}
+
+void handle_faccessat_syscall(ucontext_t* context) {
+    if (context == nullptr) return;
+    const int dirfd = static_cast<int>(context->uc_mcontext.regs[0]);
+    const auto path_address = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[1]
+    );
+    const int mode = static_cast<int>(context->uc_mcontext.regs[2]);
+    char original[PATH_MAX] = {};
+    if (!read_user_string(path_address, original, sizeof(original))) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EFAULT);
+        return;
+    }
+    std::string path;
+    bool rewrite_identity = false;
+    if (!resolve_gateway_path(
+            original,
+            getpid(),
+            &path,
+            &rewrite_identity
+        )) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EINVAL);
+        return;
+    }
+    GatewayRequest request {};
+    request.type = kGatewayFaccessat;
+    request.client_pid = getpid();
+    request.dirfd = dirfd;
+    request.flags = mode;
+    request.rewrite_identity = rewrite_identity ? 1 : 0;
+    strncpy(request.path, path.c_str(), sizeof(request.path) - 1);
+    const long result = call_syscall_broker(&request);
+    context->uc_mcontext.regs[0] = static_cast<uintptr_t>(result);
+}
+
+void handle_readlinkat_syscall(ucontext_t* context) {
+    if (context == nullptr) return;
+    const int dirfd = static_cast<int>(context->uc_mcontext.regs[0]);
+    const auto path_address = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[1]
+    );
+    const auto output_address = static_cast<uintptr_t>(
+        context->uc_mcontext.regs[2]
+    );
+    const size_t output_size = static_cast<size_t>(
+        context->uc_mcontext.regs[3]
+    );
+    char original[PATH_MAX] = {};
+    if (!read_user_string(path_address, original, sizeof(original))) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EFAULT);
+        return;
+    }
+    std::string path;
+    bool rewrite_identity = false;
+    if (!resolve_gateway_path(
+            original,
+            getpid(),
+            &path,
+            &rewrite_identity
+        )) {
+        context->uc_mcontext.regs[0] = static_cast<uintptr_t>(-EINVAL);
+        return;
+    }
+    GatewayRequest request {};
+    request.type = kGatewayReadlinkat;
+    request.client_pid = getpid();
+    request.dirfd = dirfd;
+    request.rewrite_identity = rewrite_identity ? 1 : 0;
+    strncpy(request.path, path.c_str(), sizeof(request.path) - 1);
+    GatewayResponse response {};
+    const long result = call_syscall_broker(
+        &request,
+        nullptr,
+        &response
+    );
+    if (result >= 0 && response.payload_size != 0) {
+        const size_t count = std::min(
+            std::min(
+                static_cast<size_t>(result),
+                response.payload_size
+            ),
+            output_size
+        );
+        memcpy(
+            reinterpret_cast<void*>(output_address),
+            response.payload,
+            count
+        );
+    }
+    context->uc_mcontext.regs[0] = static_cast<uintptr_t>(result);
+}
+
 bool handle_identity_syscall(ucontext_t* context) {
     if (context == nullptr || nestspace::current_environment() == nullptr) {
         return false;
@@ -50,8 +300,14 @@ bool handle_identity_syscall(ucontext_t* context) {
         number == SYS_geteuid ||
         number == SYS_getgid ||
         number == SYS_getegid) {
+        const uintptr_t instruction_pointer =
+            static_cast<uintptr_t>(context->uc_mcontext.pc);
         context->uc_mcontext.regs[0] = static_cast<uintptr_t>(
-            nestspace::current_environment()->observed_uid
+            nestspace::identity_syscall_uses_target_identity(
+                instruction_pointer
+            )
+                ? nestspace::current_environment()->observed_uid
+                : nestspace::current_environment()->host_uid
         );
         return true;
     }
@@ -432,6 +688,35 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
         handle_openat_syscall(context);
         return;
     }
+#if defined(SYS_newfstatat)
+    if (syscall_number == SYS_newfstatat) {
+        handle_fstatat_syscall(context);
+        return;
+    }
+#elif defined(SYS_fstatat64)
+    if (syscall_number == SYS_fstatat64) {
+        handle_fstatat_syscall(context);
+        return;
+    }
+#endif
+#if defined(SYS_statx)
+    if (syscall_number == SYS_statx) {
+        handle_statx_syscall(context);
+        return;
+    }
+#endif
+#if defined(SYS_faccessat)
+    if (syscall_number == SYS_faccessat) {
+        handle_faccessat_syscall(context);
+        return;
+    }
+#endif
+#if defined(SYS_readlinkat)
+    if (syscall_number == SYS_readlinkat) {
+        handle_readlinkat_syscall(context);
+        return;
+    }
+#endif
     if (syscall_number == __NR_close && context != nullptr) {
         const int fd = static_cast<int>(context->uc_mcontext.regs[0]);
         if (fd == g_syscall_broker_request_write ||
@@ -910,6 +1195,25 @@ bool install_identity_gateway_filter() {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#if defined(__NR_newfstatat)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_newfstatat, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#elif defined(__NR_fstatat64)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_fstatat64, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_statx)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_statx, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_faccessat)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_faccessat, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_readlinkat)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_readlinkat, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getuid, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_geteuid, 0, 1),

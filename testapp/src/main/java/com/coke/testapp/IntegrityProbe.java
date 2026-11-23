@@ -10,6 +10,7 @@ import android.system.Os;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -85,6 +86,44 @@ final class IntegrityProbe {
             Binder.getCallingUid() == expectedUid
         );
         try {
+            long identity = Binder.clearCallingIdentity();
+            int packageUid;
+            try {
+                packageUid = pm.getPackageUid(packageName, 0);
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
+            add(
+                rows,
+                "Binder clear/restore transaction",
+                "packageUid=" + packageUid +
+                    " restoredUid=" + Binder.getCallingUid(),
+                packageUid == expectedUid &&
+                    Binder.getCallingUid() == expectedUid
+            );
+        } catch (Throwable error) {
+            add(
+                rows,
+                "Binder clear/restore transaction",
+                describe(error),
+                false
+            );
+        }
+        try {
+            java.lang.reflect.Method getUidForPid =
+                Process.class.getDeclaredMethod("getUidForPid", int.class);
+            getUidForPid.setAccessible(true);
+            int processUid = (Integer) getUidForPid.invoke(null, Process.myPid());
+            add(
+                rows,
+                "Process.getUidForPid",
+                String.valueOf(processUid),
+                processUid == expectedUid
+            );
+        } catch (Throwable error) {
+            add(rows, "Process.getUidForPid", describe(error), false);
+        }
+        try {
             add(
                 rows,
                 "PackageManager.getPackageUid",
@@ -145,11 +184,21 @@ final class IntegrityProbe {
 
         String raw = RawBinderProbe.report(packageName);
         String rawUid = field(raw, "uidForPackage=");
+        boolean rawUidMatches = rawUid.equals(String.valueOf(expectedUid));
+        boolean rawUidUnavailableButPackageOwned =
+            rawUid.equals("missing method") &&
+                field(raw, "packageForUid=")
+                    .contains("[" + packageName + "]") &&
+                field(raw, "nameForUid=").equals(packageName);
         add(
             rows,
             "raw IPackageManager UID",
-            rawUid,
-            rawUid.equals(String.valueOf(expectedUid))
+            rawUid + (
+                rawUidUnavailableButPackageOwned
+                    ? " (UID method hidden; package ownership verified)"
+                    : ""
+            ),
+            rawUidMatches || rawUidUnavailableButPackageOwned
         );
 
         String nativeReport;
@@ -231,6 +280,62 @@ final class IntegrityProbe {
         checkNative(rows, nativeReport, "child-proc.uid", expectedUid);
         checkNative(rows, nativeReport, "child-proc.raw_uid", expectedUid);
         checkNative(rows, nativeReport, "child-proc.parent_uid", expectedUid);
+        checkNative(rows, nativeReport, "raw.syscall.faccessat.files", "ok");
+        String rawProcStatus = field(
+            nativeReport,
+            "raw.syscall.newfstatat.procStatus="
+        );
+        add(
+            rows,
+            "raw fstatat /proc/self/status UID",
+            rawProcStatus,
+            rawProcStatus.contains("uid=" + expectedUid + " ")
+        );
+        String rawStatxFiles = field(
+            nativeReport,
+            "raw.syscall.statx.files="
+        );
+        add(
+            rows,
+            "raw statx target files",
+            rawStatxFiles,
+            rawStatxFiles.contains("uid=" + expectedUid + " ")
+        );
+        add(
+            rows,
+            "Android app UID range",
+            String.valueOf(expectedUid),
+            expectedUid >= 10_000 && expectedUid < 20_000
+        );
+        String selinux = read("/proc/self/attr/current").replace("\0", "").trim();
+        int appId = expectedUid >= 10_000 ? expectedUid - 10_000 : expectedUid;
+        int lowCategory = appId & 0xff;
+        int highCategory = 256 + ((appId >> 8) & 0xff);
+        add(
+            rows,
+            "SELinux UID category",
+            selinux + " expected=c" + lowCategory + ",c"
+                + highCategory + ",c512,c768",
+            selinux.contains(":c" + lowCategory + ",")
+                && selinux.contains(",c" + highCategory + ",")
+                && selinux.contains(",c512,c768")
+        );
+        String groups = field(nativeReport, "getgroups=");
+        add(
+            rows,
+            "Android supplementary groups",
+            groups,
+            validSupplementaryGroups(groups)
+        );
+        String dataXattr = readXattr(activity.getDataDir().getAbsolutePath());
+        add(
+            rows,
+            "dataDir SELinux xattr",
+            dataXattr,
+            dataXattr.contains(":c" + lowCategory + ",")
+                && dataXattr.contains(",c" + highCategory + ",")
+                && dataXattr.contains(",c512,c768")
+        );
 
         String maps = read("/proc/self/maps");
         boolean hostLeak = maps.contains("com.coke.nestspace") ||
@@ -248,6 +353,8 @@ final class IntegrityProbe {
             stackSummary(javaStack) + " window=4",
             !stackWindowHostLeak(javaStack)
         );
+        PlatformEnvironmentProbe.appendRows(rows, activity);
+        AntiTamperRuleProbe.appendRows(rows, activity, nativeReport);
 
         boolean passed = true;
         for (String row : rows) {
@@ -303,6 +410,19 @@ final class IntegrityProbe {
             value.contains("NestSpace");
     }
 
+    private static boolean validSupplementaryGroups(String value) {
+        if (value.isEmpty()) return false;
+        for (String item : value.trim().split("\\s+")) {
+            try {
+                int group = Integer.parseInt(item);
+                if (group < 0 || group > 99_999) return false;
+            } catch (NumberFormatException error) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static String stackSummary(StackTraceElement[] stack) {
         StringBuilder value = new StringBuilder();
         int limit = Math.min(stack.length, 8);
@@ -343,6 +463,17 @@ final class IntegrityProbe {
             return "error=" + describe(error);
         }
         return value.toString();
+    }
+
+    private static String readXattr(String path) {
+        try {
+            return new String(
+                Os.getxattr(path, "security.selinux"),
+                StandardCharsets.UTF_8
+            ).replace("\0", "");
+        } catch (Throwable error) {
+            return "error=" + describe(error);
+        }
     }
 
     private static String signatureDigest(PackageInfo info) {

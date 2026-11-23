@@ -101,6 +101,7 @@ internal object VirtualEnvironmentFactory {
         val supplementaryGroups = buildList {
             addAll(packageGids)
             add(9_997)
+            // Android derives these two shared-app groups from the app id.
             add(targetUid + 10_000)
             add(targetUid + 40_000)
         }.distinct()

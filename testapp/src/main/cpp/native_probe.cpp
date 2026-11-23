@@ -541,14 +541,25 @@ std::string raw_syscall_summary(const char* data_root) {
         own_task_errno = static_cast<int>(-own_task_fd);
     }
 
+    std::string files_open_result = "error=" + std::to_string(files_fd);
+    if (files_fd >= 0) {
+        struct stat value {};
+        const int stat_result = fstat(files_fd, &value);
+        if (stat_result == 0) {
+            files_open_result = close(files_fd) == 0
+                ? "ok"
+                : "close-failed";
+        } else {
+            files_open_result = "fstat-error=" +
+                std::to_string(errno);
+        }
+    }
     return "raw.syscall.supported=1"
         "\nraw.syscall.getuid=" + std::to_string(uid) +
         "\nraw.syscall.geteuid=" + std::to_string(euid) +
         "\nraw.syscall.getgid=" + std::to_string(gid) +
         "\nraw.syscall.getegid=" + std::to_string(egid) +
-        "\nraw.syscall.openat.files=" + (files_fd >= 0
-            ? "ok"
-            : "error=" + std::to_string(files_fd)) +
+        "\nraw.syscall.openat.files=" + files_open_result +
         "\nraw.syscall.newfstatat.procStatus=" + (stat_result == 0
             ? compact_stat(raw_status)
             : "error=" + std::to_string(stat_result)) +
@@ -667,7 +678,9 @@ bool host_marker(const std::string& value) {
     return value.find("com.coke.nestspace") != std::string::npos ||
         value.find("/nestspace") != std::string::npos ||
         value.find("libnestspace") != std::string::npos ||
-        value.find("NestSpace") != std::string::npos;
+        value.find("NestSpace") != std::string::npos ||
+        value.find("nestspace") != std::string::npos ||
+        value.find("nsseccompnotify") != std::string::npos;
 }
 
 std::string join_samples(
@@ -825,8 +838,8 @@ int scan_elf_module(
     const std::string name =
         info->dlpi_name == nullptr ? "" : info->dlpi_name;
     if (host_marker(name)) {
-        ++state->virtualized_host_modules;
-        return 0;
+        ++state->host_modules;
+        if (state->samples.size() < 4) state->samples.push_back(name);
     }
     return 0;
 }

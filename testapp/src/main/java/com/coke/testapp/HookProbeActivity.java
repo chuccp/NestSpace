@@ -123,7 +123,7 @@ public class HookProbeActivity extends Activity {
         root.setPadding(24, 24, 24, 16);
 
         TextView title = new TextView(this);
-        title.setText("BDMS 风格完整性检测\n" +
+        title.setText("BDMS / VirtualBox / NPTH 风格检测\n" +
             (result.passed ? "整体结果: PASS" : "整体结果: FAIL"));
         title.setTextSize(18);
         title.setTextColor(result.passed

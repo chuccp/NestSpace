@@ -53,6 +53,13 @@ std::atomic<bool> g_syscall_gateway_active{false};
 std::atomic<bool> g_syscall_gateway_pause{false};
 uintptr_t g_runtime_table_fallback_object = 0;
 
+bool notification_proc_path(const char* path, pid_t process_id);
+bool gateway_proc_path(
+    const char* path,
+    pid_t process_id,
+    std::string* resolved
+);
+
 struct GatewayFdTemplate {
     char path[PATH_MAX];
     int fd;
@@ -1302,6 +1309,16 @@ bool send_gateway_response(
         &message,
         0
     );
+    if (result_fd >= 0 && result != static_cast<long>(sizeof(*response))) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            kLogTag,
+            "gateway response send fd=%d result=%ld errno=%d",
+            result_fd,
+            result,
+            errno
+        );
+    }
     return result == static_cast<long>(sizeof(*response));
 }
 
@@ -1328,11 +1345,7 @@ bool receive_gateway_response(
         SYS_recvmsg,
         socket_fd,
         &message,
-#if defined(MSG_CMSG_CLOEXEC)
-        MSG_CMSG_CLOEXEC
-#else
         0
-#endif
     );
     if (result != static_cast<long>(sizeof(*response))) return false;
     for (struct cmsghdr* header = CMSG_FIRSTHDR(&message);
@@ -1344,6 +1357,13 @@ bool receive_gateway_response(
             int received_fd = -1;
             memcpy(&received_fd, CMSG_DATA(header), sizeof(received_fd));
             *result_fd = received_fd;
+            const int descriptor_flags = syscall(
+                SYS_fcntl,
+                received_fd,
+                F_SETFD,
+                FD_CLOEXEC
+            );
+            (void)descriptor_flags;
             break;
         }
     }
@@ -1514,7 +1534,7 @@ long call_syscall_broker(
         int reply_sockets[2] = {-1, -1};
         const bool reply_created = socketpair(
             AF_UNIX,
-            SOCK_DGRAM | SOCK_CLOEXEC,
+            SOCK_SEQPACKET | SOCK_CLOEXEC,
             0,
             reply_sockets
         ) == 0;

@@ -529,18 +529,7 @@ std::string virtualized_proc_content(
             std::to_string(task_id) + task_suffix;
         if (strcmp(task_suffix, "/attr/current") == 0 ||
             strcmp(task_suffix, "/attr/prev") == 0) {
-            const int category = environment->observed_uid - 10000;
-            if (category > 0) {
-                std::string value = "u:r:untrusted_app:s0:c" +
-                    std::to_string(category) +
-                    ",c256,c512,c768";
-                value.push_back('\0');
-                return value;
-            }
-            return std::string(
-                "u:r:untrusted_app:s0",
-                sizeof("u:r:untrusted_app:s0")
-            );
+            return android_app_selinux_context(environment->observed_uid);
         }
         if (strcmp(task_suffix, "/cgroup") == 0) {
             std::string cgroup = read_text_file(task_path.c_str());
@@ -592,6 +581,7 @@ std::string virtualized_proc_content(
         }
     }
     pid_t process_id = pid;
+    bool parent_view = false;
     if (strncmp(path, "/proc/self/", 11) != 0) {
         char* end = nullptr;
         const long parsed = strtol(path + 6, &end, 10);
@@ -600,21 +590,40 @@ std::string virtualized_proc_content(
             return {};
         }
         process_id = static_cast<pid_t>(parsed);
+        parent_view = process_id == getppid();
+    }
+    if (parent_view) {
+        if (proc_suffix(path, "/attr/current") ||
+            proc_suffix(path, "/attr/prev")) {
+            const char* name = proc_suffix(path, "/attr/current")
+                ? "attr/current"
+                : "attr/prev";
+            return read_text_file(proc_path(process_id, name).c_str());
+        }
+        if (proc_suffix(path, "/cgroup")) {
+            return read_text_file(
+                proc_path(process_id, "cgroup").c_str()
+            );
+        }
+        if (proc_suffix(path, "/status")) {
+            return read_text_file(
+                proc_path(process_id, "status").c_str()
+            );
+        }
+        if (proc_suffix(path, "/cmdline")) {
+            return read_text_file(
+                proc_path(process_id, "cmdline").c_str()
+            );
+        }
+        if (proc_suffix(path, "/comm")) {
+            return read_text_file(
+                proc_path(process_id, "comm").c_str()
+            );
+        }
     }
     if (proc_suffix(path, "/attr/current") ||
         proc_suffix(path, "/attr/prev")) {
-        const int category = environment->observed_uid - 10000;
-        if (category > 0) {
-            std::string value = "u:r:untrusted_app:s0:c" +
-                std::to_string(category) +
-                ",c256,c512,c768";
-            value.push_back('\0');
-            return value;
-        }
-        return std::string(
-            "u:r:untrusted_app:s0",
-            sizeof("u:r:untrusted_app:s0")
-        );
+        return android_app_selinux_context(environment->observed_uid);
     }
     if (proc_suffix(path, "/cgroup")) {
         std::string cgroup = read_text_file(
@@ -897,11 +906,16 @@ int open_virtual_proc_for_pid(
     std::string content;
     const auto now = std::chrono::steady_clock::now();
     const bool use_cache = process_id == getpid();
+    std::string cache_key(path);
+    if (starts_with_prefix(path, "/proc/self")) {
+        cache_key = "/proc/" + std::to_string(process_id) +
+            (path + strlen("/proc/self"));
+    }
     if (use_cache) {
         std::lock_guard<std::mutex> guard(g_virtual_proc_cache_lock);
         for (const auto& cached : g_virtual_proc_cache) {
             if (cached.environment == environment &&
-                cached.path == path &&
+                cached.path == cache_key &&
                 now - cached.sampled_at <= kVirtualProcCacheTtl) {
                 content = cached.content;
                 break;
@@ -964,14 +978,15 @@ int open_virtual_proc_for_pid(
         std::lock_guard<std::mutex> guard(g_virtual_proc_cache_lock);
         auto* slot = &g_virtual_proc_cache.front();
         for (auto& cached : g_virtual_proc_cache) {
-            if (cached.path == path && cached.environment == environment) {
+            if (cached.path == cache_key &&
+                cached.environment == environment) {
                 slot = &cached;
                 break;
             }
             if (cached.path.empty()) slot = &cached;
         }
         slot->environment = environment;
-        slot->path = path;
+        slot->path = cache_key;
         slot->content = content;
         slot->sampled_at = now;
     }

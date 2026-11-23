@@ -43,14 +43,15 @@ bool is_current_proc_identity_path(const char* path) {
 std::string virtual_selinux_context(const char* actual) {
     const Environment* environment = current_environment();
     if (environment == nullptr || actual == nullptr) return {};
+    const uint32_t appid = environment->observed_uid >= 10000
+        ? static_cast<uint32_t>(environment->observed_uid - 10000)
+        : static_cast<uint32_t>(environment->observed_uid);
+    const std::string app_categories = "s0:c" +
+        std::to_string(appid & 0xffU) + ",c" +
+        std::to_string(256U + ((appid >> 8U) & 0xffU)) +
+        ",c512,c768";
     if (is_current_proc_identity_path(actual)) {
-        const int category = environment->observed_uid - 10000;
-        if (category > 0) {
-            return "u:r:untrusted_app:s0:c" +
-                std::to_string(category) +
-                ",c256,c512,c768";
-        }
-        return "u:r:untrusted_app:s0";
+        return "u:r:untrusted_app:" + app_categories;
     }
     if (!environment->native_library_dir.empty() &&
         environment->native_library_dir !=
@@ -64,13 +65,7 @@ std::string virtual_selinux_context(const char* actual) {
     }
     if (has_path_prefix(actual, environment->data_root) ||
         has_path_prefix(actual, environment->actual_device_root)) {
-        const int category = environment->observed_uid - 10000;
-        if (category > 0) {
-            return "u:object_r:app_data_file:s0:c" +
-                std::to_string(category) +
-                ",c256,c512,c768";
-        }
-        return "u:object_r:app_data_file:s0";
+        return "u:object_r:app_data_file:" + app_categories;
     }
     return {};
 }

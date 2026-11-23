@@ -168,6 +168,26 @@ class ContainerContext(
             android.view.WindowManager::class.java.classLoader,
             arrayOf(android.view.WindowManager::class.java)
         ) { _, method, args ->
+            val targetView = args?.firstOrNull() as? android.view.View
+            val toastWindow = args?.filterIsInstance<
+                android.view.WindowManager.LayoutParams
+                >()?.firstOrNull()?.type ==
+                android.view.WindowManager.LayoutParams.TYPE_TOAST
+            if (targetView != null &&
+                toastWindow &&
+                method.name == "addView"
+            ) {
+                val text = targetViewText(targetView)
+                if (isSecurityDecisionToast(text)) {
+                    android.util.Log.w(
+                        "ContainerSecurityDecision",
+                        "target toast package=" + targetPackage +
+                            " text=" + text +
+                            "\n" +
+                            android.util.Log.getStackTraceString(Throwable())
+                    )
+                }
+            }
             args?.forEach { value ->
                 if (value is android.view.WindowManager.LayoutParams) {
                     if (value.packageName == null || value.packageName == targetPackage) {
@@ -181,6 +201,33 @@ class ContainerContext(
                 throw t.targetException
             }
         } as android.view.WindowManager
+    }
+
+    private fun targetViewText(root: android.view.View): String {
+        val values = mutableListOf<String>()
+        fun collect(view: android.view.View) {
+            if (view is android.widget.TextView) {
+                view.text?.toString()?.takeIf(String::isNotBlank)?.let {
+                    values += it
+                }
+            }
+            if (view is android.view.ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    collect(view.getChildAt(index))
+                }
+            }
+        }
+        collect(root)
+        return values.joinToString(" | ")
+    }
+
+    private fun isSecurityDecisionToast(text: String): Boolean {
+        if (text.isBlank()) return false
+        val normalized = text.lowercase(java.util.Locale.ROOT)
+        return (normalized.contains("unofficial") ||
+            normalized.contains("non-official")) &&
+            normalized.contains("package") ||
+            text.contains("非官方安装包")
     }
 
     override fun getSystemService(name: String): Any? = when (name) {

@@ -2,6 +2,7 @@
 
 #include <android/log.h>
 #include <fcntl.h>
+#include <link.h>
 #include <linux/memfd.h>
 #include <linux/stat.h>
 #include <sys/mman.h>
@@ -73,6 +74,19 @@ std::string process_thread_name(const Environment* environment) {
     if (separator != std::string::npos) name = name.substr(separator + 1);
     if (name.size() > 15) name.erase(0, name.size() - 15);
     return name;
+}
+
+std::string android_app_selinux_context(uint32_t uid) {
+    // selinux_android_seapp maps the app id's low and high bytes into two
+    // MLS categories, then appends the fixed untrusted-app categories.
+    const uint32_t appid = uid >= 10000U ? uid - 10000U : uid;
+    const uint32_t low = appid & 0xffU;
+    const uint32_t high = 256U + ((appid >> 8U) & 0xffU);
+    std::string value = "u:r:untrusted_app:s0:c" +
+        std::to_string(low) + ",c" + std::to_string(high) +
+        ",c512,c768";
+    value.push_back('\0');
+    return value;
 }
 
 std::vector<std::pair<pid_t, std::string>> virtual_task_threads(
@@ -212,7 +226,25 @@ std::string target_task_comm(
            (name.back() == '\n' || name.back() == '\r')) {
         name.pop_back();
     }
-    if (!name.empty()) return name;
+    if (!name.empty()) {
+        std::string lower = name;
+        std::transform(
+            lower.begin(),
+            lower.end(),
+            lower.begin(),
+            [](unsigned char value) {
+                return static_cast<char>(std::tolower(value));
+            }
+        );
+        if (lower.find("nestspace") != std::string::npos ||
+            lower.find("nsseccompnotify") != std::string::npos) {
+            return "pool-" +
+                std::to_string(
+                    static_cast<unsigned int>(task_id) % 1000U
+                ) + "-1";
+        }
+        return name;
+    }
     return virtual_task_comm(task_id);
 }
 
@@ -305,7 +337,7 @@ bool is_task_directory(const char* path) {
         strcmp(end, "/task") == 0;
 }
 
-pid_t task_directory_pid(const char* path) {
+[[maybe_unused]] pid_t task_directory_pid(const char* path) {
     if (path == nullptr) return -1;
     if (strcmp(path, "/proc/self/task") == 0) return getpid();
     if (strcmp(path, "/proc/thread-self/task") == 0) return getpid();
@@ -592,7 +624,7 @@ std::string virtualized_status(
         ) {
             virtual_value += line;
         } else if (line.rfind("FDSize:", 0) == 0) {
-            virtual_value += "FDSize:\t256";
+            virtual_value += "FDSize:\t1024";
         } else if (reported_pid > 0 &&
                    (line.rfind("Pid:", 0) == 0 ||
                     line.rfind("NSpid:", 0) == 0)) {
@@ -646,6 +678,73 @@ bool host_runtime_path_matches(
     const Environment* environment
 ) {
     return is_host_runtime_path(value, environment);
+}
+
+struct IdentitySyscallRange {
+    uintptr_t start;
+    uintptr_t end;
+};
+
+std::vector<IdentitySyscallRange> g_identity_system_ranges;
+
+bool is_system_runtime_image(const char* path) {
+    if (path == nullptr) return false;
+    constexpr std::array<std::string_view, 5> roots = {
+        "/apex/",
+        "/system/",
+        "/system_ext/",
+        "/product/",
+        "/vendor/",
+    };
+    for (const std::string_view root : roots) {
+        if (root.size() <= strlen(path) &&
+            strncmp(path, root.data(), root.size()) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int collect_identity_syscall_ranges(
+    dl_phdr_info* info,
+    size_t,
+    void*
+) {
+    if (info == nullptr || !is_system_runtime_image(info->dlpi_name)) return 0;
+    for (ElfW(Half) index = 0; index < info->dlpi_phnum; ++index) {
+        const ElfW(Phdr)& header = info->dlpi_phdr[index];
+        if (header.p_type != PT_LOAD || (header.p_flags & PF_X) == 0) continue;
+        const uintptr_t start =
+            static_cast<uintptr_t>(info->dlpi_addr + header.p_vaddr);
+        g_identity_system_ranges.push_back({
+            start,
+            start + static_cast<uintptr_t>(header.p_memsz),
+        });
+    }
+    return 0;
+}
+
+void initialize_identity_syscall_ranges() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        g_identity_system_ranges.reserve(64);
+        dl_iterate_phdr(collect_identity_syscall_ranges, nullptr);
+    });
+}
+
+bool identity_syscall_uses_target_identity(uintptr_t instruction_pointer) {
+    if (current_environment() == nullptr || instruction_pointer == 0) {
+        return false;
+    }
+    for (const IdentitySyscallRange& range : g_identity_system_ranges) {
+        if (instruction_pointer >= range.start &&
+            instruction_pointer < range.end) {
+            return false;
+        }
+    }
+    // Inline syscalls in target native code, JIT code and anonymous mappings
+    // are not part of a system image and receive the virtual identity.
+    return true;
 }
 
 std::atomic<int> g_virtual_proc_reads{0};

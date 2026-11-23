@@ -1,12 +1,14 @@
 #include "nestspace/native_environment_internal.h"
 
 #include <android/log.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <memory>
@@ -140,25 +142,6 @@ jint virtual_binder_calling_pid(JNIEnv*, jclass) {
     return static_cast<jint>(getpid());
 }
 
-jlong virtual_binder_clear_identity(JNIEnv*, jclass) {
-    const auto* environment = nestspace::current_environment();
-    const uint32_t uid = static_cast<uint32_t>(
-        environment == nullptr
-            ? getuid()
-            : environment->observed_uid
-    );
-    return static_cast<jlong>(
-        (static_cast<uint64_t>(uid) << 32) |
-        static_cast<uint32_t>(getpid())
-    );
-}
-
-void virtual_binder_restore_identity(JNIEnv*, jclass, jlong) {
-    // The opaque token above never carries the host UID. Restoring it would
-    // reintroduce kernel-visible identity, so target-facing restores are a
-    // no-op.
-}
-
 jint virtual_process_group(JNIEnv*, jclass, jint pid) {
     if (pid <= 0) pid = static_cast<jint>(getpid());
     const pid_t group = getpgid(static_cast<pid_t>(pid));
@@ -216,6 +199,86 @@ void virtual_process_tg_signal(
     );
 }
 
+void virtual_process_read_proc_lines(
+    JNIEnv* env,
+    jclass,
+    jstring path_value,
+    jobjectArray labels,
+    jlongArray values
+) {
+    if (path_value == nullptr || labels == nullptr || values == nullptr) return;
+    const std::string path = to_string(env, path_value);
+    std::string content = nestspace::virtualized_proc_content(
+        path.c_str(),
+        getpid()
+    );
+    if (content.empty()) {
+        const long opened = syscall(
+            SYS_openat,
+            AT_FDCWD,
+            path.c_str(),
+            O_RDONLY | O_CLOEXEC,
+            0
+        );
+        if (opened < 0) return;
+        std::array<char, 32768> buffer{};
+        const long count = syscall(
+            SYS_read,
+            static_cast<int>(opened),
+            buffer.data(),
+            buffer.size() - 1
+        );
+        syscall(SYS_close, static_cast<int>(opened));
+        if (count > 0) {
+            content.assign(buffer.data(), static_cast<size_t>(count));
+        }
+    }
+    const jsize label_count = env->GetArrayLength(labels);
+    const jsize value_count = env->GetArrayLength(values);
+    std::vector<jlong> output(static_cast<size_t>(value_count), -1);
+    for (jsize index = 0; index < label_count; ++index) {
+        auto label = static_cast<jstring>(
+            env->GetObjectArrayElement(labels, index)
+        );
+        const std::string name = to_string(env, label);
+        if (label != nullptr) env->DeleteLocalRef(label);
+        if (name.empty()) continue;
+        const std::string prefix =
+            !name.empty() && name.back() == ':' ? name : name + ":";
+        size_t offset = 0;
+        while (offset < content.size()) {
+            const size_t end = content.find('\n', offset);
+            const std::string line = content.substr(
+                offset,
+                end == std::string::npos
+                    ? std::string::npos
+                    : end - offset
+            );
+            if (line.rfind(prefix, 0) == 0 && index < value_count) {
+                const char* value = line.c_str() + prefix.size();
+                while (*value == ' ' || *value == '\t') ++value;
+                char* parsed_end = nullptr;
+                const long long parsed = strtoll(value, &parsed_end, 10);
+                if (parsed_end != value) {
+                    output[static_cast<size_t>(index)] =
+                        static_cast<jlong>(parsed);
+                }
+                break;
+            }
+            if (end == std::string::npos) break;
+            offset = end + 1;
+        }
+    }
+    if (value_count > 0) {
+        env->SetLongArrayRegion(
+            values,
+            0,
+            value_count,
+            output.data()
+        );
+    }
+}
+
 void install_identity_jni_hooks(JNIEnv* env) {
     static std::once_flag once;
     std::call_once(once, [env] {
@@ -223,24 +286,14 @@ void install_identity_jni_hooks(JNIEnv* env) {
         if (binder != nullptr) {
             JNINativeMethod methods[] = {
                 {
-                    const_cast<char*>("getCallingUid"),
-                    const_cast<char*>("()I"),
-                    reinterpret_cast<void*>(virtual_binder_calling_uid)
+                const_cast<char*>("getCallingUid"),
+                const_cast<char*>("()I"),
+                reinterpret_cast<void*>(virtual_binder_calling_uid)
                 },
                 {
-                    const_cast<char*>("getCallingPid"),
-                    const_cast<char*>("()I"),
-                    reinterpret_cast<void*>(virtual_binder_calling_pid)
-                },
-                {
-                    const_cast<char*>("clearCallingIdentity"),
-                    const_cast<char*>("()J"),
-                    reinterpret_cast<void*>(virtual_binder_clear_identity)
-                },
-                {
-                    const_cast<char*>("restoreCallingIdentity"),
-                    const_cast<char*>("(J)V"),
-                    reinterpret_cast<void*>(virtual_binder_restore_identity)
+                const_cast<char*>("getCallingPid"),
+                const_cast<char*>("()I"),
+                reinterpret_cast<void*>(virtual_binder_calling_pid)
                 },
             };
             const jint result = env->RegisterNatives(
@@ -291,13 +344,34 @@ void install_identity_jni_hooks(JNIEnv* env) {
                 methods,
                 static_cast<jint>(sizeof(methods) / sizeof(methods[0]))
             );
-            env->DeleteLocalRef(process);
             __android_log_print(
                 result == JNI_OK ? ANDROID_LOG_DEBUG : ANDROID_LOG_WARN,
                 "NestSpaceNative",
                 "Process group native installed result=%d",
                 result
             );
+            JNINativeMethod proc_method{
+                const_cast<char*>("readProcLines"),
+                const_cast<char*>(
+                    "(Ljava/lang/String;[Ljava/lang/String;[J)V"
+                ),
+                reinterpret_cast<void*>(virtual_process_read_proc_lines)
+            };
+            const jint uid_result = env->RegisterNatives(
+                process,
+                &proc_method,
+                1
+            );
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            __android_log_print(
+                uid_result == JNI_OK
+                    ? ANDROID_LOG_DEBUG
+                    : ANDROID_LOG_WARN,
+                "NestSpaceNative",
+                "Process.readProcLines native installed result=%d",
+                uid_result
+            );
+            env->DeleteLocalRef(process);
         }
     });
 }
@@ -536,6 +610,7 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
 
     nestspace::restore_hooks();
     nestspace::publish_environment(std::move(environment));
+    nestspace::initialize_identity_syscall_ranges();
     virtualize_process_environment();
     char disable_binder_identity[PROP_VALUE_MAX] = {};
     __system_property_get(

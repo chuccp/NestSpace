@@ -146,6 +146,15 @@ bool hook_android_base_readlink(
 DIR* hook_opendir(const char* path) {
     record_hook_event(kHookEventFile);
     log_sensitive_path("opendir", path);
+    const int virtual_fd = open_virtual_proc(
+        path,
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC
+    );
+    if (virtual_fd >= 0) {
+        DIR* directory = fdopendir(virtual_fd);
+        if (directory != nullptr) return directory;
+        close(virtual_fd);
+    }
     std::string rewritten;
     const char* actual = rewrite_target_path(path, &rewritten)
         ? rewritten.c_str()

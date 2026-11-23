@@ -260,9 +260,17 @@ void respond_user_notification(
         syscall_number == SYS_geteuid ||
         syscall_number == SYS_getgid ||
         syscall_number == SYS_getegid) {
-        response.val = environment == nullptr
-            ? -EPERM
-            : environment->observed_uid;
+        if (environment == nullptr) {
+            response.error = -EPERM;
+        } else {
+            response.val = nestspace::identity_syscall_uses_target_identity(
+                static_cast<uintptr_t>(
+                    request.data.instruction_pointer
+                )
+            )
+                ? environment->observed_uid
+                : environment->host_uid;
+        }
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
         return;
     }
@@ -561,48 +569,42 @@ void respond_user_notification(
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
         return;
     }
-    GatewayRequest broker_request {};
     const bool virtual_proc_file =
         notification_proc_path(
             virtual_path,
             static_cast<pid_t>(request.pid)
         ) && !directory;
-    broker_request.type = virtual_proc_file
-        ? kGatewayVirtualProc
-        : kGatewayOpenat;
-    broker_request.client_pid = static_cast<pid_t>(request.pid);
-    broker_request.dirfd = static_cast<int>(request.data.args[0]);
-    broker_request.flags = static_cast<int>(request.data.args[2]);
-    broker_request.mode = static_cast<mode_t>(request.data.args[3]);
-    strncpy(
-        broker_request.path,
-        directory
-            ? proc_directory.c_str()
-            : (mapped ? rewritten.c_str() : virtual_path),
-        sizeof(broker_request.path) - 1
-    );
-
     int source_fd = -1;
-    long opened = -EIO;
+    const char* actual_path = directory
+        ? proc_directory.c_str()
+        : (mapped ? rewritten.c_str() : virtual_path);
     if (virtual_proc_file) {
         source_fd = nestspace::open_virtual_proc_for_pid(
             virtual_path,
-            broker_request.flags,
+            static_cast<int>(request.data.args[2]),
             static_cast<pid_t>(request.pid)
         );
-        opened = source_fd >= 0 ? 0 : -errno;
     } else {
-        opened = call_syscall_broker(
-            &broker_request,
-            &source_fd
-        );
+        // The listener thread predates the filter and retains an unfiltered
+        // syscall context when TSYNC is unavailable, so open directly and
+        // inject the descriptor with SECCOMP_IOCTL_NOTIF_ADDFD.
+        source_fd = static_cast<int>(syscall(
+            SYS_openat,
+            static_cast<int>(request.data.args[0]),
+            actual_path,
+            static_cast<int>(request.data.args[2]),
+            static_cast<mode_t>(request.data.args[3])
+        ));
     }
     if (source_fd < 0) {
-        response.error = opened < 0 ? opened : -EIO;
+        response.error = -errno;
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
         return;
     }
 
+    // The notification thread was created before the filter was installed.
+    // When TSYNC is unavailable it retains the unfiltered syscall context, so
+    // opening and injecting the descriptor here avoids SCM_RIGHTS entirely.
     seccomp_notif_addfd add_fd {};
     add_fd.id = request.id;
     add_fd.flags = directory ? SECCOMP_ADDFD_FLAG_SEND : 0;
@@ -632,6 +634,7 @@ void respond_user_notification(
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
         return false;
     }
+    if (!start_syscall_broker()) return false;
     if (!g_user_notify_started.exchange(
             true,
             std::memory_order_acq_rel
@@ -669,6 +672,27 @@ void respond_user_notification(
 #endif
 #if defined(__NR_getgroups)
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgroups, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_newfstatat)
+        BPF_JUMP(
+            BPF_JMP | BPF_JEQ | BPF_K,
+            __NR_newfstatat,
+            0,
+            1
+        ),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_statx)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_statx, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_faccessat)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_faccessat, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_readlinkat)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_readlinkat, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
 #endif
 #if defined(__NR_kill)

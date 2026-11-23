@@ -130,7 +130,13 @@ internal object ContainerSpecFactory {
         val dataDir = File(File(root, "data"), sanitize(packageName))
             .resolve(sanitize(instanceId))
         dataDir.mkdirs()
-        val targetUid = ContainerIdentity.virtualUidFor(packageName)
+        // Reuse the platform-assigned app id when this is the same verified
+        // installed package. Native SDKs can otherwise observe a process UID
+        // that disagrees with PackageManager's real package owner even though
+        // both APIs have individually consistent facades.
+        val targetUid = installed?.uid
+            ?.takeIf { it >= 10_000 }
+            ?: ContainerIdentity.virtualUidFor(packageName)
         val applicationInfo = installed?.applicationInfo ?: descriptor.applicationInfo
         applicationInfo.uid = targetUid
         // The target package is not registered with the platform

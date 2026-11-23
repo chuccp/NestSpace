@@ -126,6 +126,8 @@ bool host_runtime_path_matches(
     const std::string& value,
     const Environment* environment
 );
+void initialize_identity_syscall_ranges();
+bool identity_syscall_uses_target_identity(uintptr_t instruction_pointer);
 bool proc_fd_number(const char* path, int* fd);
 const char* fd_virtual_path(int fd);
 void copy_fd_path(int old_fd, int new_fd);

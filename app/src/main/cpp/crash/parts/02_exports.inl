@@ -177,10 +177,9 @@ extern "C" bool install_native_syscall_gateway() {
         value
     );
     if (strcmp(value, "0") == 0) return false;
-    // Identity calls are the only syscalls that must be synchronized before
-    // target initialization. Keep the startup-path gateway limited to this
-    // small set; broader path ownership is handled by the libc and Java file
-    // bridges without serializing every openat through one notification queue.
+    // Direct-syscall identity and metadata probes bypass libc. Keep the
+    // low-frequency metadata set on the synchronized notification gateway;
+    // high-volume openat operations continue through libc/path hooks.
     if (install_identity_user_notify_gateway()) return true;
     return install_identity_gateway_filter();
 }

@@ -5,12 +5,11 @@ import android.os.Process
 /**
  * UID model for virtual apps.
  *
- * The container process always runs under the host UID, and the system side
- * only knows that UID. Self-queries therefore report the real UID so target
- * checks that compare `Process.myUid()` with PackageManager answers stay
- * consistent. Packages installed in the same space but not currently running
- * get a stable synthetic UID, exactly like separately installed apps would,
- * so cross-virtual-app UID queries do not collapse onto the host UID.
+ * The kernel process still runs under the host UID. App-facing self-queries
+ * use a stable synthetic UID from Android's ordinary application range so the
+ * process, package metadata, SELinux categories and native identity APIs
+ * remain semantically consistent. Packages installed in the same space get
+ * distinct stable values, exactly like separately installed apps.
  *
  * This is app-facing identity only (Java layer). It does not spoof the UID the
  * kernel puts into Binder transactions; system services still see the host
@@ -19,9 +18,9 @@ import android.os.Process
  */
 object ContainerIdentity {
 
-    /** Above the per-user app UID range (10000-19999) used by the system. */
-    private const val VIRTUAL_UID_BASE = 70_000
-    private const val VIRTUAL_UID_RANGE = 20_000
+    /** Android's per-user application UID range. */
+    private const val VIRTUAL_UID_BASE = 10_000
+    private const val VIRTUAL_UID_RANGE = 10_000
 
     @Volatile
     private var capturedHostUid: Int = -1
