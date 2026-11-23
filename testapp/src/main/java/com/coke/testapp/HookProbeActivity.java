@@ -16,6 +16,8 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.Signature;
 import android.content.pm.SigningInfo;
 import android.database.Cursor;
+import android.graphics.Color;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
@@ -28,6 +30,8 @@ import android.system.StructStat;
 import android.system.StructStatVfs;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -122,16 +126,43 @@ public class HookProbeActivity extends Activity {
         title.setText("BDMS 风格完整性检测\n" +
             (result.passed ? "整体结果: PASS" : "整体结果: FAIL"));
         title.setTextSize(18);
+        title.setTextColor(result.passed
+            ? Color.rgb(24, 120, 72)
+            : Color.rgb(190, 28, 28));
         title.setGravity(Gravity.START);
         title.setPadding(0, 0, 0, 16);
         root.addView(title);
 
         ListView list = new ListView(this);
-        list.setAdapter(new ArrayAdapter<>(
+        list.setAdapter(new ArrayAdapter<String>(
             this,
             android.R.layout.simple_list_item_1,
             result.rows
-        ));
+        ) {
+            @Override
+            public View getView(
+                int position,
+                View convertView,
+                ViewGroup parent
+            ) {
+                TextView row = (TextView) super.getView(
+                    position,
+                    convertView,
+                    parent
+                );
+                boolean failed = getItem(position).endsWith("FAIL");
+                row.setTextColor(failed
+                    ? Color.rgb(190, 28, 28)
+                    : Color.rgb(38, 38, 38));
+                row.setTypeface(
+                    failed ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT
+                );
+                row.setBackgroundColor(failed
+                    ? Color.argb(22, 190, 28, 28)
+                    : Color.TRANSPARENT);
+                return row;
+            }
+        });
         root.addView(
             list,
             new LinearLayout.LayoutParams(

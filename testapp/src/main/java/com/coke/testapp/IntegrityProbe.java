@@ -64,6 +64,15 @@ final class IntegrityProbe {
                 String.valueOf(info.applicationInfo.uid),
                 info.applicationInfo.uid == expectedUid
             );
+            add(
+                rows,
+                "ApplicationInfo sourceDir",
+                info.applicationInfo.sourceDir,
+                apk.getAbsolutePath().equals(info.applicationInfo.sourceDir) &&
+                    apk.getAbsolutePath().equals(
+                        activity.getApplicationInfo().sourceDir
+                    )
+            );
         } catch (Throwable error) {
             add(rows, "PackageInfo", describe(error), false);
         }
@@ -168,6 +177,72 @@ final class IntegrityProbe {
             "jni.currentApplication.getPackageName",
             packageName
         );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "宿主 fd 目标",
+            "native.fd.hostLeaks",
+            "native.fd.hostSamples"
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "线程名宿主泄漏",
+            "native.task.hostNameLeaks",
+            "native.task.hostNameSamples"
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "线程 UID 不一致",
+            "native.task.uidMismatches",
+            "native.task.uidSamples"
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "已加载 ELF 宿主路径",
+            "native.elf.hostModules",
+            "native.elf.hostSamples"
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "raw maps 宿主泄漏",
+            "native.rawMaps.hostLeaks",
+            "native.rawMaps.hostSamples"
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "raw mountinfo 宿主泄漏",
+            "native.rawMountinfo.hostLeaks",
+            "native.rawMountinfo.hostSamples"
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "环境变量宿主泄漏",
+            "native.environment.hostLeaks",
+            "native.environment.hostSamples"
+        );
+        checkNative(rows, nativeReport, "native.rawMaps.read", "ok");
+        checkNative(rows, nativeReport, "native.rawMountinfo.read", "ok");
+        checkNative(rows, nativeReport, "child-proc.uid", expectedUid);
+        checkNative(rows, nativeReport, "child-proc.raw_uid", expectedUid);
+
+        String childStatus = field(
+            nativeReport,
+            "child-proc.parent_status="
+        );
+        add(
+            rows,
+            "子进程父 status UID",
+            uidSummary(childStatus),
+            uidSummary(childStatus).contains(
+                String.valueOf(expectedUid)
+            )
+        );
 
         String maps = read("/proc/self/maps");
         boolean hostLeak = maps.contains("com.coke.nestspace") ||
@@ -177,6 +252,13 @@ final class IntegrityProbe {
             "宿主运行时映射",
             hostLeak ? "LEAK" : "not present",
             !hostLeak
+        );
+        String javaStack = javaStackSummary();
+        add(
+            rows,
+            "Java 调用栈宿主帧",
+            javaStack,
+            !hostMarker(javaStack)
         );
 
         boolean passed = true;
@@ -202,6 +284,55 @@ final class IntegrityProbe {
             value,
             value.equals(String.valueOf(expected))
         );
+    }
+
+    private static void checkNativeCount(
+        List<String> rows,
+        String report,
+        String label,
+        String countKey,
+        String samplesKey
+    ) {
+        String countValue = field(report, countKey + "=");
+        String samples = field(report, samplesKey + "=");
+        int count;
+        try {
+            count = Integer.parseInt(countValue);
+        } catch (Throwable ignored) {
+            count = -1;
+        }
+        add(
+            rows,
+            label,
+            countValue + (samples.isEmpty() ? "" : " " + samples),
+            count == 0
+        );
+    }
+
+    private static String uidSummary(String status) {
+        int offset = status.indexOf("Uid:");
+        if (offset < 0) return "missing";
+        return status.substring(offset, Math.min(
+            status.length(),
+            offset + 64
+        ));
+    }
+
+    private static boolean hostMarker(String value) {
+        return value.contains("com.coke.nestspace") ||
+            value.contains("libnestspace") ||
+            value.contains("NestSpace");
+    }
+
+    private static String javaStackSummary() {
+        StringBuilder value = new StringBuilder();
+        for (StackTraceElement element : new Throwable().getStackTrace()) {
+            if (value.length() != 0) value.append(" <- ");
+            value.append(element.getClassName())
+                .append('#')
+                .append(element.getMethodName());
+        }
+        return value.toString();
     }
 
     private static String field(String report, String prefix) {

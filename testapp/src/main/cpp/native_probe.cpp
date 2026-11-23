@@ -1,5 +1,8 @@
 #include <jni.h>
+#include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
+#include <link.h>
 #include <linux/capability.h>
 #include <linux/stat.h>
 #include <sched.h>
@@ -148,6 +151,42 @@ std::string read_file(const char* path, size_t limit = 64 * 1024) {
     }
     fclose(file);
     return result;
+}
+
+std::string raw_read_file(const char* path, size_t limit = 256 * 1024) {
+#if RAW_SYSCALL_SUPPORTED
+    const long raw_fd = raw_syscall6(
+        SYS_openat,
+        AT_FDCWD,
+        reinterpret_cast<long>(path),
+        O_RDONLY | O_CLOEXEC,
+        0,
+        0,
+        0
+    );
+    if (raw_fd < 0) return "error=" + std::to_string(-raw_fd);
+    std::string result;
+    std::array<char, 4096> buffer{};
+    while (result.size() < limit) {
+        const long count = raw_syscall6(
+            SYS_read,
+            raw_fd,
+            reinterpret_cast<long>(buffer.data()),
+            buffer.size(),
+            0,
+            0,
+            0
+        );
+        if (count <= 0) break;
+        result.append(buffer.data(), static_cast<size_t>(count));
+    }
+    raw_syscall6(SYS_close, raw_fd, 0, 0, 0, 0, 0);
+    return result;
+#else
+    (void)path;
+    (void)limit;
+    return "unsupported";
+#endif
 }
 
 std::string read_fd(int fd, size_t limit = 64 * 1024) {
@@ -653,6 +692,184 @@ void read_into_buffer(
     const ssize_t count = read(fd, buffer, size - 1);
     if (count > 0) buffer[count] = '\0';
     close(fd);
+}
+
+bool host_marker(const std::string& value) {
+    return value.find("com.coke.nestspace") != std::string::npos ||
+        value.find("/nestspace") != std::string::npos ||
+        value.find("libnestspace") != std::string::npos ||
+        value.find("NestSpace") != std::string::npos;
+}
+
+std::string join_samples(
+    const std::vector<std::string>& samples,
+    size_t limit = 4
+) {
+    std::string result;
+    for (size_t index = 0; index < samples.size() && index < limit; ++index) {
+        if (!result.empty()) result += "; ";
+        result += samples[index];
+    }
+    return result;
+}
+
+struct TextLeakScan {
+    int count = 0;
+    std::vector<std::string> samples;
+};
+
+TextLeakScan scan_text_for_host(const std::string& value) {
+    TextLeakScan scan;
+    size_t offset = 0;
+    while (offset < value.size()) {
+        const size_t end = value.find('\n', offset);
+        const std::string line = value.substr(
+            offset,
+            end == std::string::npos ? std::string::npos : end - offset
+        );
+        if (host_marker(line)) {
+            ++scan.count;
+            if (scan.samples.size() < 4) scan.samples.push_back(line);
+        }
+        if (end == std::string::npos) break;
+        offset = end + 1;
+    }
+    return scan;
+}
+
+TextLeakScan scan_fd_links() {
+    TextLeakScan scan;
+    DIR* directory = opendir("/proc/self/fd");
+    if (directory == nullptr) {
+        scan.count = -1;
+        return scan;
+    }
+    while (dirent* entry = readdir(directory)) {
+        char* end = nullptr;
+        const long fd = strtol(entry->d_name, &end, 10);
+        if (end == entry->d_name || *end != '\0' || fd < 0) continue;
+        const std::string path = "/proc/self/fd/" + std::to_string(fd);
+        char target[4096] = {};
+        const ssize_t length = readlink(
+            path.c_str(),
+            target,
+            sizeof(target) - 1
+        );
+        if (length <= 0) continue;
+        target[length] = '\0';
+        const std::string value(target);
+        if (host_marker(value)) {
+            ++scan.count;
+            if (scan.samples.size() < 4) {
+                scan.samples.push_back(std::to_string(fd) + "->" + value);
+            }
+        }
+    }
+    closedir(directory);
+    return scan;
+}
+
+struct ThreadScan {
+    int total = 0;
+    int host_names = 0;
+    int uid_mismatches = 0;
+    std::vector<std::string> host_samples;
+    std::vector<std::string> uid_samples;
+};
+
+ThreadScan scan_threads(uid_t expected_uid) {
+    ThreadScan scan;
+    DIR* directory = opendir("/proc/self/task");
+    if (directory == nullptr) {
+        scan.total = -1;
+        return scan;
+    }
+    while (dirent* entry = readdir(directory)) {
+        char* end = nullptr;
+        const long tid = strtol(entry->d_name, &end, 10);
+        if (end == entry->d_name || *end != '\0' || tid <= 0) continue;
+        ++scan.total;
+        const std::string base =
+            "/proc/self/task/" + std::to_string(tid);
+        char comm[128] = {};
+        read_into_buffer((base + "/comm").c_str(), comm, sizeof(comm));
+        for (char* cursor = comm; *cursor != '\0'; ++cursor) {
+            if (*cursor == '\n' || *cursor == '\r') {
+                *cursor = '\0';
+                break;
+            }
+        }
+        const std::string name(comm);
+        if (host_marker(name)) {
+            ++scan.host_names;
+            if (scan.host_samples.size() < 4) {
+                scan.host_samples.push_back(
+                    std::to_string(tid) + ":" + name
+                );
+            }
+        }
+        const std::string status = read_file(
+            (base + "/status").c_str(),
+            16 * 1024
+        );
+        const size_t uid_offset = status.find("Uid:");
+        if (uid_offset == std::string::npos) continue;
+        long real_uid = -1;
+        if (sscanf(
+            status.c_str() + uid_offset + 4,
+            "%ld",
+            &real_uid
+        ) != 1) {
+            continue;
+        }
+        if (real_uid >= 0 &&
+            static_cast<uid_t>(real_uid) != expected_uid) {
+            ++scan.uid_mismatches;
+            if (scan.uid_samples.size() < 4) {
+                scan.uid_samples.push_back(
+                    std::to_string(tid) + "=" +
+                    std::to_string(real_uid)
+                );
+            }
+        }
+    }
+    closedir(directory);
+    return scan;
+}
+
+struct ElfScanState {
+    int modules = 0;
+    int host_modules = 0;
+    std::vector<std::string> samples;
+};
+
+int scan_elf_module(
+    struct dl_phdr_info* info,
+    size_t,
+    void* data
+) {
+    auto* state = static_cast<ElfScanState*>(data);
+    if (state == nullptr) return 0;
+    ++state->modules;
+    const std::string name =
+        info->dlpi_name == nullptr ? "" : info->dlpi_name;
+    if (host_marker(name)) {
+        ++state->host_modules;
+        if (state->samples.size() < 4) state->samples.push_back(name);
+    }
+    return 0;
+}
+
+TextLeakScan scan_environment() {
+    TextLeakScan scan;
+    for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
+        const std::string value(*entry);
+        if (host_marker(value)) {
+            ++scan.count;
+            if (scan.samples.size() < 4) scan.samples.push_back(value);
+        }
+    }
+    return scan;
 }
 
 void run_child_proc_probe(std::string* report) {
@@ -1216,6 +1433,54 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
         "\nproc.attr.current=" + attr +
         "\nproc.cgroup=" + cgroup +
         "\nproc.cmdline=" + cmdline;
+
+    const TextLeakScan fd_scan = scan_fd_links();
+    const ThreadScan thread_scan = scan_threads(getuid());
+    ElfScanState elf_scan;
+    dl_iterate_phdr(scan_elf_module, &elf_scan);
+    const std::string raw_maps = raw_read_file("/proc/self/maps");
+    const std::string raw_mountinfo =
+        raw_read_file("/proc/self/mountinfo");
+    const TextLeakScan maps_scan = scan_text_for_host(raw_maps);
+    const TextLeakScan mountinfo_scan = scan_text_for_host(raw_mountinfo);
+    const TextLeakScan environment_scan = scan_environment();
+    report +=
+        std::string("\nnative.fd.scanned=") +
+            (fd_scan.count < 0 ? "error" : "ok") +
+        "\nnative.fd.hostLeaks=" + std::to_string(fd_scan.count) +
+        "\nnative.fd.hostSamples=" + join_samples(fd_scan.samples) +
+        "\nnative.task.total=" + std::to_string(thread_scan.total) +
+        "\nnative.task.hostNameLeaks=" +
+            std::to_string(thread_scan.host_names) +
+        "\nnative.task.hostNameSamples=" +
+            join_samples(thread_scan.host_samples) +
+        "\nnative.task.uidMismatches=" +
+            std::to_string(thread_scan.uid_mismatches) +
+        "\nnative.task.uidSamples=" +
+            join_samples(thread_scan.uid_samples) +
+        "\nnative.elf.modules=" + std::to_string(elf_scan.modules) +
+        "\nnative.elf.hostModules=" +
+            std::to_string(elf_scan.host_modules) +
+        "\nnative.elf.hostSamples=" +
+            join_samples(elf_scan.samples) +
+        "\nnative.rawMaps.read=" +
+            (starts_with(raw_maps, "error=") ? raw_maps : "ok") +
+        "\nnative.rawMaps.hostLeaks=" +
+            std::to_string(maps_scan.count) +
+        "\nnative.rawMaps.hostSamples=" +
+            join_samples(maps_scan.samples) +
+        "\nnative.rawMountinfo.read=" +
+            (starts_with(raw_mountinfo, "error=")
+                ? raw_mountinfo
+                : "ok") +
+        "\nnative.rawMountinfo.hostLeaks=" +
+            std::to_string(mountinfo_scan.count) +
+        "\nnative.rawMountinfo.hostSamples=" +
+            join_samples(mountinfo_scan.samples) +
+        "\nnative.environment.hostLeaks=" +
+            std::to_string(environment_scan.count) +
+        "\nnative.environment.hostSamples=" +
+            join_samples(environment_scan.samples);
     run_child_proc_probe(&report);
 
     if (data_dir != nullptr) {
