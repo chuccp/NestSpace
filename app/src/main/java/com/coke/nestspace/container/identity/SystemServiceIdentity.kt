@@ -949,8 +949,33 @@ object SystemServiceIdentity {
                     ::rewriteArgument
                 )
                 is Collection<*> -> value.map(::rewriteArgument)
-                else -> rewriteAttributionSource(value, target, host) ?: value
+                else -> rewriteInputEditorInfo(value)
+                    ?: rewriteAttributionSource(value, target, host)
+                    ?: value
             }
+        }
+
+        private fun rewriteInputEditorInfo(value: Any?): Any? {
+            val editorInfoClass =
+                findClass("android.view.inputmethod.EditorInfo") ?: return null
+            if (!editorInfoClass.isInstance(value)) return null
+            val packageField = declaredField(editorInfoClass, "packageName")
+                ?: return null
+            if (packageField.get(value) != targetPackage) return value
+            return runCatching {
+                val parcel = Parcel.obtain()
+                try {
+                    (value as android.os.Parcelable).writeToParcel(parcel, 0)
+                    parcel.setDataPosition(0)
+                    val creator = editorInfoClass.getField("CREATOR")
+                        .get(null) as android.os.Parcelable.Creator<*>
+                    val copy = creator.createFromParcel(parcel)
+                    packageField.set(copy, hostPackage)
+                    copy
+                } finally {
+                    parcel.recycle()
+                }
+            }.getOrNull()
         }
 
         private fun rewriteResult(value: Any?): Any? {
@@ -1179,7 +1204,7 @@ object SystemServiceIdentity {
      * (`com.coke.nestspace:cN`) even after argv0 and ActivityThread are
      * virtualized. Target SDKs commonly cache this result at startup to decide
      * whether they are the application's main process. That decision gates
-     * AppLog, device registration and request common parameters, so expose the
+     * process-scoped SDK initialization and request metadata, so expose the
      * target process identity in framework process snapshots as well.
      */
     private fun rewriteProcessIdentity(

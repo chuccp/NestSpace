@@ -77,6 +77,7 @@ final class IntegrityProbe {
         } catch (Throwable error) {
             add(rows, "PackageInfo", describe(error), false);
         }
+        FeishuPackageProbe.appendRows(rows, activity);
 
         add(rows, "Process.myUid", String.valueOf(expectedUid), true);
         add(

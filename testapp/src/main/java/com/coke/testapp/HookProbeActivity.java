@@ -177,6 +177,11 @@ public class HookProbeActivity extends Activity {
             String.join("\n", result.rows) +
                 "\noverall=" + (result.passed ? "PASS" : "FAIL")
         );
+        writeReport(
+            "integrity-probe.txt",
+            String.join("\n", result.rows) +
+                "\noverall=" + (result.passed ? "PASS" : "FAIL")
+        );
     }
 
     private String buildReport() {
@@ -736,7 +741,11 @@ public class HookProbeActivity extends Activity {
     }
 
     private void writeReport(String report) {
-        try (FileWriter writer = new FileWriter(new File(getFilesDir(), "hook-probe.txt"))) {
+        writeReport("hook-probe.txt", report);
+    }
+
+    private void writeReport(String name, String report) {
+        try (FileWriter writer = new FileWriter(new File(getFilesDir(), name))) {
             writer.write(report);
         } catch (Throwable error) {
             Log.w(TAG, "write data report failed", error);
@@ -744,7 +753,7 @@ public class HookProbeActivity extends Activity {
         File external = getExternalFilesDir("hook-probe");
         if (external == null) return;
         if (!external.isDirectory()) external.mkdirs();
-        try (FileWriter writer = new FileWriter(new File(external, "hook-probe.txt"))) {
+        try (FileWriter writer = new FileWriter(new File(external, name))) {
             writer.write(report);
         } catch (Throwable error) {
             Log.w(TAG, "write external report failed", error);

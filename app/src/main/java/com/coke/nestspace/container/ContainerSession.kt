@@ -549,6 +549,8 @@ class ContainerSession private constructor(
         startupCoordinator.run(AndroidStartupPhase.PROCESS_APPLICATION) {
             publishAsProcessApplication()
         }
+        (loader as? com.coke.nestspace.container.loader.TargetContextInstaller)
+            ?.installTargetContext(context)
         // Keep the complete process identity on the target while its
         // Application and providers initialize, matching a normal Android
         // process. StageAActivity temporarily restores the host identity only
@@ -2298,7 +2300,7 @@ class ContainerSession private constructor(
                     )
                 }
             } else {
-                PathClassLoader(
+                ContainerClassLoader(
                     classPath,
                     nativeSearchPath,
                     bootstrapClassLoader()

@@ -1,6 +1,7 @@
 package com.coke.nestspace.container.loader
 
 import android.util.Log
+import android.content.Context
 import dalvik.system.DexClassLoader
 import dalvik.system.InMemoryDexClassLoader
 import dalvik.system.PathClassLoader
@@ -24,7 +25,8 @@ class RuntimeDexPathClassLoader(
     parent: ClassLoader?,
     private val dataRoot: File,
     private val optimizedDirectory: File
-) : PathClassLoader(dexPath, librarySearchPath, parent) {
+) : PathClassLoader(dexPath, librarySearchPath, parent),
+    TargetContextInstaller {
     private val lock = Any()
     private val resolvingFallback = ThreadLocal<Boolean>()
     private val resources = ClassPathResourceFinder(dexPath)
@@ -32,6 +34,21 @@ class RuntimeDexPathClassLoader(
     private var fallbackDexLoader: ClassLoader? = null
     private val hostClassLoader =
         RuntimeDexPathClassLoader::class.java.classLoader
+    private val seededClasses =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val targetLoadedClasses =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var targetContext: Context? = null
+
+    override fun installTargetContext(context: Context) {
+        targetContext = context
+        val loaded = synchronized(lock) {
+            targetLoadedClasses.toList().mapNotNull { name: String ->
+                findLoadedClass(name)
+            }
+        }
+        loaded.forEach { seedContext(it, it.name) }
+    }
 
     override fun findLibrary(name: String): String? {
         val resolved = super.findLibrary(name)
@@ -80,6 +97,7 @@ class RuntimeDexPathClassLoader(
         if (name.startsWith("com.coke.nestspace.")) {
             hostClassLoader?.let {
                 return it.loadClass(name).also { type ->
+                    noteTargetClass(type, name)
                     if (resolve) resolveClass(type)
                 }
             }
@@ -87,7 +105,7 @@ class RuntimeDexPathClassLoader(
         if (resolvingFallback.get() == true) {
             return super.loadClass(name, resolve)
         }
-        return try {
+        val loaded = try {
             super.loadClass(name, resolve)
         } catch (missing: ClassNotFoundException) {
             val fallback = installGeneratedDex()
@@ -121,6 +139,8 @@ class RuntimeDexPathClassLoader(
                 resolvingFallback.remove()
             }
         }
+        noteTargetClass(loaded, name)
+        return loaded
     }
 
     private fun installGeneratedDex(): ClassLoader? {
@@ -233,6 +253,16 @@ class RuntimeDexPathClassLoader(
             .distinctBy(File::getAbsolutePath)
             .sortedBy(File::getAbsolutePath)
             .toList()
+    }
+
+    private fun seedContext(type: Class<*>, name: String) {
+        val context = targetContext ?: return
+        if (!seededClasses.add(name)) return
+        TargetContextSeeder.seed(type, context)
+    }
+
+    private fun noteTargetClass(type: Class<*>, name: String) {
+        if (type.classLoader === this) targetLoadedClasses.add(name)
     }
 
     private companion object {

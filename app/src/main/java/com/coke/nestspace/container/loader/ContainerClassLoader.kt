@@ -1,5 +1,6 @@
 package com.coke.nestspace.container.loader
 
+import android.content.Context
 import dalvik.system.PathClassLoader
 import java.io.InputStream
 import java.net.URL
@@ -26,10 +27,27 @@ class ContainerClassLoader(
     dexPath: String,
     librarySearchPath: String?,
     parent: ClassLoader
-) : PathClassLoader(dexPath, librarySearchPath, parent) {
+) : PathClassLoader(dexPath, librarySearchPath, parent),
+    TargetContextInstaller {
 
     private val lock = Any()
     private val resources = ClassPathResourceFinder(dexPath)
+    private val seededClasses =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var targetContext: Context? = null
+
+    override fun installTargetContext(context: Context) {
+        targetContext = context
+        val loaded = synchronized(lock) {
+            loadedClasses.toList().mapNotNull { name: String ->
+                findLoadedClass(name)
+            }
+        }
+        // Reflection can resolve field types and therefore call back into this
+        // loader. Seeding while holding the loader lock creates a lock inversion
+        // with class initialization on another thread.
+        loaded.forEach { seedContext(it, it.name) }
+    }
 
     override fun findResource(name: String): URL? =
         resources.findResource(name) ?: super.findResource(name)
@@ -49,7 +67,7 @@ class ContainerClassLoader(
         resources.openResource(name) ?: super.getResourceAsStream(name)
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
-        synchronized(lock) {
+        val clazz = synchronized(lock) {
             var clazz = findLoadedClass(name)
             if (clazz == null) {
                 // Some SDKs bundle compile-time stubs of framework classes.
@@ -69,8 +87,9 @@ class ContainerClassLoader(
                 }
             }
             if (resolve) resolveClass(clazz)
-            return clazz
+            clazz
         }
+        return clazz
     }
 
     private fun isPlatformClass(name: String): Boolean =
@@ -83,6 +102,12 @@ class ContainerClassLoader(
             name.startsWith("com.sun.") ||
             name.startsWith("org.w3c.") ||
             name.startsWith("org.xmlpull.")
+
+    private fun seedContext(type: Class<*>, name: String) {
+        val context = targetContext ?: return
+        if (!seededClasses.add(name)) return
+        TargetContextSeeder.seed(type, context)
+    }
 
     companion object {
         /**

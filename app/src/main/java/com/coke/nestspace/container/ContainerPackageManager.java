@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.InstallSourceInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PermissionInfo;
@@ -28,6 +29,7 @@ import com.coke.nestspace.container.vpm.PackageVisibilityPolicy;
 import com.coke.nestspace.container.vpm.VirtualPackageRegistry;
 
 import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.security.MessageDigest;
@@ -127,6 +129,8 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             return copyPackageInfo(flags);
         }
         if (isVirtualPackage(packageName)) {
+            PackageInfo installed = installedPackageInfo(packageName, flags);
+            if (installed != null) return installed;
             PackageInfo copy = copyVirtualPackageInfo(packageName, flags);
             if (copy != null) return copy;
         }
@@ -144,6 +148,9 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             return copyPackageInfo(flags);
         }
         if (versionedPackage != null && isVirtualPackage(versionedPackage.getPackageName())) {
+            PackageInfo installed = installedPackageInfo(
+                    versionedPackage.getPackageName(), flags);
+            if (installed != null) return installed;
             PackageInfo copy = copyVirtualPackageInfo(
                     versionedPackage.getPackageName(), flags);
             if (copy != null) return copy;
@@ -163,6 +170,9 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             return copyApplicationInfo(flags);
         }
         if (isVirtualPackage(packageName)) {
+            ApplicationInfo installed = installedApplicationInfo(
+                    packageName, flags);
+            if (installed != null) return installed;
             ApplicationInfo copy = copyVirtualApplicationInfo(
                     packageName, flags);
             if (copy != null) return copy;
@@ -467,6 +477,19 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     public String getInstallerPackageName(String packageName) {
         if (isVirtualPackage(packageName)) return null;
         return super.getInstallerPackageName(packageName);
+    }
+
+    @Override
+    public InstallSourceInfo getInstallSourceInfo(String packageName)
+            throws NameNotFoundException {
+        if (!isTarget(packageName) && !isVirtualPackage(packageName)) {
+            return base.getInstallSourceInfo(packageName);
+        }
+        try {
+            return base.getInstallSourceInfo(packageName);
+        } catch (NameNotFoundException | UnsupportedOperationException ignored) {
+            return newInstallSourceInfo(null, null, null, null);
+        }
     }
 
     @Override
@@ -1405,6 +1428,28 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         return result.value;
     }
 
+    private PackageInfo installedPackageInfo(String packageName, int flags) {
+        try {
+            PackageInfo installed = super.getPackageInfo(packageName, flags);
+            return installed != null && canSeePackage(installed.applicationInfo)
+                    ? installed
+                    : null;
+        } catch (NameNotFoundException ignored) {
+            return null;
+        }
+    }
+
+    private ApplicationInfo installedApplicationInfo(String packageName, int flags) {
+        try {
+            ApplicationInfo installed = super.getApplicationInfo(packageName, flags);
+            return installed != null && canSeePackage(installed)
+                    ? installed
+                    : null;
+        } catch (NameNotFoundException ignored) {
+            return null;
+        }
+    }
+
     private ApplicationInfo copyVirtualApplicationInfo(String packageName, int flags) {
         boolean full = needsComponentData(flags);
         ApplicationInfo source = full
@@ -1669,6 +1714,50 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             return creator.createFromParcel(parcel);
         } finally {
             parcel.recycle();
+        }
+    }
+
+    private static InstallSourceInfo newInstallSourceInfo(
+            String initiatingPackage,
+            String originatingPackage,
+            String installingPackage,
+            String updateOwnerPackage) {
+        try {
+            Constructor<InstallSourceInfo> constructor =
+                    InstallSourceInfo.class.getDeclaredConstructor(
+                            String.class,
+                            android.content.pm.SigningInfo.class,
+                            String.class,
+                            String.class,
+                            String.class,
+                            int.class);
+            constructor.setAccessible(true);
+            return constructor.newInstance(
+                    initiatingPackage,
+                    null,
+                    originatingPackage,
+                    installingPackage,
+                    updateOwnerPackage,
+                    0);
+        } catch (Throwable sixParameterFailure) {
+            try {
+                Constructor<InstallSourceInfo> constructor =
+                        InstallSourceInfo.class.getDeclaredConstructor(
+                                String.class,
+                                android.content.pm.SigningInfo.class,
+                                String.class,
+                                String.class);
+                constructor.setAccessible(true);
+                return constructor.newInstance(
+                        initiatingPackage,
+                        null,
+                        originatingPackage,
+                        installingPackage);
+            } catch (Throwable fourParameterFailure) {
+                throw new UnsupportedOperationException(
+                        "Unable to construct InstallSourceInfo",
+                        fourParameterFailure);
+            }
         }
     }
 }

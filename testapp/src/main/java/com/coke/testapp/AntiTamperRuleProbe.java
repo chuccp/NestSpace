@@ -121,6 +121,8 @@ final class AntiTamperRuleProbe {
                 : String.join("; ", invalidThreadNames),
             invalidThreadNames.isEmpty()
         );
+        appendTaskIdentityRows(rows, uid, pid);
+        appendSchedulerRows(rows);
 
         add(
             rows,
@@ -168,6 +170,27 @@ final class AntiTamperRuleProbe {
             compact(read("/proc/self/oom_score_adj")),
             true
         );
+        String pagemap = readBinary("/proc/self/pagemap", 8);
+        add(
+            rows,
+            "NPTH pagemap 视图",
+            pagemap,
+            pagemap.startsWith("ok=") ||
+                pagemap.startsWith("error=PermissionDenied") ||
+                pagemap.contains("EACCES")
+        );
+        String meminfo = read("/proc/meminfo");
+        add(
+            rows,
+            "NPTH meminfo/limits",
+            "meminfo=" + (meminfo.startsWith("error=") ? "unavailable" : "ok")
+                + " limits=" + (
+                    read("/proc/self/limits").startsWith("error=")
+                        ? "unavailable"
+                        : "ok"
+                ),
+            !containsAny(meminfo, VIRTUAL_PATH_RULES)
+        );
 
         String nativeHostModules = field(
             nativeReport,
@@ -212,6 +235,73 @@ final class AntiTamperRuleProbe {
             }
         }
         return result;
+    }
+
+    private static void appendTaskIdentityRows(
+        List<String> rows,
+        int uid,
+        int pid
+    ) {
+        List<Integer> ids = taskIds();
+        Set<String> identityLeaks = new LinkedHashSet<>();
+        Set<String> statLeaks = new LinkedHashSet<>();
+        for (Integer tid : ids) {
+            String status = read("/proc/self/task/" + tid + "/status");
+            String statusUid = field(status, "Uid:");
+            String statusGid = field(status, "Gid:");
+            String tgid = field(status, "Tgid:");
+            if (!statusUid.equals(uid + "\t" + uid + "\t" + uid + "\t" + uid) ||
+                !statusGid.equals(uid + "\t" + uid + "\t" + uid + "\t" + uid) ||
+                !tgid.equals(String.valueOf(pid)) ||
+                containsAny(status, VIRTUAL_PATH_RULES)) {
+                identityLeaks.add(
+                    tid + ":uid=" + statusUid + ",gid=" + statusGid
+                        + ",tgid=" + tgid
+                );
+            }
+
+            String stat = compact(read("/proc/self/task/" + tid + "/stat"));
+            int close = stat.lastIndexOf(')');
+            String prefix = close >= 0 && stat.startsWith(String.valueOf(tid) + " (")
+                ? stat.substring(0, close + 1)
+                : stat;
+            if (stat.startsWith("error=") ||
+                close < 0 ||
+                !stat.startsWith(String.valueOf(tid) + " (") ||
+                containsAny(prefix, VIRTUAL_PATH_RULES)) {
+                statLeaks.add(tid + ":" + prefix);
+            }
+        }
+        add(
+            rows,
+            "NPTH task/status 身份",
+            identityLeaks.isEmpty()
+                ? "tasks=" + ids.size()
+                : String.join("; ", identityLeaks),
+            !ids.isEmpty() && identityLeaks.isEmpty()
+        );
+        add(
+            rows,
+            "NPTH task/stat 身份",
+            statLeaks.isEmpty()
+                ? "tasks=" + ids.size()
+                : String.join("; ", statLeaks),
+            !ids.isEmpty() && statLeaks.isEmpty()
+        );
+    }
+
+    private static void appendSchedulerRows(List<String> rows) {
+        String sched = read("/proc/self/sched");
+        String schedstat = compact(read("/proc/self/schedstat"));
+        String[] fields = schedstat.trim().split("\\s+");
+        add(
+            rows,
+            "NPTH sched 视图",
+            "sched=" + (sched.startsWith("error=") ? "unavailable" : "ok")
+                + " schedstat=" + schedstat,
+            !containsAny(sched, VIRTUAL_PATH_RULES) &&
+                fields.length >= 3
+        );
     }
 
     private static List<Integer> taskIds() {
@@ -301,6 +391,27 @@ final class AntiTamperRuleProbe {
 
     private static String compact(String value) {
         return value.replace('\n', '|').trim();
+    }
+
+    private static String readBinary(String path, int count) {
+        try (java.io.FileInputStream input =
+                 new java.io.FileInputStream(path)) {
+            byte[] value = new byte[count];
+            int written = input.read(value);
+            if (written <= 0) return "error=Empty";
+            StringBuilder hex = new StringBuilder("ok=");
+            for (int index = 0; index < written; index++) {
+                hex.append(String.format(
+                    java.util.Locale.US,
+                    "%02x",
+                    value[index]
+                ));
+            }
+            return hex.toString();
+        } catch (Throwable error) {
+            return "error=" + error.getClass().getSimpleName()
+                + ":" + error.getMessage();
+        }
     }
 
     private static String read(String path) {
