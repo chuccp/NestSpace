@@ -34,6 +34,7 @@ object HostIdentity {
      * and LoadedApk over the process-wide host fields.
      */
     fun captureProcess(context: Context) {
+        ContainerIdentity.captureHostUid()
         val appContext = context.applicationContext
         if (capturedApplication == null) {
             capturedApplication = appContext as? Application

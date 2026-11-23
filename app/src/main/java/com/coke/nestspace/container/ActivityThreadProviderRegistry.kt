@@ -1,8 +1,10 @@
 package com.coke.nestspace.container
 
 import android.content.ContentProvider
+import android.content.IContentProvider
 import android.content.pm.ProviderInfo
 import android.util.Log
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Publishes a container-local ContentProvider in ActivityThread's provider map.
@@ -23,6 +25,14 @@ import android.util.Log
 internal object ActivityThreadProviderRegistry {
 
     private const val TAG = "ContainerProviderReg"
+
+    private data class PublishedProvider(
+        val key: Any,
+        val authority: String,
+        val provider: IContentProvider
+    )
+
+    private val publishedProviders = ConcurrentHashMap<String, PublishedProvider>()
 
     private class Registry(
         val providerMap: MutableMap<Any, Any>,
@@ -117,7 +127,11 @@ internal object ActivityThreadProviderRegistry {
                     holder
                 )
                 reg.providerMap[key] = record
-                keys += key
+                @Suppress("UNCHECKED_CAST")
+                val localProvider = transport as IContentProvider
+                val published = PublishedProvider(key, authority, localProvider)
+                publishedProviders[authority] = published
+                keys += published
                 Log.d(TAG, "registered $authority -> ${providerInfo.name}")
             }.onFailure {
                 Log.w(TAG, "register authority failed: $authority", it)
@@ -126,12 +140,31 @@ internal object ActivityThreadProviderRegistry {
         return keys
     }
 
+    /**
+     * Returns the in-process transport published for an authority.
+     *
+     * ActivityThread's provider map is an implementation detail and is not
+     * guaranteed to be consulted by every resolver acquisition path. Keeping
+     * our own authority index lets a container resolver avoid a trip through
+     * system_server for providers that already live in this process.
+     */
+    fun providerFor(authority: String): IContentProvider? =
+        publishedProviders[authority]?.provider
+
+    fun isPublishedProvider(provider: IContentProvider): Boolean =
+        publishedProviders.values.any { it.provider === provider }
+
     fun unregister(keys: List<Any>) {
         if (keys.isEmpty()) return
         val reg = registry() ?: return
-        keys.forEach { key ->
+        keys.forEach { value ->
+            val published = value as? PublishedProvider
+            val key = published?.key ?: value
             runCatching { reg.providerMap.remove(key) }
                 .onFailure { Log.w(TAG, "unregister failed", it) }
+            if (published != null) {
+                publishedProviders.remove(published.authority, published)
+            }
         }
     }
 }

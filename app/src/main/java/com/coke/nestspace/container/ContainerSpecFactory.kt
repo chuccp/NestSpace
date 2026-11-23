@@ -130,7 +130,9 @@ internal object ContainerSpecFactory {
         val dataDir = File(File(root, "data"), sanitize(packageName))
             .resolve(sanitize(instanceId))
         dataDir.mkdirs()
+        val targetUid = ContainerIdentity.virtualUidFor(packageName)
         val applicationInfo = installed?.applicationInfo ?: descriptor.applicationInfo
+        applicationInfo.uid = targetUid
         // The target package is not registered with the platform
         // ResourcesManager. Preserve the parsed label so framework callers
         // using PackageItemInfo.loadLabel() do not try to reopen a virtual
@@ -175,11 +177,12 @@ internal object ContainerSpecFactory {
                 lastUpdateTime = packageLastUpdateTime
             },
             applicationInfo = applicationInfo,
-            // Imported APKs can be assigned a placeholder UID in the SDK
-            // sandbox range by getPackageArchiveInfo(). The running process
-            // still belongs to the host kernel UID, and self-queries must stay
-            // consistent with that truth.
-            targetUid = installed?.uid ?: ContainerIdentity.hostUid(),
+            // The target must not observe the UID assigned to the installed
+            // APK used as its source, nor the host process UID. A stable
+            // synthetic UID keeps every app-facing identity API in the same
+            // namespace; only the Binder bridge uses the kernel-attested host
+            // UID for system-server calls.
+            targetUid = targetUid,
             dataDir = dataDir.absolutePath,
             activityTheme = activity.theme,
             applicationTheme = descriptor.applicationInfo.theme,

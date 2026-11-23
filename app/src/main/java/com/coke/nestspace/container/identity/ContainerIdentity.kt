@@ -23,7 +23,25 @@ object ContainerIdentity {
     private const val VIRTUAL_UID_BASE = 70_000
     private const val VIRTUAL_UID_RANGE = 20_000
 
-    fun hostUid(): Int = Process.myUid()
+    @Volatile
+    private var capturedHostUid: Int = -1
+
+    /**
+     * Must run before the target UID facade is installed. Once
+     * Process.myUid() is virtualized it no longer identifies the Binder
+     * caller, and using it for system-service arguments creates impossible
+     * host-package/virtual-UID attribution pairs.
+     */
+    fun captureHostUid() {
+        if (capturedHostUid <= 0) {
+            capturedHostUid = Process.myUid()
+        }
+    }
+
+    fun hostUid(): Int {
+        captureHostUid()
+        return capturedHostUid
+    }
 
     /** UserHandle.myUserId() is hidden; the container runs in the current user. */
     fun userId(): Int = runCatching {

@@ -41,7 +41,8 @@ class VirtualContentResolver(
     private val overlay = ProviderOverlayResolver(
         context,
         delegate,
-        virtualAndroidId
+        virtualAndroidId,
+        virtualAuthorities
     )
 
     init {
@@ -64,6 +65,20 @@ class VirtualContentResolver(
 
     override fun acquireUnstableProvider(context: Context, name: String): IContentProvider? =
         overlay.unstableProvider(context, name)
+
+    override fun releaseProvider(icp: IContentProvider): Boolean =
+        if (ActivityThreadProviderRegistry.isPublishedProvider(icp)) {
+            true
+        } else {
+            super.releaseProvider(icp)
+        }
+
+    override fun releaseUnstableProvider(icp: IContentProvider): Boolean =
+        if (ActivityThreadProviderRegistry.isPublishedProvider(icp)) {
+            true
+        } else {
+            super.releaseUnstableProvider(icp)
+        }
 
     override fun notifyChange(uri: Uri, observer: ContentObserver?) {
         if (isVirtual(uri)) {
@@ -111,7 +126,8 @@ class VirtualContentResolver(
     private class ProviderOverlayResolver(
         context: Context,
         private val delegate: ContentResolver,
-        private val androidId: String
+        private val androidId: String,
+        private val virtualAuthorities: Set<String>
     ) : VirtualContentResolverBase(context, delegate) {
         override fun acquireProvider(context: Context, name: String): IContentProvider? =
             provider(context, name)
@@ -119,11 +135,47 @@ class VirtualContentResolver(
         override fun acquireUnstableProvider(context: Context, name: String): IContentProvider? =
             unstableProvider(context, name)
 
-        fun provider(context: Context, name: String): IContentProvider? =
-            wrap(super.acquireProvider(context, name), name)
+        fun provider(context: Context, name: String): IContentProvider? {
+            ActivityThreadProviderRegistry.providerFor(name)?.let {
+                return wrap(it, name)
+            }
+            if (name in virtualAuthorities) {
+                android.util.Log.d(
+                    TAG,
+                    "local provider not published yet: $name"
+                )
+                return null
+            }
+            return wrap(super.acquireProvider(context, name), name)
+        }
 
-        fun unstableProvider(context: Context, name: String): IContentProvider? =
-            wrap(super.acquireUnstableProvider(context, name), name)
+        fun unstableProvider(context: Context, name: String): IContentProvider? {
+            ActivityThreadProviderRegistry.providerFor(name)?.let {
+                return wrap(it, name)
+            }
+            if (name in virtualAuthorities) {
+                android.util.Log.d(
+                    TAG,
+                    "local provider not published yet: $name"
+                )
+                return null
+            }
+            return wrap(super.acquireUnstableProvider(context, name), name)
+        }
+
+        override fun releaseProvider(icp: IContentProvider): Boolean =
+            if (ActivityThreadProviderRegistry.isPublishedProvider(icp)) {
+                true
+            } else {
+                super.releaseProvider(icp)
+            }
+
+        override fun releaseUnstableProvider(icp: IContentProvider): Boolean =
+            if (ActivityThreadProviderRegistry.isPublishedProvider(icp)) {
+                true
+            } else {
+                super.releaseUnstableProvider(icp)
+            }
 
         private fun wrap(provider: IContentProvider?, authority: String): IContentProvider? {
             if (provider == null || authority != SETTINGS_AUTHORITY) return provider
@@ -183,6 +235,7 @@ class VirtualContentResolver(
 
         private companion object {
             const val SETTINGS_AUTHORITY = "settings"
+            const val TAG = "VirtualContentResolver"
         }
     }
 

@@ -27,6 +27,10 @@
             android:exported="true" />
 
         <activity
+            android:name=".UidProbeActivity"
+            android:exported="true" />
+
+        <activity
             android:name=".SecondActivity"
             android:exported="false">
             <intent-filter>

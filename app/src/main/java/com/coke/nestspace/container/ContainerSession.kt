@@ -16,7 +16,7 @@ import com.coke.nestspace.container.loader.ApkClassIndex
 import com.coke.nestspace.container.loader.CompleteClassBridge
 import com.coke.nestspace.container.loader.NativeLibs
 import com.coke.nestspace.container.loader.PluginClassPathResolver
-import com.coke.nestspace.container.loader.RuntimeDexPathClassLoader
+import com.coke.nestspace.container.loader.HostBootstrapClassLoader
 import com.coke.nestspace.container.loader.SharedLibraries
 import com.coke.nestspace.container.loader.withContainerClassLoader
 import com.coke.nestspace.container.remote.ContainerProcessBrokerClient
@@ -2280,31 +2280,28 @@ class ContainerSession private constructor(
                 )
             }
             var loader: ClassLoader = if (externalApplication) {
+                val classLoaderParent = bootstrapClassLoader()
                 if (useDynamicExternalLoader) {
-                    RuntimeDexPathClassLoader(
+                    PathClassLoader(
                         classPath,
                         nativeSearchPath,
-                        ClassLoader.getSystemClassLoader().parent,
-                        dataRoot,
-                        File(dataRoot, "code_cache")
+                        classLoaderParent
                     )
                 } else {
                     createExternalApplicationClassLoader(
                         classPath,
                         nativeSearchPath,
-                        ClassLoader.getSystemClassLoader().parent,
+                        classLoaderParent,
                         appInfo.targetSdkVersion,
                         appInfo.dataDir,
                         sharedLibraryPaths
                     )
                 }
             } else {
-                RuntimeDexPathClassLoader(
+                PathClassLoader(
                     classPath,
                     nativeSearchPath,
-                    ClassLoader.getSystemClassLoader().parent,
-                    dataRoot,
-                    File(dataRoot, "code_cache")
+                    bootstrapClassLoader()
                 )
             }
             Log.d(
@@ -2533,6 +2530,17 @@ class ContainerSession private constructor(
                 )
                 NativeEnvironmentBridge.installCoreFileBridge()
             }
+            // Install the synchronized identity notification filter before
+            // the target Application creates its worker threads. Installing
+            // it after attachBaseContext can fail TSYNC once target threads
+            // have installed different seccomp filters of their own.
+            if (!externalApplication &&
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.disable_native_environment"
+                ) != "1"
+            ) {
+                NativeEnvironmentBridge.installSyscallGateway()
+            }
             if (com.coke.nestspace.BuildConfig.DEBUG) {
                 runCatching {
                     File(dataRoot, "native-maps.txt").writeText(
@@ -2683,18 +2691,11 @@ class ContainerSession private constructor(
                     )
                 }
             }
-            // Native storage and platform libraries initialize their own
-            // thread pools and file locks in attachBaseContext. Installing a
-            // syscall trap before that point can deadlock those initializers
-            // on real devices, so enforce direct-syscall identity immediately
-            // after the base Application attachment completes.
-            if (!externalApplication ||
+            if (externalApplication &&
                 NativeEnvironmentBridge.readPropertyForDiagnostics(
                     "debug.nestspace.force_syscall_gateway"
-                ) == "1"
+                ) != "1"
             ) {
-                NativeEnvironmentBridge.installSyscallGateway()
-            } else {
                 // External bootstrap wrappers inspect seccomp and inline-hook
                 // state before unpacking their code.
                 Log.d(TAG, "syscall gateway skipped for external bootstrap")
@@ -2983,6 +2984,16 @@ class ContainerSession private constructor(
             }.onFailure {
                 Log.w(TAG, "target SDK version apply failed target=$targetSdk", it)
             }
+        }
+
+        private fun bootstrapClassLoader(): ClassLoader {
+            val systemLoader = ClassLoader.getSystemClassLoader()
+            return HostBootstrapClassLoader(
+                hostLoader = HostIdentity.application?.classLoader
+                    ?: ContainerSession::class.java.classLoader
+                    ?: systemLoader,
+                platformLoader = systemLoader.parent
+            )
         }
 
         /**

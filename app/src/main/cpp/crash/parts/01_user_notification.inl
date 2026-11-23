@@ -1,5 +1,8 @@
 std::atomic<int> g_user_notify_listener{-1};
 std::atomic<bool> g_user_notify_started{false};
+std::atomic<bool> g_identity_notify_installed{false};
+
+void* user_notification_loop(void*);
 
 bool notification_proc_path(const char* path, pid_t process_id) {
     if (path == nullptr) return false;
@@ -94,6 +97,119 @@ void respond_user_notification(
     seccomp_notif_resp& response
 ) {
     const long syscall_number = request.data.nr;
+    const auto* environment = nestspace::current_environment();
+#if defined(SYS_getresuid)
+    if (syscall_number == SYS_getresuid) {
+        if (environment == nullptr) {
+            response.error = -EPERM;
+        } else {
+            const uid_t uid =
+                static_cast<uid_t>(environment->observed_uid);
+            for (size_t index = 0; index < 3; ++index) {
+                const auto destination = static_cast<uintptr_t>(
+                    request.data.args[index]
+                );
+                if (destination != 0 &&
+                    !write_user_memory(destination, &uid, sizeof(uid))) {
+                    response.error = -EFAULT;
+                    break;
+                }
+            }
+        }
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
+#endif
+#if defined(SYS_getresgid)
+    if (syscall_number == SYS_getresgid) {
+        if (environment == nullptr) {
+            response.error = -EPERM;
+        } else {
+            const gid_t gid =
+                static_cast<gid_t>(environment->observed_uid);
+            for (size_t index = 0; index < 3; ++index) {
+                const auto destination = static_cast<uintptr_t>(
+                    request.data.args[index]
+                );
+                if (destination != 0 &&
+                    !write_user_memory(destination, &gid, sizeof(gid))) {
+                    response.error = -EFAULT;
+                    break;
+                }
+            }
+        }
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
+#endif
+    if (syscall_number == SYS_getgroups) {
+        if (environment == nullptr) {
+            response.error = -EPERM;
+        } else {
+            const int count = static_cast<int>(request.data.args[0]);
+            const auto destination = static_cast<uintptr_t>(
+                request.data.args[1]
+            );
+            const auto& groups = environment->supplementary_groups;
+            const int required = static_cast<int>(groups.size());
+            if (count < 0 || (count != 0 && count < required)) {
+                response.error = -EINVAL;
+            } else if (count != 0) {
+                std::array<gid_t, 64> values {};
+                const size_t written = std::min(
+                    groups.size(),
+                    values.size()
+                );
+                for (size_t index = 0; index < written; ++index) {
+                    values[index] = static_cast<gid_t>(groups[index]);
+                }
+                if (!write_user_memory(
+                        destination,
+                        values.data(),
+                        written * sizeof(gid_t)
+                    )) {
+                    response.error = -EFAULT;
+                } else {
+                    response.val = static_cast<long>(required);
+                }
+            } else {
+                response.val = required;
+            }
+        }
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
+    if (syscall_number == SYS_kill ||
+        syscall_number == SYS_tkill ||
+#ifdef SYS_tgkill
+        syscall_number == SYS_tgkill ||
+#endif
+        false) {
+        const bool is_tgkill = syscall_number == SYS_tgkill;
+        const pid_t target = static_cast<pid_t>(request.data.args[0]);
+        const pid_t caller_process =
+            static_cast<pid_t>(request.pid);
+        const int signal = static_cast<int>(
+            request.data.args[is_tgkill ? 2 : 1]
+        );
+        if (signal == SIGKILL &&
+            (target == caller_process || target == getpid())) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "ignored self SIGKILL via user-notify syscall=%lld"
+                " pid=%d tid=%d",
+                static_cast<long long>(syscall_number),
+                getpid(),
+                request.pid
+            );
+            response.val = 0;
+        } else {
+            response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+        }
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
 #if defined(SYS_exit_group)
     if (syscall_number == SYS_exit_group) {
         if (diagnostic_enabled(
@@ -144,7 +260,6 @@ void respond_user_notification(
         syscall_number == SYS_geteuid ||
         syscall_number == SYS_getgid ||
         syscall_number == SYS_getegid) {
-        const auto* environment = nestspace::current_environment();
         response.val = environment == nullptr
             ? -EPERM
             : environment->observed_uid;
@@ -505,6 +620,134 @@ void respond_user_notification(
     }
     if (directory && installed >= 0) return;
     ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+}
+
+[[maybe_unused]] bool install_identity_user_notify_gateway() {
+#if defined(SYS_seccomp)
+    if (g_identity_notify_installed.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        return false;
+    }
+    if (!g_user_notify_started.exchange(
+            true,
+            std::memory_order_acq_rel
+        )) {
+        pthread_t thread {};
+        if (pthread_create(
+                &thread,
+                nullptr,
+                user_notification_loop,
+                nullptr
+            ) != 0) {
+            g_user_notify_started.store(false, std::memory_order_release);
+            return false;
+        }
+        pthread_detach(thread);
+    }
+
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_geteuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getegid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#if defined(__NR_getresuid)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getresuid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_getresgid)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getresgid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_getgroups)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgroups, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_kill)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_kill, 0, 3),
+        BPF_STMT(
+            BPF_LD | BPF_W | BPF_ABS,
+            offsetof(seccomp_data, args[1])
+        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIGKILL, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_tgkill)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 0, 3),
+        BPF_STMT(
+            BPF_LD | BPF_W | BPF_ABS,
+            offsetof(seccomp_data, args[2])
+        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIGKILL, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_tkill)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tkill, 0, 3),
+        BPF_STMT(
+            BPF_LD | BPF_W | BPF_ABS,
+            offsetof(seccomp_data, args[1])
+        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIGKILL, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program {
+        static_cast<unsigned short>(sizeof(filter) / sizeof(filter[0])),
+        filter
+    };
+
+    errno = 0;
+    long listener_fd = syscall(
+        SYS_seccomp,
+        SECCOMP_SET_MODE_FILTER,
+        SECCOMP_FILTER_FLAG_NEW_LISTENER |
+            SECCOMP_FILTER_FLAG_TSYNC,
+        &program
+    );
+    const int synchronized_errno = listener_fd >= 0 ? 0 : errno;
+    if (listener_fd < 0) {
+        errno = 0;
+        listener_fd = syscall(
+            SYS_seccomp,
+            SECCOMP_SET_MODE_FILTER,
+            SECCOMP_FILTER_FLAG_NEW_LISTENER,
+            &program
+        );
+        if (listener_fd < 0) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "identity user notify failed sync_errno=%d errno=%d",
+                synchronized_errno,
+                errno
+            );
+            return false;
+        }
+    }
+    g_user_notify_listener.store(
+        static_cast<int>(listener_fd),
+        std::memory_order_release
+    );
+    g_syscall_gateway_active.store(true, std::memory_order_release);
+    g_identity_notify_installed.store(true, std::memory_order_release);
+    __android_log_print(
+        ANDROID_LOG_WARN,
+        kLogTag,
+        "identity user notify ready listener=%ld sync_errno=%d",
+        listener_fd,
+        synchronized_errno
+    );
+    return true;
+#else
+    return false;
+#endif
 }
 
 void* user_notification_loop(void*) {

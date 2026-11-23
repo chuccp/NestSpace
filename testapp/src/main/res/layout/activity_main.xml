@@ -45,6 +45,26 @@
                     android:layout_height="wrap_content"
                     android:orientation="vertical">
 
+                    <LinearLayout style="@style/TestApp.Card">
+
+                        <TextView
+                            style="@style/TestApp.SectionTitle"
+                            android:text="@string/home_uid_title" />
+
+                        <LinearLayout
+                            android:id="@+id/uid_home_list"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+
+                        <Button
+                            android:id="@+id/open_uid_probe_home"
+                            style="@style/TestApp.Button"
+                            android:layout_width="match_parent"
+                            android:layout_weight="0"
+                            android:text="@string/home_uid_detail" />
+                    </LinearLayout>
+
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -747,6 +767,28 @@
                         <TextView
                             android:id="@+id/ime_result"
                             style="@style/TestApp.Result" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <Button
+                                android:id="@+id/open_hook_probe"
+                                style="@style/TestApp.Button"
+                                android:text="@string/open_hook_probe" />
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <Button
+                                android:id="@+id/open_uid_probe"
+                                style="@style/TestApp.Button"
+                                android:text="@string/open_uid_probe" />
+                        </LinearLayout>
                     </LinearLayout>
                 </LinearLayout>
             </ScrollView>

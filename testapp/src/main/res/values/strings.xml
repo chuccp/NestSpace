@@ -34,6 +34,8 @@
     <string name="test_system_attribution">测试 MediaSession/AppOps</string>
     <string name="test_services">测试网络与剪贴板</string>
     <string name="test_ime">测试输入法</string>
+    <string name="open_hook_probe">打开完整身份探针</string>
+    <string name="open_uid_probe">打开 UID 对照列表</string>
     <string name="tab_overview">概览</string>
     <string name="tab_components">组件</string>
     <string name="tab_system">系统</string>
@@ -53,6 +55,8 @@
     <string name="back_to_menu">‹ 返回</string>
     <string name="test_menu">测试分类</string>
     <string name="current_environment">当前环境</string>
+    <string name="home_uid_title">UID 一致性</string>
+    <string name="home_uid_detail">查看全部 UID 来源</string>
     <string name="menu_overview_summary">基础交互、页面跳转与 singleTop</string>
     <string name="menu_components_summary">Service、Provider、PackageManager 和广播</string>
     <string name="menu_system_summary">权限、Job、通知、系统广播和跨应用查询</string>

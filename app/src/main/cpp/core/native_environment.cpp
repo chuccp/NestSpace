@@ -1,6 +1,7 @@
 #include "nestspace/native_environment_internal.h"
 
 #include <android/log.h>
+#include <signal.h>
 #include <sys/syscall.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
@@ -139,12 +140,80 @@ jint virtual_binder_calling_pid(JNIEnv*, jclass) {
     return static_cast<jint>(getpid());
 }
 
+jlong virtual_binder_clear_identity(JNIEnv*, jclass) {
+    const auto* environment = nestspace::current_environment();
+    const uint32_t uid = static_cast<uint32_t>(
+        environment == nullptr
+            ? getuid()
+            : environment->observed_uid
+    );
+    return static_cast<jlong>(
+        (static_cast<uint64_t>(uid) << 32) |
+        static_cast<uint32_t>(getpid())
+    );
+}
+
+void virtual_binder_restore_identity(JNIEnv*, jclass, jlong) {
+    // The opaque token above never carries the host UID. Restoring it would
+    // reintroduce kernel-visible identity, so target-facing restores are a
+    // no-op.
+}
+
 jint virtual_process_group(JNIEnv*, jclass, jint pid) {
     if (pid <= 0) pid = static_cast<jint>(getpid());
     const pid_t group = getpgid(static_cast<pid_t>(pid));
     if (group > 0) return static_cast<jint>(group);
     const pid_t self_group = getpgid(0);
     return self_group > 0 ? static_cast<jint>(self_group) : pid;
+}
+
+void virtual_process_signal(JNIEnv*, jclass, jint pid, jint signal) {
+    const bool self = pid == static_cast<jint>(getpid());
+    if (self && signal == SIGKILL &&
+        nestspace::current_environment() != nullptr) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "ignored Process.sendSignal self SIGKILL pid=%d tid=%d",
+            getpid(),
+            gettid()
+        );
+        return;
+    }
+    syscall(
+        SYS_kill,
+        static_cast<pid_t>(pid),
+        static_cast<int>(signal)
+    );
+}
+
+void virtual_process_tg_signal(
+    JNIEnv*,
+    jclass,
+    jint group,
+    jint thread,
+    jint signal
+) {
+    if (group == static_cast<jint>(getpid()) &&
+        signal == SIGKILL &&
+        nestspace::current_environment() != nullptr) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "ignored Process.sendTgSignal self SIGKILL pid=%d tid=%d"
+            " target=%d",
+            getpid(),
+            gettid(),
+            thread
+        );
+        return;
+    }
+    syscall(
+        SYS_tgkill,
+        static_cast<pid_t>(group),
+        static_cast<pid_t>(thread),
+        static_cast<int>(signal)
+    );
 }
 
 void install_identity_jni_hooks(JNIEnv* env) {
@@ -162,6 +231,16 @@ void install_identity_jni_hooks(JNIEnv* env) {
                     const_cast<char*>("getCallingPid"),
                     const_cast<char*>("()I"),
                     reinterpret_cast<void*>(virtual_binder_calling_pid)
+                },
+                {
+                    const_cast<char*>("clearCallingIdentity"),
+                    const_cast<char*>("()J"),
+                    reinterpret_cast<void*>(virtual_binder_clear_identity)
+                },
+                {
+                    const_cast<char*>("restoreCallingIdentity"),
+                    const_cast<char*>("(J)V"),
+                    reinterpret_cast<void*>(virtual_binder_restore_identity)
                 },
             };
             const jint result = env->RegisterNatives(
@@ -185,6 +264,26 @@ void install_identity_jni_hooks(JNIEnv* env) {
                     const_cast<char*>("getProcessGroup"),
                     const_cast<char*>("(I)I"),
                     reinterpret_cast<void*>(virtual_process_group)
+                },
+                {
+                    const_cast<char*>("sendSignal"),
+                    const_cast<char*>("(II)V"),
+                    reinterpret_cast<void*>(virtual_process_signal)
+                },
+                {
+                    const_cast<char*>("sendSignalQuiet"),
+                    const_cast<char*>("(II)V"),
+                    reinterpret_cast<void*>(virtual_process_signal)
+                },
+                {
+                    const_cast<char*>("sendSignalThrows"),
+                    const_cast<char*>("(II)V"),
+                    reinterpret_cast<void*>(virtual_process_signal)
+                },
+                {
+                    const_cast<char*>("sendTgSignalThrows"),
+                    const_cast<char*>("(III)V"),
+                    reinterpret_cast<void*>(virtual_process_tg_signal)
                 },
             };
             const jint result = env->RegisterNatives(

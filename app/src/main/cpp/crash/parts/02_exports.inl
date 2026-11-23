@@ -181,5 +181,6 @@ extern "C" bool install_native_syscall_gateway() {
     // target initialization. Keep the startup-path gateway limited to this
     // small set; broader path ownership is handled by the libc and Java file
     // bridges without serializing every openat through one notification queue.
+    if (install_identity_user_notify_gateway()) return true;
     return install_identity_gateway_filter();
 }

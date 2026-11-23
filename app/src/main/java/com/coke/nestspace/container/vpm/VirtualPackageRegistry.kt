@@ -124,7 +124,9 @@ class VirtualPackageRegistry(
     @Synchronized
     fun packageUid(packageName: String?): Int? {
         if (packageName == null) return null
-        if (packageName == currentPackage) return ContainerIdentity.hostUid()
+        if (packageName == currentPackage) {
+            return ContainerIdentity.virtualUidFor(packageName)
+        }
         ensureRecords()
         return if (records.containsKey(packageName)) {
             ContainerIdentity.virtualUidFor(packageName)
@@ -143,7 +145,9 @@ class VirtualPackageRegistry(
 
     @Synchronized
     fun packageForUid(uid: Int): String? {
-        if (uid == ContainerIdentity.hostUid()) return currentPackage
+        if (uid == ContainerIdentity.virtualUidFor(currentPackage)) {
+            return currentPackage
+        }
         ensureRecords()
         return records.keys.firstOrNull { ContainerIdentity.virtualUidFor(it) == uid }
     }
@@ -284,7 +288,7 @@ class VirtualPackageRegistry(
 
     fun queryContentProviders(processName: String?, uid: Int, flags: Int): List<ProviderInfo> {
         val packageName = when {
-            uid != 0 && uid != ContainerIdentity.hostUid() -> packageForUid(uid)
+            uid != 0 -> packageForUid(uid)
             processName != null && record(processName) != null -> processName
             else -> null
         } ?: return emptyList()

@@ -499,10 +499,23 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
         : static_cast<uintptr_t>(
             context->uc_mcontext.regs[signal_in_arg1 ? 1 : 2]
         );
+    const uintptr_t arg0 = context == nullptr
+        ? 0
+        : static_cast<uintptr_t>(context->uc_mcontext.regs[0]);
+    const uintptr_t arg1 = context == nullptr
+        ? 0
+        : static_cast<uintptr_t>(context->uc_mcontext.regs[1]);
+    const uintptr_t arg2 = context == nullptr
+        ? 0
+        : static_cast<uintptr_t>(context->uc_mcontext.regs[2]);
     if (g_trace_fd >= 0 && context != nullptr) {
         static constexpr char kHeader[] = "exit-syscall\n";
         write(g_trace_fd, kHeader, sizeof(kHeader) - 1);
         write_hex(syscall_number);
+        write_hex(arg0);
+        write_hex(arg1);
+        write_hex(arg2);
+        write_hex(static_cast<uintptr_t>(gettid()));
         write_hex(static_cast<uintptr_t>(context->uc_mcontext.pc));
         write_module("pc", context->uc_mcontext.pc);
         write_module("lr", context->uc_mcontext.regs[30]);
@@ -511,6 +524,27 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
     }
     if (context != nullptr) {
         context->uc_mcontext.regs[0] = 0;
+        const bool kills_this_process =
+            (syscall_number == SYS_kill &&
+                static_cast<pid_t>(arg0) == getpid()) ||
+            (syscall_number == SYS_tgkill &&
+                static_cast<pid_t>(arg0) == getpid() &&
+                static_cast<pid_t>(arg1) == getpid());
+        if (signal_number == SIGKILL && kills_this_process) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "ignored self SIGKILL syscall=%llu"
+                " pid=%d tid=%d caller=%016llx",
+                static_cast<unsigned long long>(syscall_number),
+                getpid(),
+                gettid(),
+                static_cast<unsigned long long>(
+                    context->uc_mcontext.pc
+                )
+            );
+            return;
+        }
         const bool fatal_thread_signal =
             (syscall_number == SYS_kill ||
              syscall_number == SYS_tgkill) &&
@@ -740,6 +774,24 @@ bool install_identity_gateway_filter() {
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgroups, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
 #endif
+#if defined(__NR_kill)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_kill, 0, 3),
+        BPF_STMT(
+            BPF_LD | BPF_W | BPF_ABS,
+            offsetof(seccomp_data, args[1])
+        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIGKILL, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
+#if defined(__NR_tgkill)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_tgkill, 0, 3),
+        BPF_STMT(
+            BPF_LD | BPF_W | BPF_ABS,
+            offsetof(seccomp_data, args[2])
+        ),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SIGKILL, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
+#endif
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
     struct sock_fprog program {
@@ -759,6 +811,9 @@ bool install_identity_gateway_filter() {
     const long result = syscall(
         SYS_seccomp,
         SECCOMP_SET_MODE_FILTER,
+        // Keep the legacy SIGSYS fallback thread-local. A synchronized
+        // SECCOMP_RET_TRAP is unsafe for framework threads that block SIGSYS;
+        // the identity user-notification gateway is the synchronized path.
         0,
         &program
     );

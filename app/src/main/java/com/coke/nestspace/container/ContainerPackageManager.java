@@ -20,6 +20,8 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.Process;
 import android.util.Log;
+import com.coke.nestspace.container.identity.ContainerIdentity;
+import com.coke.nestspace.container.identity.HostIdentity;
 import com.coke.nestspace.container.intent.ContainerIntentResolver;
 import com.coke.nestspace.container.vpm.ContainerPermissions;
 import com.coke.nestspace.container.vpm.PackageVisibilityPolicy;
@@ -96,7 +98,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         this.targetResources = targetResources;
         this.intents = intents;
         this.targetPackage = spec.getPackageName();
-        this.hostPackage = hostContext.getPackageName();
+        this.hostPackage = HostIdentity.INSTANCE.getPackageName();
         this.targetAppInfo = spec.getApplicationInfo();
         this.targetPackageInfo = spec.getPackageInfo();
         this.virtualPackages = virtualPackages;
@@ -256,6 +258,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         Map<String, ApplicationInfo> byName = new LinkedHashMap<>();
         for (ApplicationInfo info : super.getInstalledApplications(flags)) {
             if (info != null && !isVirtualPackage(info.packageName) &&
+                    !hostPackage.equals(info.packageName) &&
                     canSeePackage(info)) {
                 byName.put(info.packageName, info);
             }
@@ -274,6 +277,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         // just to read requestedPermissions. Explicit per-package permission
         // checks still answer for any virtual app.
         List<PackageInfo> result = new ArrayList<>(super.getPackagesHoldingPermissions(permissions, flags));
+        result.removeIf(info -> info != null && hostPackage.equals(info.packageName));
         if (holdsAllPermissions(targetPackage, permissions)) {
             result.add(copyPackageInfo(flags));
         }
@@ -282,6 +286,9 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public int getPackageUid(String packageName, int flags) throws NameNotFoundException {
+        if (hostPackage.equals(packageName)) {
+            throw new NameNotFoundException();
+        }
         if (isTarget(packageName)) {
             return spec.getTargetUid() > 0
                     ? spec.getTargetUid()
@@ -296,6 +303,9 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public int[] getPackageGids(String packageName) throws NameNotFoundException {
+        if (hostPackage.equals(packageName)) {
+            throw new NameNotFoundException();
+        }
         if (isTarget(packageName)) return targetPackageGids();
         if (isVirtualPackage(packageName)) return new int[0];
         return super.getPackageGids(packageName);
@@ -303,6 +313,9 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public int[] getPackageGids(String packageName, int flags) throws NameNotFoundException {
+        if (hostPackage.equals(packageName)) {
+            throw new NameNotFoundException();
+        }
         if (isTarget(packageName)) return targetPackageGids();
         if (isVirtualPackage(packageName)) return new int[0];
         return super.getPackageGids(packageName, flags);
@@ -319,6 +332,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public String[] getPackagesForUid(int uid) {
+        if (uid == ContainerIdentity.INSTANCE.hostUid()) return null;
         if (uid == Process.myUid() ||
                 (spec.getTargetUid() > 0 && uid == spec.getTargetUid())) {
             return new String[]{targetPackage};
@@ -330,6 +344,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public String getNameForUid(int uid) {
+        if (uid == ContainerIdentity.INSTANCE.hostUid()) return null;
         if (uid == Process.myUid() ||
                 (spec.getTargetUid() > 0 && uid == spec.getTargetUid())) {
             return targetPackage;
@@ -1329,6 +1344,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     }
 
     private String packageForUid(int uid) {
+        if (uid == ContainerIdentity.INSTANCE.hostUid()) return null;
         if (uid == Process.myUid()) return targetPackage;
         return virtualPackages.packageForUid(uid);
     }

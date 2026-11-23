@@ -27,6 +27,10 @@ import android.system.ErrnoException;
 import android.system.StructStat;
 import android.system.StructStatVfs;
 import android.util.Log;
+import android.view.Gravity;
+import android.widget.ArrayAdapter;
+import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -51,6 +55,10 @@ public class HookProbeActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (getIntent().getBooleanExtra("uid_list", false)) {
+            showUidList();
+            return;
+        }
         try {
             NativeProbe.ensureLoaded();
         } catch (Throwable error) {
@@ -68,6 +76,36 @@ public class HookProbeActivity extends Activity {
         setContentView(scroll);
         Log.i(TAG, report);
         writeReport(report);
+    }
+
+    private void showUidList() {
+        int expectedUid = Process.myUid();
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(24, 24, 24, 16);
+
+        TextView title = new TextView(this);
+        title.setText("UID 对照\n期望虚拟 UID: " + expectedUid);
+        title.setTextSize(18);
+        title.setGravity(Gravity.START);
+        title.setPadding(0, 0, 0, 16);
+        root.addView(title);
+
+        ListView list = new ListView(this);
+        list.setAdapter(new ArrayAdapter<>(
+            this,
+            android.R.layout.simple_list_item_1,
+            UidProbeActivity.collectRows(this, expectedUid)
+        ));
+        root.addView(
+            list,
+            new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        );
+        setContentView(root);
     }
 
     private String buildReport() {
@@ -355,6 +393,8 @@ public class HookProbeActivity extends Activity {
             }
         }));
         add(lines, "xp.binder.afterClearRestore", Binder.getCallingUid());
+        lines.add("---- raw package binder ----");
+        lines.add(RawBinderProbe.report(packageName));
 
         add(lines, "xp.provider.query", providerQuery());
         add(lines, "xp.provider.call", safe(() -> getContentResolver().call(

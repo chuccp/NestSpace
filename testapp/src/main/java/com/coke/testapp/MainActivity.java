@@ -36,6 +36,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.Uri;
 import android.os.BatteryManager;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -47,6 +48,7 @@ import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.view.View;
 
@@ -89,6 +91,104 @@ public class MainActivity extends Activity {
     private BroadcastReceiver systemReceiver;
     private ContentObserver workerProviderObserver;
     private final AtomicInteger workerObserverHits = new AtomicInteger();
+
+    private void populateUidHome() {
+        LinearLayout list = findViewById(R.id.uid_home_list);
+        if (list == null) return;
+        int expectedUid = android.os.Process.myUid();
+        list.removeAllViews();
+
+        addUidRow(list, expectedUid, "Process.myUid", expectedUid);
+        addUidRow(
+            list,
+            expectedUid,
+            "Binder.getCallingUid",
+            Binder.getCallingUid()
+        );
+        String packageName = getPackageName();
+        PackageManager manager = getPackageManager();
+        try {
+            addUidRow(
+                list,
+                expectedUid,
+                "PackageManager.getPackageUid",
+                manager.getPackageUid(packageName, 0)
+            );
+        } catch (Throwable error) {
+            addUidRow(
+                list,
+                expectedUid,
+                "PackageManager.getPackageUid",
+                "error=" + error.getClass().getSimpleName()
+            );
+        }
+        try {
+            PackageInfo packageInfo = manager.getPackageInfo(packageName, 0);
+            addUidRow(
+                list,
+                expectedUid,
+                "PackageInfo.uid",
+                packageInfo.applicationInfo == null
+                    ? -1
+                    : packageInfo.applicationInfo.uid
+            );
+        } catch (Throwable error) {
+            addUidRow(
+                list,
+                expectedUid,
+                "PackageInfo.uid",
+                "error=" + error.getClass().getSimpleName()
+            );
+        }
+
+        String rawUid = "missing";
+        String rawReport = RawBinderProbe.report(packageName);
+        for (String line : rawReport.split("\n")) {
+            if (line.startsWith("uidForPackage=")) {
+                rawUid = line.substring("uidForPackage=".length());
+                break;
+            }
+            if (line.startsWith("error=")) rawUid = line;
+        }
+        addUidRow(list, expectedUid, "raw IPackageManager", rawUid);
+        addUidRow(
+            list,
+            expectedUid,
+            "/proc/self/status",
+            readProcStatusUid()
+        );
+    }
+
+    private static void addUidRow(
+        LinearLayout list,
+        int expectedUid,
+        String label,
+        Object value
+    ) {
+        String text = String.valueOf(value);
+        boolean matches = text.matches(".*\\b" + expectedUid + "\\b.*") &&
+            !text.contains("error=");
+        TextView row = new TextView(list.getContext());
+        row.setText(label + ": " + text + (matches ? "  OK" : "  MISMATCH"));
+        row.setTextSize(12);
+        row.setTextColor(matches ? 0xff18794e : 0xffb42318);
+        row.setPadding(8, 6, 8, 6);
+        list.addView(row);
+    }
+
+    private static String readProcStatusUid() {
+        try (BufferedReader reader = new BufferedReader(
+            new FileReader("/proc/self/status")
+        )) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("Uid:")) return line.substring(4).trim();
+            }
+        } catch (Throwable error) {
+            return "error=" + error.getClass().getSimpleName();
+        }
+        return "missing";
+    }
 
     @Override
     protected void onNewIntent(Intent intent) {
@@ -135,6 +235,7 @@ public class MainActivity extends Activity {
         imeResult = findViewById(R.id.ime_result);
         NativeProbe.ensureLoaded();
         prefs = getSharedPreferences("counter", MODE_PRIVATE);
+        populateUidHome();
 
         workerProviderObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
             @Override
@@ -166,14 +267,6 @@ public class MainActivity extends Activity {
         };
         getContentResolver().registerContentObserver(observeUri, true, observer);
         android.util.Log.i("ObserverTest", "registered " + observeUri);
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            try {
-                startActivity(new Intent(this, SubprocessActivity.class));
-                android.util.Log.i("SubprocessTest", "launched");
-            } catch (Throwable t) {
-                android.util.Log.e("SubprocessTest", "launch failed", t);
-            }
-        }, 6000);
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             getContentResolver().notifyChange(observeUri, null);
             getContentResolver().notifyChange(
@@ -544,6 +637,17 @@ public class MainActivity extends Activity {
                 android.util.Log.e("TestIme", value, t);
             }
         });
+        findViewById(R.id.open_hook_probe).setOnClickListener(v ->
+            startActivity(new Intent(this, HookProbeActivity.class))
+        );
+        findViewById(R.id.open_uid_probe).setOnClickListener(v ->
+            startActivity(new Intent(this, HookProbeActivity.class)
+                .putExtra("uid_list", true))
+        );
+        findViewById(R.id.open_uid_probe_home).setOnClickListener(v ->
+            startActivity(new Intent(this, HookProbeActivity.class)
+                .putExtra("uid_list", true))
+        );
         findViewById(R.id.query_worker_provider).setOnClickListener(v -> {
             try (Cursor cursor = getContentResolver().query(
                 Uri.parse("content://com.coke.testapp.workerprovider/hello"),

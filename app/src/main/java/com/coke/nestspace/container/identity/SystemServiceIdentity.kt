@@ -1,6 +1,7 @@
 package com.coke.nestspace.container.identity
 
 import com.coke.nestspace.container.ContainerLaunchSpec
+import com.coke.nestspace.container.identity.ContainerIdentity
 import com.coke.nestspace.browser.webUrlFromViewIntent
 import com.coke.nestspace.container.notify.ContainerNotificationBridge
 import com.coke.nestspace.container.vpm.ContainerPermissions
@@ -155,7 +156,7 @@ object SystemServiceIdentity {
         this.hostPackage = hostPackage
         targetPackageInfo = spec.packageInfo
         targetAppInfo = spec.applicationInfo
-        targetUid = spec.targetUid.takeIf { it > 0 } ?: spec.applicationInfo.uid
+        targetUid = ContainerIdentity.virtualUidFor(spec.packageName)
         this.targetResources = targetResources
         this.registry = registry
         virtualPermissions = permissions
@@ -699,6 +700,7 @@ object SystemServiceIdentity {
             PackageQueryHandler(delegate)
         )
         ipmProxy = proxy
+        installPackageManagerBinder(proxy)
 
         var replaced = false
         assignableFields(threadClass, iface, staticOnly = true).forEach { field ->
@@ -711,6 +713,47 @@ object SystemServiceIdentity {
 
         contexts.forEach { patchApplicationPackageManagers(it) }
         systemContext()?.let { patchApplicationPackageManagers(it) }
+    }
+
+    /**
+     * Makes the raw ServiceManager lookup return the same virtual
+     * IPackageManager as ApplicationPackageManager. AIDL clients call
+     * queryLocalInterface() before issuing transactions, so this covers
+     * integrity SDKs that bypass the public PackageManager facade without
+     * fabricating the kernel Binder caller UID.
+     */
+    private fun installPackageManagerBinder(localInterface: Any) {
+        val serviceManager = loadClass("android.os.ServiceManager")
+        val getService = method(
+            serviceManager,
+            "getService",
+            String::class.java
+        ) ?: return
+        val delegate = getService.invoke(null, "package") as? IBinder ?: return
+        val wrapper = Proxy.newProxyInstance(
+            IBinder::class.java.classLoader,
+            arrayOf(IBinder::class.java)
+        ) { proxy, invocation, args ->
+            when {
+                invocation.declaringClass == Any::class.java -> when (
+                    invocation.name
+                ) {
+                    "equals" -> proxy === args?.firstOrNull()
+                    "hashCode" -> System.identityHashCode(proxy)
+                    "toString" -> "ContainerPackageManagerBinder($delegate)"
+                    else -> null
+                }
+                invocation.name == "queryLocalInterface" -> localInterface
+                else -> invokeDelegate(delegate, invocation, args)
+            }
+        } as IBinder
+
+        val cacheField = declaredField(serviceManager, "sCache") ?: return
+        @Suppress("UNCHECKED_CAST")
+        val cache = cacheField.get(null) as? MutableMap<String, IBinder>
+            ?: return
+        cache["package"] = wrapper
+        Log.d(TAG, "IPackageManager raw Binder binding installed")
     }
 
     private fun patchApplicationPackageManagers(context: Context) {
@@ -786,10 +829,10 @@ object SystemServiceIdentity {
             name == "getEnabledNotificationListeners"
 
     /**
-     * AppOps checks are read-only identity queries. The target package/UID pair
-     * is valid because the target is the installed copy used as the container
-     * source, so asking the system for that pair preserves the real policy while
-     * mutations continue through the host-attribution rewrite.
+     * AppOps validates the explicit package/UID pair against the real Binder
+     * caller UID before dispatching. Both values therefore have to use host
+     * attribution; leaving the virtual UID in place causes system_server to
+     * reject the request even when the package name was rewritten.
      */
     private class AppOpsRewriteHandler(private val delegate: Any) : InvocationHandler {
         private val fallback = IdentityRewriteHandler(delegate)
@@ -798,12 +841,19 @@ object SystemServiceIdentity {
             if (method.declaringClass == Any::class.java) {
                 return fallback.invoke(proxy, method, args)
             }
-            if (method.name.startsWith("checkOp") ||
-                method.name.startsWith("unsafeCheckOp")
-            ) {
-                return invokeDelegate(delegate, method, args)
-            }
-            return fallback.invoke(proxy, method, args)
+            val target = targetPackage
+            val host = hostPackage
+            val targetUid = targetUid
+            val hostUid = ContainerIdentity.hostUid()
+            val callArgs = args?.map { value ->
+                when {
+                    value is Int && value == targetUid -> hostUid
+                    value is String && value == target ->
+                        if (host.isNotEmpty()) host else value
+                    else -> value
+                }
+            }?.toTypedArray()
+            return fallback.invokeRewritten(proxy, method, callArgs)
         }
     }
 
@@ -852,12 +902,7 @@ object SystemServiceIdentity {
     private class IdentityRewriteHandler(private val delegate: Any) : InvocationHandler {
         override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
             if (method.declaringClass == Any::class.java) {
-                return when (method.name) {
-                    "equals" -> proxy === args?.firstOrNull()
-                    "hashCode" -> System.identityHashCode(proxy)
-                    "toString" -> "ContainerService(${delegate.javaClass.name})"
-                    else -> null
-                }
+                return invokeObjectMethod(proxy, method, args)
             }
             val rewrittenArgs = args?.map { value ->
                 if (method.name == "getPackageGids") {
@@ -866,8 +911,30 @@ object SystemServiceIdentity {
                     rewriteArgument(value)
                 }
             }?.toTypedArray()
-            val result = invokeDelegate(delegate, method, rewrittenArgs)
+            return invokeRewritten(proxy, method, rewrittenArgs)
+        }
+
+        fun invokeRewritten(
+            proxy: Any,
+            method: Method,
+            args: Array<Any?>?
+        ): Any? {
+            if (method.declaringClass == Any::class.java) {
+                return invokeObjectMethod(proxy, method, args)
+            }
+            val result = invokeDelegate(delegate, method, args)
             return rewriteResult(result)
+        }
+
+        private fun invokeObjectMethod(
+            proxy: Any,
+            method: Method,
+            args: Array<Any?>?
+        ): Any? = when (method.name) {
+            "equals" -> proxy === args?.firstOrNull()
+            "hashCode" -> System.identityHashCode(proxy)
+            "toString" -> "ContainerService(${delegate.javaClass.name})"
+            else -> null
         }
 
         private fun rewriteArgument(value: Any?): Any? {
@@ -927,6 +994,20 @@ object SystemServiceIdentity {
                 )
                     ?: return@runCatching null
                 setPackage.invoke(builder, toPackage)
+                method(
+                    builderClass,
+                    "setUid",
+                    Int::class.javaPrimitiveType!!
+                )?.invoke(
+                    builder,
+                    if (toPackage == hostPackage) {
+                        ContainerIdentity.hostUid()
+                    } else if (toPackage == targetPackage) {
+                        targetUid
+                    } else {
+                        method(sourceClass, "getUid")?.invoke(value)
+                    }
+                )
                 method(builderClass, "build")?.invoke(builder)
             }.getOrNull()
         }
@@ -940,7 +1021,7 @@ object SystemServiceIdentity {
                     ?.invoke(value) as? String
                     ?: return@runCatching null
                 if (packageName != hostPackage) return@runCatching value
-                val uid = method(packageOpsClass, "getUid")?.invoke(value) as Int
+                method(packageOpsClass, "getUid")?.invoke(value)
                 @Suppress("UNCHECKED_CAST")
                 val ops = method(packageOpsClass, "getOps")?.invoke(value)
                     as List<Any?>
@@ -950,7 +1031,12 @@ object SystemServiceIdentity {
                     Int::class.javaPrimitiveType!!,
                     List::class.java
                 )
-                    ?.newInstance(targetPackage, uid, ops)
+                    ?.newInstance(
+                        targetPackage,
+                        targetUid.takeIf { it > 0 }
+                            ?: ContainerIdentity.virtualUidFor(targetPackage),
+                        ops
+                    )
             }.getOrNull()
         }
     }
@@ -1160,16 +1246,32 @@ object SystemServiceIdentity {
             if (packageManagerDelegation.get()) {
                 return invokeDelegate(delegate, method, values)
             }
+            val name = method.name
+            val requestedPackage = values.firstNotNullOfOrNull {
+                when (it) {
+                    is String -> it
+                    is VersionedPackage -> it.packageName
+                    is ComponentName -> it.packageName
+                    else -> null
+                }
+            }
+            if (requestedPackage == hostPackage && isHostPackageQuery(name)) {
+                return hiddenHostPackageResult(method.returnType, name)
+            }
+            if (requestedPackage == targetPackage &&
+                name.startsWith("getPackageUid")
+            ) {
+                return Process.myUid()
+            }
             val legacy = legacyPackageManager
             if (legacy != null) {
-                val routed = routeThroughPackageManager(legacy, method.name, values)
+                val routed = routeThroughPackageManager(legacy, name, values)
                 if (routed !== NOT_ROUTED) return (routed as Routed).value
             }
             val target = targetPackage
             if (target.isEmpty()) {
                 return invokeDelegate(delegate, method, values)
             }
-            val name = method.name
             val queried = values.firstNotNullOfOrNull {
                 when (it) {
                     is String -> it
@@ -1215,6 +1317,9 @@ object SystemServiceIdentity {
             }
             val uid = values.firstOrNull() as? Int
             if (uid != null) {
+                if (uid == ContainerIdentity.hostUid() && isUidPackageQuery(name)) {
+                    return hiddenHostUidResult(method.returnType, name)
+                }
                 val packageForUid = when {
                     uid == Process.myUid() -> target
                     else -> registry?.packageForUid(uid)
@@ -1227,6 +1332,50 @@ object SystemServiceIdentity {
                 }
             }
             return invokeDelegate(delegate, method, values)
+        }
+
+        private fun isHostPackageQuery(name: String): Boolean =
+            name.startsWith("getPackageInfo") ||
+                name.startsWith("getApplicationInfo") ||
+                name.startsWith("getPackageUid") ||
+                name.startsWith("getPackageGids") ||
+                name.startsWith("getResourcesForApplication") ||
+                name == "getLaunchIntentForPackage" ||
+                name == "getLeanbackLaunchIntentForPackage" ||
+                name == "isPackageAvailable"
+
+        private fun isUidPackageQuery(name: String): Boolean =
+            name == "getPackagesForUid" ||
+                name == "getNameForUid" ||
+                name == "getNamesForUids" ||
+                name == "getPackagesForUidAndUser"
+
+        private fun hiddenHostPackageResult(
+            returnType: Class<*>,
+            name: String
+        ): Any? = when {
+            returnType == Boolean::class.javaPrimitiveType -> false
+            returnType == Int::class.javaPrimitiveType -> -1
+            returnType == Long::class.javaPrimitiveType -> -1L
+            name.startsWith("getPackageGids") -> IntArray(0)
+            else -> null
+        }
+
+        private fun hiddenHostUidResult(
+            returnType: Class<*>,
+            name: String
+        ): Any? = when {
+            name == "getPackagesForUid" ->
+                java.lang.reflect.Array.newInstance(
+                    returnType.componentType ?: String::class.java,
+                    0
+                )
+            name == "getNamesForUids" ->
+                java.lang.reflect.Array.newInstance(
+                    returnType.componentType ?: String::class.java,
+                    0
+                )
+            else -> null
         }
 
         private fun routeThroughPackageManager(
@@ -1268,6 +1417,12 @@ object SystemServiceIdentity {
                     if (!isContainerPackage(pkg)) return NOT_ROUTED
                     val flags = intFlags(args.getOrNull(1))
                     viaPmNullable { pm.getApplicationInfo(pkg, flags) }
+                }
+                "getPackageUid" -> {
+                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
+                    if (!isContainerPackage(pkg)) return NOT_ROUTED
+                    val flags = intFlags(args.getOrNull(1))
+                    viaPm { pm.getPackageUid(pkg, flags) }
                 }
                 "getActivityInfo", "getReceiverInfo", "getServiceInfo", "getProviderInfo" -> {
                     val component = args.getOrNull(0) as? ComponentName ?: return NOT_ROUTED
