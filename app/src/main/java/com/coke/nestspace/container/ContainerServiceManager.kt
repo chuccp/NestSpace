@@ -5,10 +5,13 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
+import android.os.Binder
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.coke.nestspace.container.remote.ContainerRemoteServiceClient
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Proxy
 
 /**
  * Local Service host for one ContainerSession.
@@ -279,6 +282,14 @@ class ContainerServiceManager(
         if (record.bindings.isEmpty()) destroy(key, record)
     }
 
+    private fun stopSelfNow(serviceName: String) {
+        val key = normalize(serviceName)
+        val record = synchronized(this) {
+            records[key]?.also { it.started = false }
+        } ?: return
+        if (record.bindings.isEmpty()) destroy(key, record)
+    }
+
     @Synchronized
     fun destroyAll() {
         synchronized(this) { pendingBinds.clear() }
@@ -299,12 +310,7 @@ class ContainerServiceManager(
             val serviceClass = session.activeClassLoader.loadClass(info.name)
                 .asSubclass(Service::class.java)
             val service = serviceClass.getDeclaredConstructor().newInstance()
-            attachBaseContext(service)
-            runCatching {
-                Service::class.java.getDeclaredField("mApplication").apply {
-                    isAccessible = true
-                }.set(service, session.application)
-            }
+            attachService(service, info)
             service.onCreate()
             Log.d(TAG, "service created: ${info.name}")
             Record(info, service).also { records[key] = it }
@@ -312,6 +318,86 @@ class ContainerServiceManager(
             Log.w(TAG, "create service failed: ${info.name}", t)
             null
         }
+    }
+
+    /**
+     * Instances bypass ActivityThread.attach(), so framework fields used by
+     * final Service methods are still null. Populate the same attachment state
+     * before onCreate() and keep system callbacks local to this container.
+     */
+    private fun attachService(service: Service, info: ServiceInfo) {
+        attachBaseContext(service)
+        HiddenApiCompat.ensure()
+        setServiceField(service, "mClassName", normalize(info.name))
+        setServiceField(service, "mApplication", session.application)
+        setServiceField(service, "mToken", null)
+        setServiceField(service, "mStartCompatibility", false)
+        setServiceField(service, "mThread", currentActivityThread())
+        setServiceField(
+            service,
+            "mComponent",
+            ComponentName(session.spec.packageName, normalize(info.name))
+        )
+        Service::class.java.declaredFields
+            .firstOrNull { it.name == "mActivityManager" }
+            ?.let { field ->
+                field.isAccessible = true
+                field.set(service, localActivityManager(field.type, info.name))
+            }
+    }
+
+    private fun setServiceField(service: Service, name: String, value: Any?) {
+        Service::class.java.declaredFields
+            .firstOrNull { it.name == name }
+            ?.let { field ->
+                field.isAccessible = true
+                runCatching { field.set(service, value) }
+                    .onFailure { Log.w(TAG, "set Service.$name failed", it) }
+            }
+    }
+
+    private fun currentActivityThread(): Any? = runCatching {
+        Class.forName("android.app.ActivityThread")
+            .getMethod("currentActivityThread")
+            .invoke(null)
+    }.getOrNull()
+
+    /**
+     * Service.stopSelf/startForeground normally cross Binder into AMS. These
+     * services have no AMS token, so answer the framework calls locally and
+     * route self-stop back into this manager.
+     */
+    private fun localActivityManager(type: Class<*>, serviceName: String): Any? {
+        if (!type.isInterface) return null
+        val binder = object : Binder() {}
+        return Proxy.newProxyInstance(
+            type.classLoader ?: Service::class.java.classLoader,
+            arrayOf(type),
+            InvocationHandler { _, method, _ ->
+                when (method.name) {
+                    "asBinder" -> binder
+                    "stopServiceToken" -> {
+                        mainHandler.post { stopSelfNow(serviceName) }
+                        true
+                    }
+                    "getForegroundServiceType" -> 0
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        )
+    }
+
+    private fun defaultValue(type: Class<*>): Any? = when (type) {
+        java.lang.Void.TYPE -> null
+        java.lang.Boolean.TYPE -> false
+        java.lang.Byte.TYPE -> 0.toByte()
+        java.lang.Short.TYPE -> 0.toShort()
+        java.lang.Integer.TYPE -> 0
+        java.lang.Long.TYPE -> 0L
+        java.lang.Float.TYPE -> 0f
+        java.lang.Double.TYPE -> 0.0
+        java.lang.Character.TYPE -> '\u0000'
+        else -> null
     }
 
     private fun attachBaseContext(service: Service) {

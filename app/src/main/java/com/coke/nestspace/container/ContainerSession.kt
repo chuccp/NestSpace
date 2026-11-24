@@ -355,7 +355,7 @@ class ContainerSession private constructor(
     private val resources: Resources,
     val context: ContainerContext,
     val application: Application,
-    private val bootstrapApplication: Application?,
+    internal val bootstrapApplication: Application?,
     val hostContext: Context,
     private val activityThread: Any,
     private val hostProcessState: HostProcessState,

@@ -6,6 +6,8 @@ import android.os.Bundle
 import android.util.Log
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 
@@ -60,6 +62,38 @@ internal object TargetApplicationLifecycle {
         }
     }
 
+    /**
+     * External bootstrap wrappers can own a different Application graph from
+     * the effective target Application. Framework callbacks only reach the
+     * single Activity.getApplication() instance, while target libraries may
+     * register callbacks on either the wrapper, its delegate, or the embedded
+     * Application. Deliver each event once to every Application in that graph
+     * except the instance already handled by the framework.
+     */
+    fun dispatchExternal(
+        applications: List<Application>,
+        event: String,
+        activity: Activity,
+        bundle: Bundle? = null
+    ) {
+        val frameworkApplication = activity.application
+        val visitedApplications = Collections.newSetFromMap(
+            IdentityHashMap<Application, Boolean>()
+        )
+        val deliveredCallbacks = Collections.newSetFromMap(
+            IdentityHashMap<Any, Boolean>()
+        )
+        applications.forEach { root ->
+            var current: Application? = root
+            while (current != null && visitedApplications.add(current)) {
+                if (current !== frameworkApplication) {
+                    invoke(current, event, activity, bundle, deliveredCallbacks)
+                }
+                current = findDelegate(current)
+            }
+        }
+    }
+
     private fun findDelegate(application: Application): Application? {
         for (field in delegateFieldList(application.javaClass)) {
             val value = runCatching {
@@ -92,7 +126,8 @@ internal object TargetApplicationLifecycle {
         application: Application,
         event: String,
         activity: Activity,
-        bundle: Bundle?
+        bundle: Bundle?,
+        deliveredCallbacks: MutableSet<Any>? = null
     ) {
         val callbackName = callbackMethodName(event) ?: return
         val callbacks = runCatching {
@@ -105,8 +140,12 @@ internal object TargetApplicationLifecycle {
         val hasBundle = callbackName == "onActivityCreated" ||
             callbackName == "onActivitySaveInstanceState"
         val iface = callbackInterface ?: return
+        var delivered = 0
         callbacks.forEach { callback ->
             if (callback == null) return@forEach
+            if (deliveredCallbacks != null && !deliveredCallbacks.add(callback)) {
+                return@forEach
+            }
             runCatching {
                 val method = callbackMethods.computeIfAbsent(
                     if (hasBundle) "$callbackName:bundle" else "$callbackName"
@@ -129,10 +168,16 @@ internal object TargetApplicationLifecycle {
                 } else {
                     method.invoke(callback, activity)
                 }
+                delivered++
             }.onFailure {
                 Log.w(TAG, "$callbackName failed on ${callback.javaClass.name}", it)
             }
         }
+        Log.d(
+            TAG,
+            "$event ${application.javaClass.simpleName} " +
+                "callbacks=${callbacks.size} delivered=$delivered"
+        )
     }
 
     private fun callbackMethodName(event: String): String? = when (event) {

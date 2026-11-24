@@ -36,6 +36,7 @@ import android.widget.TextView
 import com.coke.nestspace.container.activity.TargetApplicationLifecycle
 import com.coke.nestspace.container.activity.ContainerBackPolicy
 import com.coke.nestspace.container.activity.TargetLifecycle
+import com.coke.nestspace.container.activity.TargetPlaybackUiBridge
 import com.coke.nestspace.container.activity.TargetVisibilityPolicy
 import com.coke.nestspace.container.activity.TargetStateStore
 import com.coke.nestspace.runtime.RuntimeHostHooks
@@ -141,6 +142,7 @@ open class StageAActivity : Activity() {
     private var containerEntry = false
     private var backCallbackRunning = false
     private var backLaunchBlocked = false
+    private var playbackUiBridge: TargetPlaybackUiBridge? = null
     private var targetRequestParameterHook: AutoCloseable? = null
     private var navigationHandoffState = NavigationHandoffState.NONE
     private var navigationHandoffOpenedInternalChild = false
@@ -1502,6 +1504,7 @@ open class StageAActivity : Activity() {
                 }
             }
             current?.let { dispatchTargetApplicationLifecycle("dispatchActivityPaused", it) }
+            closePlaybackUiBridge()
             targetResumed = false
         }
         super.onPause()
@@ -2471,12 +2474,50 @@ open class StageAActivity : Activity() {
         target: Activity,
         bundle: Bundle? = null
     ) {
-        val application = session?.application ?: return
+        if (event == "dispatchActivityResumed") {
+            closePlaybackUiBridge()
+            playbackUiBridge = session?.let { activeSession ->
+                TargetPlaybackUiBridge.start(
+                    target,
+                    activeSession.loader,
+                    listOf(activeSession.spec.baseApkPath) +
+                        activeSession.spec.splitApkPaths
+                )
+            }
+        } else if (
+            event == "dispatchActivityPaused" ||
+            event == "dispatchActivityStopped" ||
+            event == "dispatchActivityDestroyed"
+        ) {
+            closePlaybackUiBridge()
+        }
+        val activeSession = session ?: return
+        val application = activeSession.application
         withTargetLoader {
             runCatching {
-                TargetApplicationLifecycle.dispatch(application, event, target, bundle)
+                val bootstrapApplication = activeSession.bootstrapApplication
+                if (bootstrapApplication == null) {
+                    TargetApplicationLifecycle.dispatch(
+                        application,
+                        event,
+                        target,
+                        bundle
+                    )
+                } else {
+                    TargetApplicationLifecycle.dispatchExternal(
+                        listOf(application, bootstrapApplication),
+                        event,
+                        target,
+                        bundle
+                    )
+                }
             }.onFailure { Log.w(TAG, "$event failed", it) }
         }
+    }
+
+    private fun closePlaybackUiBridge() {
+        playbackUiBridge?.close()
+        playbackUiBridge = null
     }
 
     private fun attachTarget(target: Activity) {
