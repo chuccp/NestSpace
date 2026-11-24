@@ -781,7 +781,15 @@ std::string auxiliary_exec_report() {
     );
     const ExecCapture logcat = run_exec_capture(
         "/system/bin/logcat",
-        {"logcat", "-d", "-t", "1", "-v", "brief"}
+        {
+            "logcat",
+            "--pid=" + std::to_string(getpid()),
+            "-d",
+            "-t",
+            "1",
+            "-v",
+            "brief"
+        }
     );
     return
         "helper.sh.exit=" + std::to_string(shell.exit_code) +

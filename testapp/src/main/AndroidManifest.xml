@@ -12,6 +12,15 @@
         <meta-data
             android:name="REQUIRE_SECURE_ENV"
             android:value="${requireSecureEnv}" />
+        <meta-data
+            android:name="INTEGRITY_PROBE_STRING"
+            android:value="surface-value" />
+        <meta-data
+            android:name="INTEGRITY_PROBE_INT"
+            android:value="731" />
+        <meta-data
+            android:name="INTEGRITY_PROBE_BOOL"
+            android:value="true" />
 
         <activity
             android:name=".MainActivity"

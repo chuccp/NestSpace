@@ -517,7 +517,6 @@ open class StageAActivity : Activity() {
         val activeSession = session ?: return false
         val parent = current ?: return false
         val presentationRoot = mirrorRoot ?: root ?: return false
-        if (parent.isFinishing) return false
 
         // The parent may call finish() as soon as startActivity returns
         // (LauncherActivity does). Give it a private token first so that
@@ -526,32 +525,30 @@ open class StageAActivity : Activity() {
         captureMirrorSnapshotForTransition()
         val parentDecor = parent.window.decorView
         val instrumentation = activeSession.instrumentation
-        if (mirrorMode) {
-            withTargetLoader {
-                if (targetResumed) {
-                    runCatching { instrumentation.callActivityOnPause(parent) }
-                        .onFailure { Log.w(TAG, "parent onPause failed", it) }
-                }
-                if (targetStarted) {
-                    if (!TargetLifecycle.perform(
-                            parent,
-                            "performStop",
-                            arrayOf<Any?>(false, "mirror child open"),
-                            arrayOf<Any?>(false),
-                            emptyArray<Any?>()
-                        )
-                    ) {
-                        runCatching { instrumentation.callActivityOnStop(parent) }
-                            .onFailure { Log.w(TAG, "parent onStop failed", it) }
-                    }
-                }
-            }
+        withTargetLoader {
             if (targetResumed) {
-                dispatchTargetApplicationLifecycle("dispatchActivityPaused", parent)
+                runCatching { instrumentation.callActivityOnPause(parent) }
+                    .onFailure { Log.w(TAG, "parent onPause failed", it) }
             }
             if (targetStarted) {
-                dispatchTargetApplicationLifecycle("dispatchActivityStopped", parent)
+                if (!TargetLifecycle.perform(
+                        parent,
+                        "performStop",
+                        arrayOf<Any?>(false, "child target open"),
+                        arrayOf<Any?>(false),
+                        emptyArray<Any?>()
+                    )
+                ) {
+                    runCatching { instrumentation.callActivityOnStop(parent) }
+                        .onFailure { Log.w(TAG, "parent onStop failed", it) }
+                }
             }
+        }
+        if (targetResumed) {
+            dispatchTargetApplicationLifecycle("dispatchActivityPaused", parent)
+        }
+        if (targetStarted) {
+            dispatchTargetApplicationLifecycle("dispatchActivityStopped", parent)
         }
         targetResumed = false
         targetStarted = false

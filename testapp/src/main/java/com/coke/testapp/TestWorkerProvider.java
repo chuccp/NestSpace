@@ -3,7 +3,9 @@ package com.coke.testapp;
 import android.Manifest;
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageInfo;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
@@ -11,7 +13,7 @@ import android.os.Binder;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
-import android.content.pm.PackageInfo;
+import android.system.Os;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -116,11 +118,60 @@ public class TestWorkerProvider extends ContentProvider {
         result.putInt("workerPid", Process.myPid());
         result.putString("workerProcess", ProcessInfo.name());
         try {
-            PackageInfo self = getContext().getPackageManager()
-                .getPackageInfo(getContext().getPackageName(), 0);
+            PackageManager manager = getContext().getPackageManager();
+            String packageName = getContext().getPackageName();
+            PackageInfo self = manager.getPackageInfo(packageName, 0);
+            ApplicationInfo app = self.applicationInfo;
             result.putBoolean(
                 "workerPackageApplicationInfo",
-                self.applicationInfo != null
+                app != null
+            );
+            result.putString("workerPackage", packageName);
+            result.putInt(
+                "workerPackageUid",
+                manager.getPackageUid(packageName, 0)
+            );
+            result.putInt("workerApplicationUid", app == null ? -1 : app.uid);
+            result.putString(
+                "workerSourceDir",
+                app == null ? "" : app.sourceDir
+            );
+            result.putString(
+                "workerPublicSourceDir",
+                app == null ? "" : app.publicSourceDir
+            );
+            result.putString(
+                "workerNativeLibraryDir",
+                app == null ? "" : app.nativeLibraryDir
+            );
+            result.putString("workerDataDir", app == null ? "" : app.dataDir);
+            result.putString(
+                "workerDeviceDataDir",
+                app == null ? "" : app.deviceProtectedDataDir
+            );
+            result.putString(
+                "workerClassLoader",
+                getContext().getClassLoader().getClass().getName()
+            );
+            ClassLoader parent = getContext().getClassLoader().getParent();
+            result.putString(
+                "workerClassLoaderParent",
+                parent == null ? "null" : parent.getClass().getName()
+            );
+            ClassLoader threadLoader =
+                Thread.currentThread().getContextClassLoader();
+            result.putString(
+                "workerThreadClassLoader",
+                threadLoader == null
+                    ? "null"
+                    : threadLoader.getClass().getName()
+            );
+            result.putString("workerPmClass", manager.getClass().getName());
+            result.putString("workerStatusUid", statusUid());
+            result.putString("workerCmdline", cmdline());
+            result.putLong(
+                "workerDataDirUid",
+                Os.stat(getContext().getDataDir().getAbsolutePath()).st_uid
             );
         } catch (Throwable error) {
             result.putBoolean("workerPackageApplicationInfo", false);
@@ -133,6 +184,38 @@ public class TestWorkerProvider extends ContentProvider {
                 + " arg=" + arg
         );
         return result;
+    }
+
+    private static String statusUid() {
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+            new java.io.FileReader("/proc/self/status")
+        )) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("Uid:")) {
+                    return line.substring("Uid:".length()).trim();
+                }
+            }
+        } catch (Throwable error) {
+            return "error=" + error.getClass().getSimpleName();
+        }
+        return "missing";
+    }
+
+    private static String cmdline() {
+        try (java.io.FileInputStream input =
+             new java.io.FileInputStream("/proc/self/cmdline")) {
+            byte[] value = new byte[1024];
+            int count = input.read(value);
+            return count <= 0
+                ? ""
+                : new String(value, 0, count)
+                    .replace('\0', '|')
+                    .replace('\n', ' ')
+                    .trim();
+        } catch (Throwable error) {
+            return "error=" + error.getClass().getSimpleName();
+        }
     }
 
     private static String callingSid() {

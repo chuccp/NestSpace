@@ -25,6 +25,9 @@ decltype(JNINativeInterface::CallObjectMethodV) g_call_object_method_v = nullptr
 decltype(JNINativeInterface::CallStaticObjectMethodV)
     g_call_static_object_method_v = nullptr;
 decltype(JNINativeInterface::CallIntMethodV) g_call_int_method_v = nullptr;
+decltype(JNINativeInterface::CallVoidMethod) g_call_void_method = nullptr;
+decltype(JNINativeInterface::CallVoidMethodV) g_call_void_method_v = nullptr;
+decltype(JNINativeInterface::CallVoidMethodA) g_call_void_method_a = nullptr;
 decltype(JNINativeInterface::CallBooleanMethodV)
     g_call_boolean_method_v = nullptr;
 decltype(JNINativeInterface::CallStaticBooleanMethodV)
@@ -492,6 +495,279 @@ jint probe_call_int_method_v(
         );
     }
     return result;
+}
+
+std::string reflected_parameter_descriptor(JNIEnv* env, jobject type) {
+    jclass class_class = env->FindClass("java/lang/Class");
+    if (class_class == nullptr) return "?";
+    jmethodID get_name = env->GetMethodID(
+        class_class,
+        "getName",
+        "()Ljava/lang/String;"
+    );
+    auto name_value = get_name == nullptr
+        ? static_cast<jstring>(nullptr)
+        : static_cast<jstring>(env->CallObjectMethod(type, get_name));
+    if (name_value == nullptr) {
+        env->DeleteLocalRef(class_class);
+        return "?";
+    }
+    const char* name = env->GetStringUTFChars(name_value, nullptr);
+    std::string result = name == nullptr ? "?" : name;
+    if (name != nullptr) env->ReleaseStringUTFChars(name_value, name);
+    env->DeleteLocalRef(name_value);
+    env->DeleteLocalRef(class_class);
+    if (result == "int") return "I";
+    if (result == "boolean") return "Z";
+    if (result == "long") return "J";
+    if (result == "short") return "S";
+    if (result == "byte") return "B";
+    if (result == "char") return "C";
+    if (result == "float") return "F";
+    if (result == "double") return "D";
+    if (result == "void") return "V";
+    return "L" + result + ";";
+}
+
+std::string resolve_method_identity(
+    JNIEnv* env,
+    jobject object,
+    jmethodID method
+) {
+    const char* cached = probe_method_name(method);
+    if (cached != nullptr && strcmp(cached, "?") != 0) {
+        return cached;
+    }
+    if (object == nullptr) return "?";
+    jclass object_class = env->GetObjectClass(object);
+    jclass class_class = env->FindClass("java/lang/Class");
+    jclass method_class = env->FindClass("java/lang/reflect/Method");
+    if (object_class == nullptr || class_class == nullptr ||
+        method_class == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return "?";
+    }
+    jmethodID get_declared_methods = env->GetMethodID(
+        class_class,
+        "getDeclaredMethods",
+        "()[Ljava/lang/reflect/Method;"
+    );
+    jmethodID class_name_method = env->GetMethodID(
+        class_class,
+        "getName",
+        "()Ljava/lang/String;"
+    );
+    jmethodID method_name_method = env->GetMethodID(
+        method_class,
+        "getName",
+        "()Ljava/lang/String;"
+    );
+    jmethodID parameter_types_method = env->GetMethodID(
+        method_class,
+        "getParameterTypes",
+        "()[Ljava/lang/Class;"
+    );
+    if (get_declared_methods == nullptr ||
+        class_name_method == nullptr ||
+        method_name_method == nullptr ||
+        parameter_types_method == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return "?";
+    }
+    auto methods = static_cast<jobjectArray>(
+        env->CallObjectMethod(object_class, get_declared_methods)
+    );
+    if (methods == nullptr) return "?";
+    const jsize count = env->GetArrayLength(methods);
+    for (jsize index = 0; index < count; ++index) {
+        jobject reflected = env->GetObjectArrayElement(methods, index);
+        if (reflected == nullptr || env->FromReflectedMethod(reflected) != method) {
+            if (reflected != nullptr) env->DeleteLocalRef(reflected);
+            continue;
+        }
+        auto owner = static_cast<jstring>(
+            env->CallObjectMethod(object_class, class_name_method)
+        );
+        auto name = static_cast<jstring>(
+            env->CallObjectMethod(reflected, method_name_method)
+        );
+        auto parameters = static_cast<jobjectArray>(
+            env->CallObjectMethod(reflected, parameter_types_method)
+        );
+        const char* owner_chars = owner == nullptr
+            ? nullptr
+            : env->GetStringUTFChars(owner, nullptr);
+        const char* name_chars = name == nullptr
+            ? nullptr
+            : env->GetStringUTFChars(name, nullptr);
+        std::string identity =
+            std::string(owner_chars == nullptr ? "?" : owner_chars) +
+            "#" + (name_chars == nullptr ? "?" : name_chars) + ":(";
+        if (parameters != nullptr) {
+            const jsize parameter_count = env->GetArrayLength(parameters);
+            for (jsize parameter = 0;
+                 parameter < parameter_count;
+                 ++parameter) {
+                jobject type = env->GetObjectArrayElement(
+                    parameters,
+                    parameter
+                );
+                identity += reflected_parameter_descriptor(env, type);
+                if (type != nullptr) env->DeleteLocalRef(type);
+            }
+            env->DeleteLocalRef(parameters);
+        }
+        identity += ")V";
+        if (owner_chars != nullptr) env->ReleaseStringUTFChars(owner, owner_chars);
+        if (name_chars != nullptr) env->ReleaseStringUTFChars(name, name_chars);
+        if (owner != nullptr) env->DeleteLocalRef(owner);
+        if (name != nullptr) env->DeleteLocalRef(name);
+        env->DeleteLocalRef(reflected);
+        env->DeleteLocalRef(methods);
+        env->DeleteLocalRef(object_class);
+        env->DeleteLocalRef(class_class);
+        env->DeleteLocalRef(method_class);
+        return identity;
+    }
+    env->DeleteLocalRef(methods);
+    env->DeleteLocalRef(object_class);
+    env->DeleteLocalRef(class_class);
+    env->DeleteLocalRef(method_class);
+    return "?";
+}
+
+void log_void_method_arguments(
+    JNIEnv* env,
+    const std::string& method_name,
+    jint first_int,
+    jstring first_string,
+    jstring second_string
+) {
+    if (method_name.find("(ILjava/lang/String;") == std::string::npos) {
+        __android_log_print(
+            ANDROID_LOG_DEBUG,
+            "NestSpaceNative",
+            "jni-probe CallVoidMethod method=%s",
+            method_name.c_str()
+        );
+        return;
+    }
+    const char* first = first_string == nullptr
+        ? nullptr
+        : env->GetStringUTFChars(first_string, nullptr);
+    const char* second = second_string == nullptr
+        ? nullptr
+        : env->GetStringUTFChars(second_string, nullptr);
+    __android_log_print(
+        ANDROID_LOG_DEBUG,
+        "NestSpaceNative",
+        "jni-probe CallVoidMethod method=%s status=%d key=%s value=%s",
+        method_name.c_str(),
+        first_int,
+        first == nullptr ? "<null>" : first,
+        second == nullptr ? "<null>" : second
+    );
+    if (first != nullptr) {
+        env->ReleaseStringUTFChars(first_string, first);
+    }
+    if (second != nullptr) {
+        env->ReleaseStringUTFChars(second_string, second);
+    }
+}
+
+void probe_call_void_method(
+    JNIEnv* env,
+    jobject object,
+    jmethodID method,
+    ...
+) {
+    va_list arguments;
+    va_start(arguments, method);
+    va_list copied;
+    va_copy(copied, arguments);
+    const std::string method_name = resolve_method_identity(
+        env,
+        object,
+        method
+    );
+    jint first_int = 0;
+    jstring first_string = nullptr;
+    jstring second_string = nullptr;
+    if (method_name.find("(ILjava/lang/String;") != std::string::npos) {
+        first_int = va_arg(copied, jint);
+        first_string = va_arg(copied, jstring);
+        second_string = va_arg(copied, jstring);
+    }
+    va_end(copied);
+    log_void_method_arguments(
+        env,
+        method_name,
+        first_int,
+        first_string,
+        second_string
+    );
+    g_call_void_method_v(env, object, method, arguments);
+    va_end(arguments);
+}
+
+void probe_call_void_method_v(
+    JNIEnv* env,
+    jobject object,
+    jmethodID method,
+    va_list arguments
+) {
+    va_list copied;
+    va_copy(copied, arguments);
+    const std::string method_name = resolve_method_identity(
+        env,
+        object,
+        method
+    );
+    jint first_int = 0;
+    jstring first_string = nullptr;
+    jstring second_string = nullptr;
+    if (method_name.find("(ILjava/lang/String;") != std::string::npos) {
+        first_int = va_arg(copied, jint);
+        first_string = va_arg(copied, jstring);
+        second_string = va_arg(copied, jstring);
+    }
+    va_end(copied);
+    log_void_method_arguments(
+        env,
+        method_name,
+        first_int,
+        first_string,
+        second_string
+    );
+    g_call_void_method_v(env, object, method, arguments);
+}
+
+void probe_call_void_method_a(
+    JNIEnv* env,
+    jobject object,
+    jmethodID method,
+    const jvalue* arguments
+) {
+    const std::string method_name = resolve_method_identity(
+        env,
+        object,
+        method
+    );
+    const bool callback_arguments =
+        method_name.find("(ILjava/lang/String;") != std::string::npos &&
+        arguments != nullptr;
+    log_void_method_arguments(
+        env,
+        method_name,
+        callback_arguments ? arguments[0].i : 0,
+        callback_arguments
+            ? static_cast<jstring>(arguments[1].l)
+            : nullptr,
+        callback_arguments
+            ? static_cast<jstring>(arguments[2].l)
+            : nullptr
+    );
+    g_call_void_method_a(env, object, method, arguments);
 }
 
 jboolean probe_call_boolean_method(
@@ -1164,6 +1440,9 @@ void install_jni_registration_hook(JNIEnv* env) {
         g_call_static_object_method_v =
             original_functions->CallStaticObjectMethodV;
         g_call_int_method_v = original_functions->CallIntMethodV;
+        g_call_void_method = original_functions->CallVoidMethod;
+        g_call_void_method_v = original_functions->CallVoidMethodV;
+        g_call_void_method_a = original_functions->CallVoidMethodA;
         g_call_boolean_method_v = original_functions->CallBooleanMethodV;
         g_call_static_boolean_method_v =
             original_functions->CallStaticBooleanMethodV;
@@ -1195,6 +1474,9 @@ void install_jni_registration_hook(JNIEnv* env) {
                 probe_call_static_object_method_v;
             probe_functions.CallIntMethod = probe_call_int_method;
             probe_functions.CallIntMethodV = probe_call_int_method_v;
+            probe_functions.CallVoidMethod = probe_call_void_method;
+            probe_functions.CallVoidMethodV = probe_call_void_method_v;
+            probe_functions.CallVoidMethodA = probe_call_void_method_a;
             probe_functions.CallBooleanMethod = probe_call_boolean_method;
             probe_functions.CallStaticBooleanMethod =
                 probe_call_static_boolean_method;

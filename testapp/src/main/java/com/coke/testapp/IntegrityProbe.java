@@ -393,6 +393,11 @@ final class IntegrityProbe {
         AdvancedTamperProbe.appendRows(activity, nativeReport, rows);
         SystemSurfaceProbe.appendRows(activity, rows);
         KernelSurfaceProbe.appendRows(activity, rows);
+        ClassLoaderSurfaceProbe.appendRows(activity, rows);
+        FrameworkSurfaceProbe.appendRows(activity, rows);
+        StorageSurfaceProbe.appendRows(activity, rows);
+        BuildSurfaceProbe.appendRows(rows);
+        MultiProcessSurfaceProbe.appendRows(activity, rows);
 
         boolean passed = true;
         for (String row : rows) {

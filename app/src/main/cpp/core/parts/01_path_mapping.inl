@@ -421,6 +421,32 @@ bool virtual_path_from_actual(
         return true;
     };
 
+    // Match the complete instance roots before package-level host prefixes.
+    // Otherwise a path under /data/user/0/<host>/... can be shortened by the
+    // broad host rule and leave the instance suffix visible to the target.
+    if (rewrite(
+            environment->data_root + "/device_protected",
+            environment->target_device_root
+        )) {
+        return true;
+    }
+    if (!environment->data_root_alias.empty() &&
+        rewrite(
+            environment->data_root_alias + "/device_protected",
+            environment->target_device_root
+        )) {
+        return true;
+    }
+    if (rewrite(environment->actual_device_root, environment->target_device_root)) {
+        return true;
+    }
+    if (rewrite(environment->data_root, environment->target_data_root)) {
+        return true;
+    }
+    if (!environment->data_root_alias.empty() &&
+        rewrite(environment->data_root_alias, environment->target_data_alias)) {
+        return true;
+    }
     const std::string host_data_root =
         "/data/user/0/" + environment->host_package_name;
     const std::string host_data_alias =
@@ -433,16 +459,6 @@ bool virtual_path_from_actual(
         rewrite(host_runtime_alias, environment->target_data_root) ||
         rewrite(host_data_root, environment->target_data_root) ||
         rewrite(host_data_alias, environment->target_data_alias)) {
-        return true;
-    }
-    if (rewrite(environment->actual_device_root, environment->target_device_root)) {
-        return true;
-    }
-    if (rewrite(environment->data_root, environment->target_data_root)) {
-        return true;
-    }
-    if (!environment->data_root_alias.empty() &&
-        rewrite(environment->data_root_alias, environment->target_data_alias)) {
         return true;
     }
     if (!environment->external_data_root.empty() &&

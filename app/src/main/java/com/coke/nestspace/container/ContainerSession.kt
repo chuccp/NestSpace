@@ -11,7 +11,6 @@ import com.coke.nestspace.container.identity.ProcessNameCompat
 import com.coke.nestspace.container.identity.SystemServiceIdentity
 import com.coke.nestspace.container.intent.ContainerIntentResolver
 import com.coke.nestspace.container.job.ContainerJobScheduler
-import com.coke.nestspace.container.loader.ContainerClassLoader
 import com.coke.nestspace.container.loader.ApkClassIndex
 import com.coke.nestspace.container.loader.CompleteClassBridge
 import com.coke.nestspace.container.loader.NativeLibs
@@ -509,7 +508,6 @@ class ContainerSession private constructor(
 
     init {
         context.virtualEnvironment = virtualEnvironment
-        context.targetPackageManager = packageManager
         context.broadcastManager = broadcastManager
         broadcastManager.adopt(context.earlyReceiverRegistry?.drain().orEmpty())
         context.earlyReceiverRegistry = null
@@ -1636,18 +1634,36 @@ class ContainerSession private constructor(
                     ContainerProcessPool.activityClass(currentSlot)
                 else -> host.javaClass
             }
+            val parentNotAttachedYet =
+                sourceTarget != null && host.currentTargetActivity() == null
             val launch = {
-                launchOnHost(
-                    host,
-                    hostPackage,
-                    info,
-                    launchHostClass,
-                    targetProcess,
-                    intent,
-                    requestCode
+                val childIntent = Intent(intent).setClassName(
+                    spec.packageName,
+                    info.name
                 )
+                if (parentNotAttachedYet &&
+                    targetProcess == spec.targetProcessName &&
+                    host.currentTargetActivity() != null &&
+                    host.openMirrorChildTarget(
+                        info.name,
+                        childIntent,
+                        requestCode
+                    )
+                ) {
+                    true
+                } else {
+                    launchOnHost(
+                        host,
+                        hostPackage,
+                        info,
+                        launchHostClass,
+                        targetProcess,
+                        intent,
+                        requestCode
+                    )
+                }
             }
-            if (sourceTarget != null && host.currentTargetActivity() == null) {
+            if (parentNotAttachedYet) {
                 return host.stageTargetNavigationLaunch(info.name, launch)
             }
             val launched = launch()
@@ -2307,10 +2323,11 @@ class ContainerSession private constructor(
                     )
                 }
             } else {
-                ContainerClassLoader(
+                val systemLoader = ClassLoader.getSystemClassLoader()
+                PathClassLoader(
                     classPath,
                     nativeSearchPath,
-                    bootstrapClassLoader()
+                    systemLoader.parent
                 )
             }
             Log.d(
