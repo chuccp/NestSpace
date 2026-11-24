@@ -221,6 +221,81 @@ final class AntiTamperRuleProbe {
                 && String.valueOf(uid).equals(childUid)
                 && String.valueOf(uid).equals(childRawUid)
         );
+        String nativeSandboxModules = field(
+            nativeReport,
+            "native.sandbox.modules="
+        );
+        add(
+            rows,
+            "NPTH 虚拟环境模块名",
+            nativeSandboxModules,
+            nativeSandboxModules.startsWith("loaded=0 ")
+        );
+        String hookMappings = field(
+            nativeReport,
+            "native.rawMaps.hookMappings="
+        );
+        add(
+            rows,
+            "NPTH hook 映射视图",
+            hookMappings,
+            hookMappings.startsWith("lines=0 ")
+        );
+        String pthreadKeys = field(
+            nativeReport,
+            "native.pthreadKeys="
+        );
+        add(
+            rows,
+            "NPTH pthread key 生命周期",
+            pthreadKeys,
+            pthreadKeys.contains("consistent=1")
+        );
+        String threadStack = field(
+            nativeReport,
+            "native.threadStack="
+        );
+        add(
+            rows,
+            "NPTH 线程栈/TLS 边界",
+            threadStack,
+            threadStack.contains("consistent=1")
+        );
+        String nativeSmaps = field(nativeReport, "native.smaps=");
+        add(
+            rows,
+            "NPTH native smaps 聚合",
+            nativeSmaps,
+            nativeSmaps.contains("consistent=1")
+        );
+        String memory = field(nativeReport, "native.memory=");
+        add(
+            rows,
+            "NPTH sysinfo/meminfo 一致性",
+            memory,
+            memory.contains("sysinfo=0 ") &&
+                memory.contains("consistent=1")
+        );
+        String nativePagemap = field(
+            nativeReport,
+            "native.pagemap="
+        );
+        add(
+            rows,
+            "NPTH native pagemap",
+            nativePagemap,
+            nativePagemap.contains("consistent=1")
+        );
+        String mapModules = field(
+            nativeReport,
+            "native.rawMaps.modules="
+        );
+        add(
+            rows,
+            "NPTH maps/dl_iterate_phdr 模块",
+            mapModules,
+            mapModules.contains("consistent=1")
+        );
     }
 
     private static Set<String> invalidTaskNames() {

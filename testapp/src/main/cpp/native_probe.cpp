@@ -7,6 +7,7 @@
 #include <linux/capability.h>
 #include <linux/stat.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <sched.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -34,6 +35,7 @@
 #include <cinttypes>
 #include <cstring>
 #include <iterator>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -890,6 +892,294 @@ std::string mapping_summary() {
         " samples=" + (samples.empty() ? "0" : samples);
 }
 
+std::string hook_mapping_summary(const std::string& maps) {
+    static const char* kTerms[] = {
+        "libsandbox",
+        "libsandhook",
+        "libartshadowhook",
+        "liblsposed",
+        "lsposed",
+        "libsubstrate",
+        "frida",
+        "gum-js-loop",
+        "bytehook-stack",
+        "shadowhook-enter",
+        "shadowhook-exit",
+        "shadowhook-hub",
+        "[anon:bytehook",
+        "[anon:shadowhook"
+    };
+    int lines = 0;
+    std::string samples;
+    size_t offset = 0;
+    while (offset < maps.size()) {
+        const size_t end = maps.find('\n', offset);
+        const std::string line = maps.substr(
+            offset,
+            end == std::string::npos ? std::string::npos : end - offset
+        );
+        offset = end == std::string::npos ? maps.size() : end + 1;
+        bool matched = false;
+        for (const char* term : kTerms) {
+            if (line.find(term) != std::string::npos) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) continue;
+        ++lines;
+        if (samples.size() < 1024) {
+            if (!samples.empty()) samples += "; ";
+            samples += line;
+        }
+    }
+    return "lines=" + std::to_string(lines) +
+        " samples=" + (samples.empty() ? "0" : samples);
+}
+
+std::string pthread_key_summary() {
+    constexpr int kMaxProbeKeys = 256;
+    std::array<pthread_key_t, kMaxProbeKeys> keys{};
+    int created = 0;
+    int roundtrip = 0;
+    int failed_errno = 0;
+    void* const marker = reinterpret_cast<void*>(
+        static_cast<uintptr_t>(0x4e5350524f4245ULL)
+    );
+    while (created < kMaxProbeKeys) {
+        pthread_key_t key {};
+        const int result = pthread_key_create(&key, nullptr);
+        if (result != 0) {
+            failed_errno = result;
+            break;
+        }
+        keys[static_cast<size_t>(created)] = key;
+        ++created;
+        if (pthread_setspecific(key, marker) == 0 &&
+            pthread_getspecific(key) == marker) {
+            ++roundtrip;
+        }
+    }
+    for (int index = 0; index < created; ++index) {
+        pthread_setspecific(
+            keys[static_cast<size_t>(index)],
+            nullptr
+        );
+        pthread_key_delete(keys[static_cast<size_t>(index)]);
+    }
+    pthread_key_t reuse {};
+    const int reuse_result = pthread_key_create(&reuse, nullptr);
+    const bool reusable = reuse_result == 0;
+    if (reusable) pthread_key_delete(reuse);
+    const bool consistent = created > 0 &&
+        roundtrip == created &&
+        reusable;
+    return "created=" + std::to_string(created) +
+        " roundtrip=" + std::to_string(roundtrip) +
+        " failed=" + std::to_string(failed_errno) +
+        " reusable=" + std::to_string(reusable ? 1 : 0) +
+        " consistent=" + std::to_string(consistent ? 1 : 0) +
+        " reuseError=" + std::to_string(
+            reusable ? 0 : reuse_result
+        );
+}
+
+std::string thread_stack_summary() {
+    pthread_attr_t attributes {};
+    const int init_result = pthread_attr_init(&attributes);
+    if (init_result != 0) {
+        return "error=" + std::to_string(init_result);
+    }
+    const int attribute_result = pthread_getattr_np(
+        pthread_self(),
+        &attributes
+    );
+    void* stack_base = nullptr;
+    size_t stack_size = 0;
+    size_t guard_size = 0;
+    const int stack_result = attribute_result == 0
+        ? pthread_attr_getstack(
+            &attributes,
+            &stack_base,
+            &stack_size
+        )
+        : attribute_result;
+    const int guard_result = attribute_result == 0
+        ? pthread_attr_getguardsize(&attributes, &guard_size)
+        : attribute_result;
+    pthread_attr_destroy(&attributes);
+    const long page_size = sysconf(_SC_PAGESIZE);
+    const bool aligned = stack_base != nullptr &&
+        page_size > 0 &&
+        reinterpret_cast<uintptr_t>(stack_base) %
+            static_cast<uintptr_t>(page_size) == 0;
+    const bool consistent = attribute_result == 0 &&
+        stack_result == 0 &&
+        guard_result == 0 &&
+        stack_size > 0 &&
+        aligned;
+    return "attr=" + std::to_string(attribute_result) +
+        " stack=" + std::to_string(stack_result) +
+        " guardRead=" + std::to_string(guard_result) +
+        " size=" + std::to_string(stack_size) +
+        " guard=" + std::to_string(guard_size) +
+        " aligned=" + std::to_string(aligned ? 1 : 0) +
+        " consistent=" + std::to_string(consistent ? 1 : 0);
+}
+
+long long decimal_field(
+    const std::string& text,
+    const char* label
+) {
+    const size_t offset = text.find(label);
+    if (offset == std::string::npos) return -1;
+    return strtoll(
+        text.c_str() + offset + strlen(label),
+        nullptr,
+        10
+    );
+}
+
+std::string smaps_summary() {
+    const std::string smaps = read_file(
+        "/proc/self/smaps",
+        8 * 1024 * 1024
+    );
+    const std::string rollup = read_file(
+        "/proc/self/smaps_rollup",
+        64 * 1024
+    );
+    if (smaps.empty()) {
+        return "smaps=error:" + std::to_string(errno) +
+            " rollup=" + (rollup.empty() ? "empty" : "ok") +
+            " consistent=0";
+    }
+    int mappings = 0;
+    size_t offset = 0;
+    while (offset < smaps.size()) {
+        const size_t end = smaps.find('\n', offset);
+        const std::string line = smaps.substr(
+            offset,
+            end == std::string::npos ? std::string::npos : end - offset
+        );
+        offset = end == std::string::npos ? smaps.size() : end + 1;
+        if (line.find('-') != std::string::npos &&
+            line.find(" r") != std::string::npos) {
+            ++mappings;
+        }
+    }
+    const long long rollup_rss = decimal_field(rollup, "Rss:");
+    const long long rollup_pss = decimal_field(rollup, "Pss:");
+    const bool consistent = mappings > 0 &&
+        !rollup.empty() &&
+        rollup_rss >= 0 &&
+        rollup_pss >= 0 &&
+        rollup_pss <= rollup_rss + 1024;
+    return "smaps=ok mappings=" + std::to_string(mappings) +
+        " firstRssKb=" + std::to_string(
+            decimal_field(smaps, "Rss:")
+        ) +
+        " firstPssKb=" + std::to_string(
+            decimal_field(smaps, "Pss:")
+        ) +
+        " rollup=" + (rollup.empty() ? "empty" : "ok") +
+        " rollupRssKb=" + std::to_string(rollup_rss) +
+        " rollupPssKb=" + std::to_string(rollup_pss) +
+        " consistent=" + std::to_string(consistent ? 1 : 0);
+}
+
+std::string memory_view_summary() {
+    struct sysinfo info {};
+    const int sysinfo_result = sysinfo(&info);
+    const uint64_t unit = info.mem_unit == 0 ? 1 : info.mem_unit;
+    const std::string meminfo = read_file(
+        "/proc/meminfo",
+        64 * 1024
+    );
+    const long long sys_total_kb = sysinfo_result == 0
+        ? static_cast<long long>(
+            static_cast<uint64_t>(info.totalram) * unit / 1024
+        )
+        : -1;
+    const long long sys_free_kb = sysinfo_result == 0
+        ? static_cast<long long>(
+            static_cast<uint64_t>(info.freeram) * unit / 1024
+        )
+        : -1;
+    const long long proc_total_kb = decimal_field(meminfo, "MemTotal:");
+    const long long proc_available_kb = decimal_field(
+        meminfo,
+        "MemAvailable:"
+    );
+    const bool total_consistent = sys_total_kb > 0 &&
+        proc_total_kb > 0 &&
+        llabs(sys_total_kb - proc_total_kb) <=
+            std::max<long long>(sys_total_kb / 5, 64 * 1024);
+    return "sysinfo=" + std::to_string(sysinfo_result) +
+        " sysTotalKb=" + std::to_string(sys_total_kb) +
+        " sysFreeKb=" + std::to_string(sys_free_kb) +
+        " procTotalKb=" + std::to_string(proc_total_kb) +
+        " procAvailableKb=" + std::to_string(proc_available_kb) +
+        " consistent=" + std::to_string(
+            total_consistent ? 1 : 0
+        );
+}
+
+std::string pagemap_summary() {
+    const int fd = open(
+        "/proc/self/pagemap",
+        O_RDONLY | O_CLOEXEC
+    );
+    if (fd < 0) return "error=" + std::to_string(errno);
+    uint64_t entry = 0;
+    const ssize_t count = read(fd, &entry, sizeof(entry));
+    const int read_errno = count < 0 ? errno : 0;
+    close(fd);
+    return count == static_cast<ssize_t>(sizeof(entry))
+        ? "read=8 entry=" + std::to_string(entry) +
+            " consistent=1"
+        : "error=" + std::to_string(read_errno) +
+            " consistent=" + std::to_string(
+                read_errno == EACCES ? 1 : 0
+            );
+}
+
+std::string maps_module_summary(
+    const std::string& maps,
+    int elf_modules
+) {
+    std::set<std::string> paths;
+    int vmas = 0;
+    size_t offset = 0;
+    while (offset < maps.size()) {
+        const size_t end = maps.find('\n', offset);
+        const std::string line = maps.substr(
+            offset,
+            end == std::string::npos ? std::string::npos : end - offset
+        );
+        offset = end == std::string::npos ? maps.size() : end + 1;
+        ++vmas;
+        const size_t slash = line.find('/');
+        if (slash == std::string::npos) continue;
+        std::string path = line.substr(slash);
+        const size_t suffix = path.find(" (deleted)");
+        if (suffix != std::string::npos) path.resize(suffix);
+        if (path.size() >= 3 &&
+            path.compare(path.size() - 3, 3, ".so") == 0) {
+            paths.insert(path);
+        }
+    }
+    return "vmas=" + std::to_string(vmas) +
+        " modules=" + std::to_string(paths.size()) +
+        " elfModules=" + std::to_string(elf_modules) +
+        " consistent=" + std::to_string(
+            elf_modules > 0 &&
+            static_cast<int>(paths.size()) <= elf_modules + 2
+                ? 1
+                : 0
+        );
+}
+
 std::string path_summary(
     const char* label,
     const char* path,
@@ -1237,11 +1527,13 @@ struct ElfScanState {
     int modules = 0;
     int host_modules = 0;
     int virtualized_host_modules = 0;
+    int sandbox_modules = 0;
     int target_modules = 0;
     int build_ids = 0;
     int missing_build_ids = 0;
     int relro_writable = 0;
     std::vector<std::string> samples;
+    std::vector<std::string> sandbox_samples;
     std::vector<std::string> build_id_samples;
     std::vector<std::string> relro_samples;
 };
@@ -1361,6 +1653,25 @@ int scan_elf_module(
         ++state->host_modules;
         if (state->samples.size() < 4) state->samples.push_back(name);
     }
+    const size_t slash = name.find_last_of('/');
+    const std::string basename = slash == std::string::npos
+        ? name
+        : name.substr(slash + 1);
+    static const char* kSandboxModules[] = {
+        "libsandhook-native.so",
+        "libsandhook.so",
+        "libsandbox_32.so",
+        "libsandbox_64.so"
+    };
+    for (const char* module : kSandboxModules) {
+        if (basename == module) {
+            ++state->sandbox_modules;
+            if (state->sandbox_samples.size() < 4) {
+                state->sandbox_samples.push_back(name);
+            }
+            break;
+        }
+    }
     if (name.find("/data/app/") != std::string::npos) {
         ++state->target_modules;
         uintptr_t relro_start = 0;
@@ -1400,6 +1711,11 @@ int scan_elf_module(
         }
     }
     return 0;
+}
+
+std::string sandbox_module_summary(const ElfScanState& scan) {
+    return "loaded=" + std::to_string(scan.sandbox_modules) +
+        " samples=" + join_samples(scan.sandbox_samples);
 }
 
 TextLeakScan scan_environment() {
@@ -1957,7 +2273,12 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
         "\npopen.identity=" + popen_identity_summary() +
         "\nsocket.loopback=" + socket_loopback_summary() +
         "\nresource.fd=" + fd_resource_summary() +
-        "\nmapping.scan=" + mapping_summary();
+        "\nmapping.scan=" + mapping_summary() +
+        "\nnative.pthreadKeys=" + pthread_key_summary() +
+        "\nnative.threadStack=" + thread_stack_summary() +
+        "\nnative.smaps=" + smaps_summary() +
+        "\nnative.memory=" + memory_view_summary() +
+        "\nnative.pagemap=" + pagemap_summary();
 
     const std::vector<std::pair<std::string, std::pair<std::string, bool>>> paths = {
         {"dataDir", {data_root, true}},
@@ -2085,6 +2406,8 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
             join_samples(elf_scan.samples) +
         "\nnative.elf.targetModules=" +
             std::to_string(elf_scan.target_modules) +
+        "\nnative.sandbox.modules=" +
+            sandbox_module_summary(elf_scan) +
         "\nnative.elf.buildIds=" +
             std::to_string(elf_scan.build_ids) +
         "\nnative.elf.missingBuildIds=" +
@@ -2101,6 +2424,10 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
             std::to_string(maps_scan.count) +
         "\nnative.rawMaps.hostSamples=" +
             join_samples(maps_scan.samples) +
+        "\nnative.rawMaps.hookMappings=" +
+            hook_mapping_summary(raw_maps) +
+        "\nnative.rawMaps.modules=" +
+            maps_module_summary(raw_maps, elf_scan.modules) +
         "\nnative.rawMountinfo.read=" +
             (starts_with(raw_mountinfo, "error=")
                 ? raw_mountinfo
