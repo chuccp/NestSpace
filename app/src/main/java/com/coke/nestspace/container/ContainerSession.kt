@@ -1099,6 +1099,19 @@ class ContainerSession private constructor(
                     "Activity not found: ${className ?: spec.launcherActivity}"
                 )
             )
+        fun normalizeApplicationInfo(targetInfo: android.content.pm.ApplicationInfo?) {
+            targetInfo ?: return
+            targetInfo.sourceDir = spec.baseApkPath
+            targetInfo.publicSourceDir = spec.baseApkPath
+            targetInfo.splitSourceDirs = spec.splitApkPaths
+                .takeIf { it.isNotEmpty() }
+                ?.toTypedArray()
+                ?: targetInfo.splitSourceDirs
+        }
+        normalizeApplicationInfo(info.applicationInfo)
+        normalizeApplicationInfo(context.applicationInfo)
+        normalizeApplicationInfo(application.applicationInfo)
+        normalizeApplicationInfo(spec.applicationInfo)
         Log.d(
             TAG,
             "resolve activity requested=$className info=${info.name} " +
@@ -1431,7 +1444,7 @@ class ContainerSession private constructor(
             } ?: error("ActivityThread.startActivityNow not found")
             method.isAccessible = true
             val launchInfo = ActivityInfo(info).apply {
-                applicationInfo = context.applicationInfo
+                applicationInfo = info.applicationInfo
             }
             val compatibilityClass = Class.forName(
                 "android.content.res.CompatibilityInfo"
@@ -1454,7 +1467,7 @@ class ContainerSession private constructor(
             val targetLoadedApk = publishedLoadedApk
                 ?: loadedApkConstructor.newInstance(
                     thread,
-                    context.applicationInfo,
+                    info.applicationInfo,
                     compatibility,
                     loader,
                     false,
@@ -1466,12 +1479,12 @@ class ContainerSession private constructor(
                 }
             mapOf(
                 "mApplication" to application,
-                "mApplicationInfo" to context.applicationInfo,
+                "mApplicationInfo" to info.applicationInfo,
                 "mClassLoader" to context.currentClassLoader(),
                 "mPackageName" to spec.packageName,
                 "mAppDir" to spec.baseApkPath,
                 "mResDir" to spec.baseApkPath,
-                "mDataDir" to context.applicationInfo.dataDir,
+                "mDataDir" to info.applicationInfo.dataDir,
                 "mResources" to resources
             ).forEach { (name, value) ->
                 findField(targetLoadedApk.javaClass, name)?.let { field ->

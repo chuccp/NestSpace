@@ -1608,8 +1608,15 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         copy.uid = spec.getTargetUid() > 0
                 ? spec.getTargetUid()
                 : Process.myUid();
-        if (copy.sourceDir == null) copy.sourceDir = spec.getBaseApkPath();
-        if (copy.publicSourceDir == null) copy.publicSourceDir = spec.getBaseApkPath();
+        // TargetPM snapshots may have been captured while the same package was
+        // installed on the host. AppCompat calls getResourcesForApplication()
+        // with this object, so stale /data/app paths crash before the first
+        // Activity can attach. Always expose the imported container paths.
+        copy.sourceDir = spec.getBaseApkPath();
+        copy.publicSourceDir = spec.getBaseApkPath();
+        if (spec.getSplitApkPaths() != null && !spec.getSplitApkPaths().isEmpty()) {
+            copy.splitSourceDirs = spec.getSplitApkPaths().toArray(new String[0]);
+        }
         applyApplicationInfoFlags(copy, flags);
         return copy;
     }
