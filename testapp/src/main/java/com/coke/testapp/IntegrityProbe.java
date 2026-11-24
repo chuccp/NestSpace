@@ -315,6 +315,68 @@ final class IntegrityProbe {
         checkNative(rows, nativeReport, "child-proc.raw_uid", expectedUid);
         checkNative(rows, nativeReport, "child-proc.parent_uid", expectedUid);
         checkNative(rows, nativeReport, "raw.syscall.faccessat.files", "ok");
+        try {
+            long totalRam = Long.parseLong(
+                nativeValue(nativeReport, "sysinfo=", "totalram")
+            );
+            long freeRam = Long.parseLong(
+                nativeValue(nativeReport, "sysinfo=", "freeram")
+            );
+            long processes = Long.parseLong(
+                nativeValue(nativeReport, "sysinfo=", "procs")
+            );
+            long uptime = Long.parseLong(
+                nativeValue(nativeReport, "sysinfo=", "uptime")
+            );
+            add(
+                rows,
+                "native sysinfo 系统视图",
+                "total=" + totalRam
+                    + " free=" + freeRam
+                    + " procs=" + processes
+                    + " uptime=" + uptime,
+                totalRam > 0 &&
+                    freeRam >= 0 &&
+                    freeRam <= totalRam &&
+                    processes > 0 &&
+                    uptime > 0
+            );
+        } catch (Throwable error) {
+            add(
+                rows,
+                "native sysinfo 系统视图",
+                field(nativeReport, "sysinfo="),
+                false
+            );
+        }
+        String signalScan = field(nativeReport, "signal.scan=");
+        add(
+            rows,
+            "native 信号处理链归属",
+            signalScan,
+            signalScan.contains("hostLeaks=0") &&
+                !signalScan.contains("read-error=")
+        );
+        String popenIdentity = field(nativeReport, "popen.identity=");
+        add(
+            rows,
+            "native popen 子命令身份",
+            popenIdentity,
+            popenIdentity.contains("status=0 ") &&
+                popenIdentity.contains(
+                    "output=" + expectedUid
+                )
+        );
+        String socketLoopback = field(
+            nativeReport,
+            "socket.loopback="
+        );
+        add(
+            rows,
+            "native 本地 socket 语义",
+            socketLoopback,
+            socketLoopback.startsWith("ok port=")
+        );
         String rawProcStatus = field(
             nativeReport,
             "raw.syscall.newfstatat.procStatus="
@@ -398,6 +460,8 @@ final class IntegrityProbe {
         StorageSurfaceProbe.appendRows(activity, rows);
         BuildSurfaceProbe.appendRows(rows);
         MultiProcessSurfaceProbe.appendRows(activity, rows);
+        ProcSurfaceProbe.appendRows(activity, rows);
+        CallStackSurfaceProbe.appendRows(activity, rows);
 
         boolean passed = true;
         for (String row : rows) {
@@ -464,6 +528,20 @@ final class IntegrityProbe {
             }
         }
         return true;
+    }
+
+    private static String nativeValue(
+        String report,
+        String prefix,
+        String key
+    ) {
+        String value = field(report, prefix);
+        for (String item : value.split("\\s+")) {
+            if (item.startsWith(key + "=")) {
+                return item.substring(key.length() + 1);
+            }
+        }
+        throw new IllegalArgumentException("missing " + key);
     }
 
     private static String stackSummary(StackTraceElement[] stack) {

@@ -393,6 +393,7 @@ const char* virtual_proc_path(const char* path) {
     if (strcmp(path, "/proc/self/stat") == 0) return "/proc/self/stat";
     if (strcmp(path, "/proc/self/statm") == 0) return "/proc/self/statm";
     if (strcmp(path, "/proc/self/sched") == 0) return "/proc/self/sched";
+    if (strcmp(path, "/proc/self/mounts") == 0) return "/proc/self/mounts";
     if (strcmp(path, "/proc/self/mountinfo") == 0) return "/proc/self/mountinfo";
     if (strcmp(path, "/proc/self/cgroup") == 0) return "/proc/self/cgroup";
     if (strcmp(path, "/proc/self/attr/current") == 0) {
@@ -424,6 +425,9 @@ const char* virtual_proc_path(const char* path) {
     }
     if (strcmp(path, "/proc/thread-self/sched") == 0) {
         return "/proc/self/sched";
+    }
+    if (strcmp(path, "/proc/thread-self/mounts") == 0) {
+        return "/proc/self/mounts";
     }
     if (strcmp(path, "/proc/thread-self/mountinfo") == 0) {
         return "/proc/self/mountinfo";
@@ -477,6 +481,7 @@ const char* virtual_proc_path(const char* path) {
     if (strcmp(end, "/stat") == 0) return "/proc/self/stat";
     if (strcmp(end, "/statm") == 0) return "/proc/self/statm";
     if (strcmp(end, "/sched") == 0) return "/proc/self/sched";
+    if (strcmp(end, "/mounts") == 0) return "/proc/self/mounts";
     if (strcmp(end, "/mountinfo") == 0) return "/proc/self/mountinfo";
     if (strcmp(end, "/cgroup") == 0) return "/proc/self/cgroup";
     if (strcmp(end, "/attr/current") == 0) return "/proc/self/attr/current";

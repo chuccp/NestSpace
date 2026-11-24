@@ -1,11 +1,15 @@
 #include <jni.h>
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <link.h>
 #include <linux/capability.h>
 #include <linux/stat.h>
+#include <netinet/in.h>
 #include <sched.h>
+#include <signal.h>
+#include <sys/socket.h>
 #include <sys/auxv.h>
 #include <sys/ptrace.h>
 #include <sys/statfs.h>
@@ -13,6 +17,7 @@
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysinfo.h>
 #include <sys/system_properties.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -66,6 +71,9 @@ struct LinuxDirent64 {
     unsigned char type;
     char name[];
 };
+
+bool host_marker(const std::string& value);
+std::string compact_output(std::string value, size_t limit);
 
 #if defined(SYS_newfstatat)
 constexpr long kSysFstatat = SYS_newfstatat;
@@ -647,6 +655,152 @@ std::string statvfs_summary(const char* path) {
         " blocks=" + std::to_string(value.f_blocks) +
         " bavail=" + std::to_string(value.f_bavail) +
         " fsid=" + std::to_string(value.f_fsid);
+}
+
+std::string sysinfo_summary() {
+    struct sysinfo value {};
+    if (sysinfo(&value) != 0) {
+        return "error=" + std::to_string(errno);
+    }
+    const uint64_t unit = value.mem_unit == 0 ? 1 : value.mem_unit;
+    return "totalram=" + std::to_string(
+            static_cast<uint64_t>(value.totalram) * unit
+        ) +
+        " freeram=" + std::to_string(
+            static_cast<uint64_t>(value.freeram) * unit
+        ) +
+        " sharedram=" + std::to_string(
+            static_cast<uint64_t>(value.sharedram) * unit
+        ) +
+        " bufferram=" + std::to_string(
+            static_cast<uint64_t>(value.bufferram) * unit
+        ) +
+        " totalswap=" + std::to_string(
+            static_cast<uint64_t>(value.totalswap) * unit
+        ) +
+        " freeswap=" + std::to_string(
+            static_cast<uint64_t>(value.freeswap) * unit
+        ) +
+        " procs=" + std::to_string(value.procs) +
+        " uptime=" + std::to_string(value.uptime);
+}
+
+std::string signal_handler_summary(int signal_number) {
+    struct sigaction action {};
+    if (sigaction(signal_number, nullptr, &action) != 0) {
+        return "read-error=" + std::to_string(errno);
+    }
+    void* handler = nullptr;
+    if ((action.sa_flags & SA_SIGINFO) != 0) {
+        static_assert(sizeof(handler) == sizeof(action.sa_sigaction));
+        memcpy(&handler, &action.sa_sigaction, sizeof(handler));
+    } else {
+        static_assert(sizeof(handler) == sizeof(action.sa_handler));
+        memcpy(&handler, &action.sa_handler, sizeof(handler));
+    }
+    Dl_info info {};
+    std::string module = "<unknown>";
+    std::string symbol = "<unknown>";
+    if (handler != nullptr && dladdr(handler, &info) != 0) {
+        if (info.dli_fname != nullptr) module = info.dli_fname;
+        if (info.dli_sname != nullptr) symbol = info.dli_sname;
+    }
+    return "handler=" + std::to_string(
+            reinterpret_cast<uintptr_t>(handler)
+        ) +
+        " flags=" + std::to_string(action.sa_flags) +
+        " module=" + module +
+        " symbol=" + symbol;
+}
+
+std::string signal_scan_summary() {
+    const int signals[] = {
+        SIGSEGV,
+        SIGABRT,
+        SIGBUS,
+        SIGILL,
+        SIGFPE,
+        SIGTRAP
+    };
+    int host_leaks = 0;
+    std::string samples;
+    std::string detail;
+    for (int signal_number : signals) {
+        const std::string value = signal_handler_summary(signal_number);
+        if (!detail.empty()) detail += "; ";
+        detail += std::to_string(signal_number) + ":" + value;
+        if (host_marker(value)) {
+            ++host_leaks;
+            if (!samples.empty()) samples += "; ";
+            samples += std::to_string(signal_number) + ":" + value;
+        }
+    }
+    return "hostLeaks=" + std::to_string(host_leaks) +
+        " samples=" + (samples.empty() ? "0" : samples) +
+        " handlers=" + compact_output(detail, 4096);
+}
+
+std::string popen_identity_summary() {
+    FILE* pipe = popen("id -u", "r");
+    if (pipe == nullptr) {
+        return "error=" + std::to_string(errno);
+    }
+    char output[256] = {};
+    const size_t count = fread(output, 1, sizeof(output) - 1, pipe);
+    output[count] = '\0';
+    const int status = pclose(pipe);
+    std::string value(output);
+    while (!value.empty() &&
+        (value.back() == '\n' || value.back() == '\r' ||
+            value.back() == ' ' || value.back() == '\t')) {
+        value.pop_back();
+    }
+    return "status=" + std::to_string(status) +
+        " output=" + (value.empty() ? "<empty>" : value);
+}
+
+std::string socket_loopback_summary() {
+    const int server = socket(AF_INET, SOCK_STREAM, 0);
+    const int client = socket(AF_INET, SOCK_STREAM, 0);
+    if (server < 0 || client < 0) {
+        const int error = errno;
+        if (server >= 0) close(server);
+        if (client >= 0) close(client);
+        return "socket-error=" + std::to_string(error);
+    }
+    struct sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    int result = bind(
+        server,
+        reinterpret_cast<struct sockaddr*>(&address),
+        sizeof(address)
+    );
+    if (result == 0) result = listen(server, 1);
+    socklen_t length = sizeof(address);
+    if (result == 0) {
+        result = getsockname(
+            server,
+            reinterpret_cast<struct sockaddr*>(&address),
+            &length
+        );
+    }
+    if (result == 0) {
+        result = connect(
+            client,
+            reinterpret_cast<struct sockaddr*>(&address),
+            sizeof(address)
+        );
+    }
+    const int accepted = result == 0 ? accept(server, nullptr, nullptr) : -1;
+    const int error = result == 0 && accepted >= 0 ? 0 : errno;
+    if (accepted >= 0) close(accepted);
+    close(client);
+    close(server);
+    return accepted >= 0
+        ? "ok port=" + std::to_string(ntohs(address.sin_port))
+        : "error=" + std::to_string(error);
 }
 
 std::string path_summary(
@@ -1710,6 +1864,11 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
     } else {
         report += "\nuname=error=" + std::to_string(errno);
     }
+    report += "\nsysinfo=" + sysinfo_summary();
+    report +=
+        "\nsignal.scan=" + signal_scan_summary() +
+        "\npopen.identity=" + popen_identity_summary() +
+        "\nsocket.loopback=" + socket_loopback_summary();
 
     const std::vector<std::pair<std::string, std::pair<std::string, bool>>> paths = {
         {"dataDir", {data_root, true}},

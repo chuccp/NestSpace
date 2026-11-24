@@ -815,10 +815,12 @@ std::string virtualized_proc_content(
         );
         return filter_host_runtime_lines(value, environment);
     }
-    if (proc_suffix(path, "/mountinfo")) {
+    if (proc_suffix(path, "/mountinfo") ||
+        proc_suffix(path, "/mounts")) {
+        const bool mounts_view = proc_suffix(path, "/mounts");
         const std::string proc_mountinfo = proc_path(
             process_id,
-            "mountinfo"
+            mounts_view ? "mounts" : "mountinfo"
         );
         std::string value = read_text_file(proc_mountinfo.c_str());
         const std::string host_profile_root =
