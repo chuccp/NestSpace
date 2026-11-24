@@ -811,7 +811,19 @@ object SystemServiceIdentity {
                     permission == PackageManager.PERMISSION_GRANTED
             }
             if (isNotificationReadMethod(method.name)) {
-                return invokeDelegate(delegate, method, args)
+                val env = notificationEnv()
+                    ?: return invokeDelegate(delegate, method, args)
+                val callArgs = ContainerNotificationBridge.rewriteCall(
+                    method.name,
+                    args,
+                    env
+                )
+                val result = invokeDelegate(delegate, method, callArgs)
+                return ContainerNotificationBridge.rewriteResult(
+                    method.name,
+                    result,
+                    env
+                )
             }
             val env = notificationEnv()
                 ?: return invokeDelegate(delegate, method, args)

@@ -107,6 +107,7 @@ internal fun DesktopScreen(
     onLaunchVirtual: (String, String?) -> Unit,
     onLaunchSystem: (String) -> Unit,
     onOpenBrowser: () -> Unit,
+    onOpenNotebook: () -> Unit,
     onOpenAgent: () -> Unit,
     onOpenPlugins: () -> Unit,
     onOpenSpaces: () -> Unit,
@@ -139,6 +140,7 @@ internal fun DesktopScreen(
         entries.filter {
             it.kind == LauncherKind.VIRTUAL ||
                 it.kind == LauncherKind.SYSTEM ||
+                it.kind == LauncherKind.NOTEBOOK ||
                 it.kind == LauncherKind.PLUGINS
         }
     }
@@ -146,6 +148,7 @@ internal fun DesktopScreen(
         entries.filter {
             it.kind != LauncherKind.VIRTUAL &&
                 it.kind != LauncherKind.SYSTEM &&
+                it.kind != LauncherKind.NOTEBOOK &&
                 it.kind != LauncherKind.PLUGINS
         }
     }
@@ -171,6 +174,7 @@ internal fun DesktopScreen(
             LauncherKind.VIRTUAL -> onLaunchVirtual(entry.packageName, entry.instanceId)
             LauncherKind.SYSTEM -> onLaunchSystem(entry.packageName)
             LauncherKind.BROWSER -> onOpenBrowser()
+            LauncherKind.NOTEBOOK -> onOpenNotebook()
             LauncherKind.AGENT -> onOpenAgent()
             LauncherKind.PLUGINS -> onOpenPlugins()
             LauncherKind.SPACES -> onOpenSpaces()

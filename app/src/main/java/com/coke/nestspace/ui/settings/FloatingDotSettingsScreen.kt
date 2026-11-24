@@ -149,9 +149,9 @@ internal fun FloatingDotDetailScreen() {
                 ) {
                     Text(
                         text = AppLanguage.tr(
-                            "屏幕上常驻的小圆点。点击唤起 AI 语音助手，可拖动吸边。",
-                            "A small dot that stays on screen. Tap it to open the AI " +
-                                "voice assistant; drag it to the edge."
+                            "屏幕上常驻的 AI 工具球。点击打开语音与任务工具，可拖动吸边。",
+                            "A small AI tools dot that stays on screen. Tap it for voice " +
+                                "and task tools; drag it to the edge."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.weight(1f)
@@ -190,8 +190,8 @@ internal fun FloatingDotDetailScreen() {
             ) {
                 Text(
                     AppLanguage.tr(
-                    "浏览器、AI 语音助手和容器外应用等宿主界面上的颜色（默认橙色）。",
-                    "Color over host screens such as the browser, AI voice assistant " +
+                    "浏览器、AI 工具面板和容器外应用等宿主界面上的颜色（默认橙色）。",
+                    "Color over host screens such as the browser, AI tools panel " +
                         "and apps outside the container (orange by default)."
                 ),
                     style = MaterialTheme.typography.bodySmall

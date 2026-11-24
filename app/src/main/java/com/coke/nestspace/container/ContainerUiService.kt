@@ -49,6 +49,16 @@ open class ContainerUiService : Service() {
             runBlocking { ContainerUiController.bringToFront() }
 
         override fun isMirrorMode(): Boolean = ContainerUiController.isMirrorMode()
+
+        override fun highlightNodes(idsCsv: String, durationMs: Long): Boolean =
+            runBlocking {
+                ContainerUiController.highlightNodes(
+                    ids = idsCsv.split(',')
+                        .map(String::trim)
+                        .filter(String::isNotBlank),
+                    durationMs = durationMs
+                )
+            }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

@@ -116,6 +116,15 @@ object ContainerUiClient {
     suspend fun isMirrorMode(context: Context, slot: Int?): Boolean? =
         withService(context, slot) { it.isMirrorMode() }
 
+    suspend fun highlightNodes(
+        context: Context,
+        slot: Int?,
+        ids: List<String>,
+        durationMs: Long
+    ): Boolean? = withService(context, slot) {
+        it.highlightNodes(ids.joinToString(","), durationMs)
+    }
+
     /**
      * Keep the process-backed UI service alive for a headless slot without
      * creating a second binding alongside normal tool calls.
@@ -152,7 +161,8 @@ object ContainerUiClient {
         timeoutMs: Long = BIND_TIMEOUT_MS,
         block: (IContainerUi) -> T
     ): T? = withTimeoutOrNull(timeoutMs) {
-        val slot = slotHint ?: ContainerProcessPool.lastSlot() ?: return@withTimeoutOrNull null
+        val slot = slotHint ?: ContainerProcessPool.preferredUiSlot(context)
+            ?: return@withTimeoutOrNull null
         if (slot !in serviceClasses.indices) return@withTimeoutOrNull null
 
         var attempt = 0

@@ -23,7 +23,8 @@ internal fun ToolRegistry.assistantTaskToolSpecs(): List<ToolSpec> = listOf(
     },
     ToolSpec(
         name = "agent_task_status",
-        description = "Read one assistant worker task, its queue position and available action.",
+        description = "Read one assistant worker task, its latest progress, revisions and " +
+            "available action.",
         inputSchema = schema("task_id" to "string", required = listOf("task_id")),
         nativeAsync = true
     ) { args, ctx ->
@@ -135,6 +136,9 @@ private fun taskJson(task: AssistantTaskCoordinator.TaskView): JSONObject = JSON
     .put("can_cancel", task.canCancel)
     .put("queue_position", task.queuePosition)
     .put("progress", task.progress.take(800))
+    .put("state_revision", task.stateRevision)
+    .put("progress_revision", task.progressRevision)
+    .put("idle_ms", task.idleMilliseconds)
     .put("result", task.result?.take(8_000) ?: JSONObject.NULL)
     .put("error", task.error?.take(2_000) ?: JSONObject.NULL)
     .put("created_at", task.createdAt)

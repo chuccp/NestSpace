@@ -117,6 +117,15 @@
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment" />
 
         <activity
+            android:name=".notebook.NotebookActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:label="记事本"
+            android:theme="@style/Theme.Virtual"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density|colorMode|grammaticalGender|fontWeightAdjustment" />
+
+        <activity
             android:name=".ui.plugins.PluginCenterActivity"
             android:exported="false"
             android:launchMode="singleTop"

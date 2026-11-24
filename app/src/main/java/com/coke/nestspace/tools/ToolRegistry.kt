@@ -166,6 +166,8 @@ class ToolRegistry(
 
         if (name.startsWith("ui_")) {
             alignAssistantPresentation(args, ctx)
+        }
+        if (name.startsWith("ui_") || name.startsWith("screen_")) {
             ensureMirrorPreview(
                 args,
                 showPanel = ctx.displayMode != ContainerDisplayMode.BACKGROUND
@@ -314,6 +316,7 @@ class ToolRegistry(
     private fun buildTools(): List<ToolSpec> =
         spaceToolSpecs() +
             uiToolSpecs() +
+            screenReaderToolSpecs() +
             hostToolSpecs() +
             appfnToolSpecs() +
             scheduleToolSpecs() +
@@ -372,6 +375,9 @@ class ToolRegistry(
         val packageName = args.optString("package").takeIf { it.isNotBlank() }
         val instanceId = args.optString("instance_id").takeIf { it.isNotBlank() }
         val process = args.optString("process").takeIf { it.isNotBlank() }
+        if (packageName == null && instanceId == null && process == null) {
+            return ContainerProcessPool.preferredUiSlot(context)
+        }
         if (packageName != null && instanceId != null && process != null) {
             ContainerProcessRouter.slotForProcess(
                 context,

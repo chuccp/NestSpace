@@ -7,6 +7,7 @@ import com.coke.nestspace.container.ContainerProcessPool
 import com.coke.nestspace.control.ContainerPreviewCapture
 import com.coke.nestspace.control.ContainerUiClient
 import com.coke.nestspace.control.ContainerUiKeepAlive
+import com.coke.nestspace.screenreader.ScreenSnapshotStore
 import org.json.JSONArray
 import org.json.JSONObject
 import android.util.Base64
@@ -118,6 +119,10 @@ internal fun ToolRegistry.uiToolSpecs(): List<ToolSpec> = listOf(
             if (result == null) {
                 noContainerResult(slot, args)
             } else {
+                if (result.ok) {
+                    slot?.let(ScreenSnapshotStore::invalidateSlot)
+                        ?: ScreenSnapshotStore.invalidateAll()
+                }
                 capturePreview(slot, args.optString("package"))
                 result
             }
@@ -146,6 +151,10 @@ internal fun ToolRegistry.uiToolSpecs(): List<ToolSpec> = listOf(
             }
             val ok = ContainerUiClient.pressBack(context, slot)
                 ?: return@ToolSpec noContainerResult(slot, args)
+            if (ok) {
+                slot?.let(ScreenSnapshotStore::invalidateSlot)
+                    ?: ScreenSnapshotStore.invalidateAll()
+            }
             capturePreview(slot, args.optString("package"))
             ToolResult(
                 ok,
@@ -177,6 +186,10 @@ internal fun ToolRegistry.uiToolSpecs(): List<ToolSpec> = listOf(
                 args.optString("node_id"),
                 args.optString("text")
             ) ?: return@ToolSpec noContainerResult(slot, args)
+            if (ok) {
+                slot?.let(ScreenSnapshotStore::invalidateSlot)
+                    ?: ScreenSnapshotStore.invalidateAll()
+            }
             capturePreview(slot, args.optString("package"))
             ToolResult(
                 ok,

@@ -17,4 +17,5 @@ interface IContainerUi {
     boolean pressBack();
     boolean bringToFront();
     boolean isMirrorMode();
+    boolean highlightNodes(String idsCsv, long durationMs);
 }

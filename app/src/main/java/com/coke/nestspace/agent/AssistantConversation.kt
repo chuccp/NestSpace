@@ -287,6 +287,9 @@ object AssistantConversation {
                 val skillIndex = withContext(Dispatchers.IO) {
                     SkillStore(app).enabledIndex()
                 }
+                val workerContext = withContext(Dispatchers.IO) {
+                    AssistantWorkerContext.forOwner("local-llm")
+                }
                 ReplayManager.begin(text)
                 var firstUserMessage = true
                 val trace = runtime.run(
@@ -298,6 +301,7 @@ object AssistantConversation {
                     history = priorHistory,
                     memoryContext = memoryContext,
                     skillIndex = skillIndex,
+                    workerContext = workerContext,
                     onToolCall = { name, args ->
                         _streamingText.value = ""
                         ReplayManager.record(name, args)

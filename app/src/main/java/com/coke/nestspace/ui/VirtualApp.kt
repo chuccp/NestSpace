@@ -651,6 +651,11 @@ fun VirtualApp(viewModel: VirtualViewModel = viewModel()) {
                     onOpenBrowser = {
                         context.startActivity(Intent(context, BrowserActivity::class.java))
                     },
+                    onOpenNotebook = {
+                        context.startActivity(
+                            Intent(context, com.coke.nestspace.notebook.NotebookActivity::class.java)
+                        )
+                    },
                     onOpenAgent = { tab = 2 },
                     onOpenPlugins = {
                         context.startActivity(

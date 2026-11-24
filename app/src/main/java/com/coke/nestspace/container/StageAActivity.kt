@@ -143,6 +143,8 @@ open class StageAActivity : Activity() {
     private var backLaunchBlocked = false
     private var targetRequestParameterHook: AutoCloseable? = null
     private var navigationHandoffState = NavigationHandoffState.NONE
+    private var navigationHandoffOpenedInternalChild = false
+    private var creatingTargetActivity = false
     private val stagedNavigationLaunches = ArrayDeque<StagedNavigationLaunch>()
 
     private data class MirrorBackEntry(
@@ -432,6 +434,8 @@ open class StageAActivity : Activity() {
 
     fun isHeadlessMode(): Boolean = headless
 
+    fun isCreatingTargetActivity(): Boolean = creatingTargetActivity
+
     /**
      * A target may call finish() immediately after startActivity(), before an
      * asynchronous slot allocation has delivered the child host launch. Keep
@@ -444,9 +448,9 @@ open class StageAActivity : Activity() {
         className: String
     ): Boolean {
         if (navigationHandoffState != NavigationHandoffState.NONE) return true
-        val activeParent = parent ?: current ?: return false
+        val activeParent = parent ?: current ?: if (creatingTargetActivity) this else return false
         if (isFinishing || isDestroyed) return false
-        giveTargetPrivateToken(activeParent)
+        if (activeParent !== this) giveTargetPrivateToken(activeParent)
         navigationHandoffState = NavigationHandoffState.WAITING_FOR_CHILD
         Log.d(TAG, "navigation handoff waiting child=$className")
         return true
@@ -454,13 +458,19 @@ open class StageAActivity : Activity() {
 
     fun completeTargetNavigationHandoff(className: String) {
         if (navigationHandoffState == NavigationHandoffState.NONE) return
-        navigationHandoffState = NavigationHandoffState.CHILD_LAUNCHED
+        navigationHandoffState = if (navigationHandoffOpenedInternalChild) {
+            NavigationHandoffState.NONE
+        } else {
+            NavigationHandoffState.CHILD_LAUNCHED
+        }
+        navigationHandoffOpenedInternalChild = false
         Log.d(TAG, "navigation handoff submitted child=$className")
     }
 
     fun cancelTargetNavigationHandoff(className: String) {
         if (navigationHandoffState == NavigationHandoffState.NONE) return
         navigationHandoffState = NavigationHandoffState.NONE
+        navigationHandoffOpenedInternalChild = false
         Log.w(TAG, "navigation handoff failed child=$className")
         returnToDesktopIfRootTargetFinished()
     }
@@ -576,6 +586,9 @@ open class StageAActivity : Activity() {
 
         current = child
         currentPackageName = activeSession.spec.packageName
+        if (navigationHandoffState == NavigationHandoffState.WAITING_FOR_CHILD) {
+            navigationHandoffOpenedInternalChild = true
+        }
         if (mirrorMode) {
             dispatchTargetApplicationLifecycle("dispatchActivityCreated", child)
         }
@@ -2221,12 +2234,38 @@ open class StageAActivity : Activity() {
             // ViewRoot briefly empty while a queued insets transaction may
             // still reference its SurfaceControl.
             val frame = mirrorRoot ?: root ?: return
-            val target = session.createActivity(
-                this,
-                className,
-                targetIntent,
-                effectiveState
-            )
+            val target = try {
+                creatingTargetActivity = true
+                // Mi Home starts its CTA page and immediately finishes the
+                // root Activity from onCreate. At this point the synthetic
+                // target still shares the host's Activity token, so letting
+                // that finish through would destroy the newly staged CTA host.
+                SystemServiceIdentity.armRootExitHook(
+                    interceptFinish = true,
+                    interceptTaskExit = false
+                ) {}
+                session.createActivity(
+                    this,
+                    className,
+                    targetIntent,
+                    effectiveState
+                )
+            } finally {
+                creatingTargetActivity = false
+                SystemServiceIdentity.clearRootFinishInterceptor()
+            }
+            if (navigationHandoffState == NavigationHandoffState.WAITING_FOR_CHILD &&
+                target.isFinishing
+            ) {
+                runCatching {
+                    Activity::class.java
+                        .getDeclaredField("mFinished")
+                        .apply { isAccessible = true }
+                        .setBoolean(target, false)
+                }.onFailure {
+                    Log.w(TAG, "clear target finished state failed", it)
+                }
+            }
             // Keep the independent loading renderer alive while the target
             // Activity is being constructed. Stopping it first freezes the
             // launch screen and makes a slow initialization look like a hang.

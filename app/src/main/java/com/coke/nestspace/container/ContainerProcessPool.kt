@@ -305,6 +305,68 @@ object ContainerProcessPool {
     /** Slot of the most recently launched container, for cross-process control. */
     fun lastSlot(): Int? = slotState.lastSlot()
 
+    /**
+     * Resolve the container behind an implicit UI call. A process-local
+     * last-acquired slot is not enough here: target apps often launch several
+     * subprocess slots, and the most recently allocated one may have no
+     * Activity or UI service.
+     */
+    fun preferredUiSlot(context: Context): Int? {
+        val liveSlots = slotState.liveSlots().ifEmpty {
+            (0 until SLOT_COUNT).filterTo(linkedSetOf()) {
+                isProcessAlive(context, it)
+            }
+        }
+        val focused = focusedContainerSlot(context)
+        val mirrored = HeadlessMirrorWindow.activeSlot().takeIf { it >= 0 }
+        val foreground = foregroundContainerSlot(context)
+        val last = lastSlot()
+        val selected = chooseContainerUiSlot(
+            focusedSlot = focused,
+            mirroredSlot = mirrored,
+            foregroundSlot = foreground,
+            lastSlot = last,
+            liveSlots = liveSlots
+        )
+        Log.d(
+            TAG,
+            "preferred UI slot=$selected focused=$focused mirrored=$mirrored " +
+                "foreground=$foreground last=$last live=$liveSlots"
+        )
+        return selected
+    }
+
+    @Suppress("DEPRECATION")
+    private fun focusedContainerSlot(context: Context): Int? {
+        val manager = context.getSystemService(ActivityManager::class.java) ?: return null
+        val component = runCatching {
+            manager.getRunningTasks(1).firstOrNull()?.topActivity
+        }.getOrNull() ?: return null
+        if (component.packageName != context.packageName) return null
+        return slotActivities.indexOfFirst { it.name == component.className }
+            .takeIf { it >= 0 }
+            ?: isolatedSlotActivities.indexOfFirst { it.name == component.className }
+                .takeIf { it >= 0 }
+    }
+
+    private fun foregroundContainerSlot(context: Context): Int? {
+        val manager = context.getSystemService(ActivityManager::class.java) ?: return null
+        val importances = manager.runningAppProcesses.orEmpty()
+            .associate { it.pid to it.importance }
+        return (0 until SLOT_COUNT)
+            .mapNotNull { slot ->
+                val pid = markerPid(context, slot) ?: return@mapNotNull null
+                val importance = importances[pid] ?: return@mapNotNull null
+                if (importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
+                    slot to importance
+                } else {
+                    null
+                }
+            }
+            .minByOrNull { it.second }
+            ?.first
+    }
+
     fun slotForKey(context: Context, key: String): Int? {
         slotState.slotForKey(key)?.let { return it }
         return readPersistedSlot(context, key)

@@ -351,6 +351,8 @@ private fun toolTitle(name: String): String = when (name) {
     "space_uninstall" -> AppLanguage.tr("卸载应用", "Uninstall app")
     "space_permissions" -> AppLanguage.tr("应用权限", "App permissions")
     "ui_observe" -> AppLanguage.tr("查看界面", "Inspect screen")
+    "screen_read" -> AppLanguage.tr("智能读屏", "Read screen")
+    "screen_highlight" -> AppLanguage.tr("标记屏幕内容", "Highlight screen")
     "ui_tap" -> AppLanguage.tr("点击界面", "Tap screen")
     "ui_set_text" -> AppLanguage.tr("输入文字", "Type text")
     "ui_wait_for" -> AppLanguage.tr("等待界面", "Wait for screen")
@@ -396,6 +398,8 @@ private fun toolIcon(name: String): ImageVector = when {
     name == "space_install_apk" || name == "browser_download" -> Icons.Rounded.Download
     name == "space_uninstall" -> Icons.Rounded.Delete
     name == "ui_observe" -> Icons.Rounded.Visibility
+    name == "screen_read" || name == "screen_highlight" ->
+        Icons.Rounded.Visibility
     name == "ui_tap" -> Icons.Rounded.TouchApp
     name == "ui_set_text" -> Icons.Rounded.Keyboard
     name == "ui_wait_for" || name == "poll_tool" -> Icons.Rounded.HourglassEmpty
@@ -521,6 +525,19 @@ private fun toolSummary(tool: ToolActivity, json: JSONObject?): String {
                 AppLanguage.tr("已读取 $count 个控件", "Read $count controls")
             }
         }
+        "screen_read" -> {
+            val blocks = json.optJSONArray("blocks")?.length() ?: 0
+            val actions = json.optJSONArray("actions")?.length() ?: 0
+            AppLanguage.tr(
+                "$blocks 个内容区块 · $actions 个操作项",
+                "$blocks content blocks · $actions actions"
+            )
+        }
+        "screen_highlight" ->
+            AppLanguage.tr(
+                "已标记 ${json.optInt("count")} 个位置",
+                "Highlighted ${json.optInt("count")} locations"
+            )
         "ui_tap" -> humanizeTap(tool.body)
         "ui_set_text" -> AppLanguage.tr("已输入文字", "Text entered")
         "ui_wait_for" -> humanizeWait(tool.body)
@@ -699,6 +716,37 @@ private fun toolDetail(tool: ToolActivity, json: JSONObject?): String {
                 }
             )
         }
+        "screen_read" -> buildString {
+            append(AppLanguage.tr("页面：", "Page: "))
+                .append(json.optString("title"))
+                .append(" · ")
+                .append(json.optString("page_type"))
+            json.optString("summary")
+                .takeIf(String::isNotBlank)
+                ?.let { append('\n').append(it) }
+            val blocks = json.optJSONArray("blocks")
+            if (blocks != null && blocks.length() > 0) {
+                append('\n').append(AppLanguage.tr("内容：", "Content:"))
+                for (index in 0 until minOf(blocks.length(), 5)) {
+                    val block = blocks.optJSONObject(index) ?: continue
+                    append('\n').append(index + 1).append(". ")
+                        .append(block.optString("text").take(180))
+                }
+            }
+            val actions = json.optJSONArray("actions")
+            if (actions != null && actions.length() > 0) {
+                append('\n').append(AppLanguage.tr("可操作项：", "Actions:"))
+                for (index in 0 until minOf(actions.length(), 6)) {
+                    val action = actions.optJSONObject(index) ?: continue
+                    append('\n').append(index + 1).append(". ")
+                        .append(action.optString("label"))
+                }
+            }
+        }
+        "screen_highlight" -> AppLanguage.tr(
+            "已高亮 ${json.optInt("count")} 个位置",
+            "Highlighted ${json.optInt("count")} locations"
+        )
         "browser_open", "browser_navigate" -> buildString {
             json.optString("title").takeIf { it.isNotBlank() }?.let {
                 append(AppLanguage.tr("标题：", "Title: ")).append(it).append('\n')

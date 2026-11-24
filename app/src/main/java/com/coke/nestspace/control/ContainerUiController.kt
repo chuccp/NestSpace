@@ -4,7 +4,9 @@ import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -52,6 +54,8 @@ object ContainerUiController {
     private val viewsById = mutableMapOf<String, WeakReference<View>>()
     private val idsByView = WeakHashMap<View, String>()
     private var nextNodeId = 0
+    private var activeHighlight: View? = null
+    private var highlightGeneration = 0L
 
     fun isAvailable(): Boolean = StageAActivity.activeTargetActivity() != null
 
@@ -280,6 +284,116 @@ object ContainerUiController {
         val host = StageAActivity.activeHost() ?: return@withContext false
         if (host.isFinishing || host.isDestroyed) return@withContext false
         host.requestForeground()
+    }
+
+    suspend fun highlightNodes(
+        ids: List<String>,
+        durationMs: Long = 4_000L
+    ): Boolean = withContext(Dispatchers.Main.immediate) {
+        val target = StageAActivity.activeTargetActivity() ?: return@withContext false
+        val decor = target.window?.decorView as? ViewGroup ?: return@withContext false
+        ensureLaidOut(
+            decor,
+            force = StageAActivity.activeHost()?.isHeadlessMode() == true
+        )
+        val origin = IntArray(2).also { decor.getLocationOnScreen(it) }
+        val items = ids.mapNotNull { id ->
+            val view = viewsById[id]?.get()
+                ?.takeIf { it.isAttachedToWindow && it.isShown }
+                ?: return@mapNotNull null
+            val location = IntArray(2).also { view.getLocationOnScreen(it) }
+            HighlightItem(
+                id = id,
+                rect = Rect(
+                    location[0] - origin[0],
+                    location[1] - origin[1],
+                    location[0] - origin[0] + view.width,
+                    location[1] - origin[1] + view.height
+                )
+            )
+        }
+        if (items.isEmpty()) return@withContext false
+        activeHighlight?.let { existing ->
+            (existing.parent as? ViewGroup)?.removeView(existing)
+        }
+        val generation = ++highlightGeneration
+        val overlay = HighlightOverlayView(decor.context, items)
+        activeHighlight = overlay
+        decor.addView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        overlay.animate().alpha(1f).setDuration(120L).start()
+        decor.postDelayed({
+            if (generation != highlightGeneration) return@postDelayed
+            activeHighlight = null
+            (overlay.parent as? ViewGroup)?.removeView(overlay)
+        }, durationMs.coerceIn(500L, 15_000L))
+        true
+    }
+
+    private data class HighlightItem(
+        val id: String,
+        val rect: Rect
+    )
+
+    private class HighlightOverlayView(
+        context: android.content.Context,
+        private val items: List<HighlightItem>
+    ) : View(context) {
+        private val density = resources.displayMetrics.density
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF4C7DFF.toInt()
+            style = Paint.Style.STROKE
+            strokeWidth = 3f * density
+        }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x1F4C7DFF
+            style = Paint.Style.FILL
+        }
+        private val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF4C7DFF.toInt()
+            style = Paint.Style.FILL
+        }
+        private val badgeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textAlign = Paint.Align.CENTER
+            textSize = 13f * resources.displayMetrics.scaledDensity
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+
+        init {
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            alpha = 0f
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            items.forEachIndexed { index, item ->
+                val rect = RectF(item.rect)
+                rect.inset(-2f * density, -2f * density)
+                val radius = 10f * density
+                canvas.drawRoundRect(rect, radius, radius, fillPaint)
+                canvas.drawRoundRect(rect, radius, radius, borderPaint)
+                val badgeRadius = 12f * density
+                val badgeX = rect.left + badgeRadius + 3f * density
+                val badgeY = rect.top + badgeRadius + 3f * density
+                canvas.drawCircle(badgeX, badgeY, badgeRadius, badgePaint)
+                val baseline = badgeY -
+                    (badgeTextPaint.ascent() + badgeTextPaint.descent()) / 2f
+                canvas.drawText(
+                    (index + 1).toString(),
+                    badgeX,
+                    baseline,
+                    badgeTextPaint
+                )
+            }
+        }
     }
 
     suspend fun waitFor(text: String, timeoutMs: Long): Boolean {

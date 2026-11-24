@@ -41,6 +41,7 @@ object FloatingDotSettings {
         val containerColor: Int,
         val x: Int,
         val y: Int,
+        val docked: Boolean = true,
         val speechLanguage: String = SPEECH_LANG_ZH,
         /** 10..100; 100 is fully opaque. */
         val opacity: Int = DEFAULT_OPACITY
@@ -59,6 +60,7 @@ object FloatingDotSettings {
     private const val KEY_CONTAINER_COLOR = "container_color"
     private const val KEY_X = "x"
     private const val KEY_Y = "y"
+    private const val KEY_DOCKED = "docked"
     private const val KEY_SPEECH_LANGUAGE = "speech_language"
     private const val KEY_OPACITY = "opacity"
 
@@ -70,6 +72,7 @@ object FloatingDotSettings {
             containerColor = prefs.getInt(KEY_CONTAINER_COLOR, DEFAULT_CONTAINER_COLOR),
             x = prefs.getInt(KEY_X, -1),
             y = prefs.getInt(KEY_Y, -1),
+            docked = prefs.getBoolean(KEY_DOCKED, true),
             speechLanguage = prefs.getString(KEY_SPEECH_LANGUAGE, SPEECH_LANG_ZH)
                 ?: SPEECH_LANG_ZH,
             opacity = prefs.getInt(KEY_OPACITY, DEFAULT_OPACITY)
@@ -85,6 +88,7 @@ object FloatingDotSettings {
             .putInt(KEY_CONTAINER_COLOR, config.containerColor)
             .putInt(KEY_X, config.x)
             .putInt(KEY_Y, config.y)
+            .putBoolean(KEY_DOCKED, config.docked)
             .putString(KEY_SPEECH_LANGUAGE, config.speechLanguage)
             .putInt(KEY_OPACITY, config.opacity.coerceIn(MIN_OPACITY, MAX_OPACITY))
             .apply()
@@ -98,9 +102,13 @@ object FloatingDotSettings {
         save(context, load(context).copy(hostColor = hostColor, containerColor = containerColor))
     }
 
-    fun savePosition(context: Context, x: Int, y: Int) {
+    fun savePosition(context: Context, x: Int, y: Int, docked: Boolean) {
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putInt(KEY_X, x).putInt(KEY_Y, y).apply()
+        prefs.edit()
+            .putInt(KEY_X, x)
+            .putInt(KEY_Y, y)
+            .putBoolean(KEY_DOCKED, docked)
+            .apply()
     }
 
     fun colorLabel(color: Int): String = String.format("#%06X", 0xFFFFFF and color)

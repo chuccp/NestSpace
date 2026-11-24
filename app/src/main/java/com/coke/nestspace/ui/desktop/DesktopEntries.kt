@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.ImageBitmap
@@ -17,6 +18,7 @@ internal enum class LauncherKind {
     VIRTUAL,
     SYSTEM,
     BROWSER,
+    NOTEBOOK,
     AGENT,
     PLUGINS,
     SPACES,
@@ -53,7 +55,7 @@ internal fun buildEntries(
     systemApps: List<com.coke.nestspace.data.AppInfo>
 ): List<LauncherEntry> {
     val virtualPackages = virtualApps.map { it.packageName }.toSet()
-    return virtualApps
+    val installedApps = virtualApps
         .sortedBy { it.label.lowercase() }
         .flatMap { app ->
             val instances = app.instances.sortedWith(
@@ -89,7 +91,8 @@ internal fun buildEntries(
                 icon = it.icon,
                 kind = LauncherKind.SYSTEM
             )
-        } + listOf(
+        }
+    val actions = listOf(
         LauncherEntry(
             id = "action:browser",
             packageName = "action:browser",
@@ -97,6 +100,14 @@ internal fun buildEntries(
             icon = null,
             kind = LauncherKind.BROWSER,
             vectorIcon = Icons.Default.Public
+        ),
+        LauncherEntry(
+            id = "action:notebook",
+            packageName = "action:notebook",
+            label = AppLanguage.tr("记事本", "Notebook"),
+            icon = null,
+            kind = LauncherKind.NOTEBOOK,
+            vectorIcon = Icons.Default.Create
         ),
         LauncherEntry(
             id = "action:agent",
@@ -131,6 +142,12 @@ internal fun buildEntries(
             vectorIcon = Icons.Default.Memory
         )
     )
+    val pinnedApps = actions.filter {
+        it.kind == LauncherKind.NOTEBOOK || it.kind == LauncherKind.PLUGINS
+    }
+    return pinnedApps +
+        installedApps +
+        actions.filterNot { it in pinnedApps }
 }
 
 internal fun resolveSlots(

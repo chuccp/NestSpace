@@ -1636,7 +1636,8 @@ class ContainerSession private constructor(
                 else -> host.javaClass
             }
             val parentNotAttachedYet =
-                sourceTarget != null && host.currentTargetActivity() == null
+                (sourceTarget != null || host.isCreatingTargetActivity()) &&
+                    host.currentTargetActivity() == null
             val launch = {
                 val childIntent = Intent(intent).setClassName(
                     spec.packageName,
@@ -1644,6 +1645,7 @@ class ContainerSession private constructor(
                 )
                 if (parentNotAttachedYet &&
                     targetProcess == spec.targetProcessName &&
+                    host.isMirrorMode() &&
                     host.currentTargetActivity() != null &&
                     host.openMirrorChildTarget(
                         info.name,

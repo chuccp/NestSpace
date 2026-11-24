@@ -1,6 +1,7 @@
 package com.coke.nestspace.tools
 
 import com.coke.nestspace.agent.AssistantTaskCoordinator
+import com.coke.nestspace.i18n.AppLanguage
 import org.json.JSONObject
 
 internal fun ToolRegistry.agentToolSpecs(): List<ToolSpec> = listOf(
@@ -12,8 +13,9 @@ internal fun ToolRegistry.agentToolSpecs(): List<ToolSpec> = listOf(
             "immediately with task_id. Write title as a concise user-facing task outcome and " +
             "goal as the complete worker instruction. The title must not contain " +
             "backend waits, prompts, queue mechanics, or implementation notes. Query progress with " +
-            "agent_task_status, wait with " +
-            "task_wait, and never assume completion from acceptance alone.",
+            "agent_task_status when the user next asks. End the current turn after " +
+            "spawning; do not wait or poll for worker progress, and never assume completion " +
+            "from acceptance alone.",
         inputSchema = schema(
             "title" to "string",
             "goal" to "string",
@@ -60,8 +62,62 @@ internal fun ToolRegistry.agentToolSpecs(): List<ToolSpec> = listOf(
                         .put("started", task.state == com.coke.nestspace.task.OperationTaskRegistry.State.RUNNING)
                         .put(
                             "next",
-                            "Use agent_task_status for progress or task_wait for lifecycle changes."
+                            "End this turn. The host will provide worker status when the user asks."
                         )
+                        .toString()
+                )
+            }
+        }
+    },
+    ToolSpec(
+        name = "spawn_screen_reader",
+        description = "Start the independent screen-reader agent as an asynchronous task. " +
+            "Use it when the user asks to read, explain, translate or reason about the current " +
+            "container screen. The agent owns screen_read, screen_highlight and worker creation, " +
+            "but cannot directly tap or type. It returns task_id immediately.",
+        inputSchema = schema(
+            "request" to "string",
+            "context" to "string",
+            required = listOf("request")
+        ),
+        maxWaitMs = 1_000L,
+        nativeAsync = true
+    ) { args, ctx ->
+        val request = args.optString("request").trim()
+        if (request.isBlank()) {
+            return@ToolSpec ToolResult(
+                false,
+                "request is required",
+                errorCode = "INVALID_ARGUMENT"
+            )
+        }
+        val result = AssistantTaskCoordinator.enqueue(
+            context = context,
+            registry = this@agentToolSpecs,
+            ownerId = ctx.ownerId,
+            goal = request,
+            extraContext = args.optString("context"),
+            displayMode = ctx.displayMode,
+            source = "screen_reader",
+            displayTitle = AppLanguage.tr("屏幕解读", "Screen reading"),
+            agentMode = AssistantTaskCoordinator.AgentMode.SCREEN_READER
+        )
+        when (result) {
+            is AssistantTaskCoordinator.EnqueueResult.Error -> ToolResult(
+                false,
+                result.message,
+                errorCode = result.code
+            )
+            is AssistantTaskCoordinator.EnqueueResult.Queued -> {
+                val task = result.task
+                ToolResult(
+                    true,
+                    JSONObject()
+                        .put("task_id", task.id)
+                        .put("agent", "screen_reader")
+                        .put("state", task.state.api)
+                        .put("queue_position", task.queuePosition)
+                        .put("async", true)
                         .toString()
                 )
             }

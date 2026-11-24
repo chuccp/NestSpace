@@ -187,6 +187,16 @@ class AssistantVoiceActivity : ComponentActivity() {
             }
         }
 
+        val initialPrompt = intent?.getStringExtra(EXTRA_INITIAL_PROMPT)
+        if (savedInstanceState == null && !initialPrompt.isNullOrBlank()) {
+            intent?.removeExtra(EXTRA_INITIAL_PROMPT)
+            AssistantConversation.submit(
+                context = this,
+                command = initialPrompt,
+                queueIfBusy = true
+            )
+        }
+
         lifecycleScope.launch {
             AssistantConversation.busy.collect { value ->
                 busy = value
@@ -662,7 +672,9 @@ class AssistantVoiceActivity : ComponentActivity() {
         return normalizeSpeechText(raw)
     }
 
-    private companion object {
+    companion object {
+        const val EXTRA_INITIAL_PROMPT =
+            "com.coke.nestspace.assistant.INITIAL_PROMPT"
         const val REQUEST_AUDIO = 0xA51
         const val SAMPLE_RATE = 16_000f
     }

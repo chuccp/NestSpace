@@ -37,9 +37,14 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object AssistantTaskCoordinator {
 
-    private const val TASK_KIND = "assistant_worker"
+    internal const val TASK_KIND = "assistant_worker"
+    enum class AgentMode {
+        ASSISTANT,
+        SCREEN_READER
+    }
     private val taskTools = setOf(
         "spawn_agent",
+        "spawn_screen_reader",
         "agent_task_list",
         "agent_task_status",
         "agent_task_supplement",
@@ -61,6 +66,9 @@ object AssistantTaskCoordinator {
         val canCancel: Boolean,
         val queuePosition: Int,
         val progress: String,
+        val stateRevision: Long,
+        val progressRevision: Long,
+        val idleMilliseconds: Long,
         val result: String?,
         val error: String?,
         val createdAt: Long,
@@ -81,6 +89,7 @@ object AssistantTaskCoordinator {
         val displayMode: ContainerDisplayMode,
         val config: LlmConfig,
         val source: String,
+        val agentMode: AgentMode,
         var job: Job? = null,
         var pauseRequested: Boolean = false,
         var cancelRequested: Boolean = false,
@@ -110,7 +119,8 @@ object AssistantTaskCoordinator {
         displayMode: ContainerDisplayMode,
         requestId: String? = null,
         source: String = "assistant",
-        displayTitle: String? = null
+        displayTitle: String? = null,
+        agentMode: AgentMode = AgentMode.ASSISTANT
     ): EnqueueResult {
         val cleanGoal = goal.trim()
         if (cleanGoal.isEmpty()) {
@@ -171,7 +181,8 @@ object AssistantTaskCoordinator {
             goal = fullGoal,
             displayMode = displayMode,
             config = config.copy(maxToolRounds = workerSteps),
-            source = source
+            source = source,
+            agentMode = agentMode
         )
         records[task.id] = task
         OperationTaskRegistry.setCancelCallback(task.id) {
@@ -472,9 +483,25 @@ object AssistantTaskCoordinator {
         val app = context.applicationContext
         val runtime = LlmAgentRuntime(
             registry = registry,
-            allowSubAgents = false,
+            allowSubAgents = task.agentMode == AgentMode.SCREEN_READER,
             allowContinuePrompt = true,
-            disallowedToolNames = taskTools
+            allowedToolNames = if (task.agentMode == AgentMode.SCREEN_READER) {
+                setOf(
+                    "screen_read",
+                    "screen_highlight",
+                    "screen_suggest",
+                    "spawn_agent"
+                )
+            } else {
+                null
+            },
+            disallowedToolNames = if (
+                task.agentMode == AgentMode.SCREEN_READER
+            ) {
+                setOf("spawn_screen_reader")
+            } else {
+                taskTools
+            }
         )
         val memoryContext = withContext(Dispatchers.IO) {
             runCatching { MemoryStore(app).contextFor(task.goal) }.getOrNull()
@@ -482,7 +509,43 @@ object AssistantTaskCoordinator {
         val skillIndex = withContext(Dispatchers.IO) {
             runCatching { SkillStore(app).enabledIndex() }.getOrNull()
         }
-        val command = if (task.runCount <= 1 && task.lastProgress.isBlank()) {
+        val command = if (task.agentMode == AgentMode.SCREEN_READER) {
+            buildString {
+                append(
+                    AppLanguage.tr(
+                        "你是独立的读屏 Agent。读取当前容器页面并解释屏幕，" +
+                            "不要直接点击、输入或导航。先调用 screen_read。" +
+                            "根据页面和用户要求推断意图；意图不明确时给出 2 到 4 个选项询问。" +
+                            "需要定位时调用 screen_highlight。若用户明确要求执行耗时操作，" +
+                            "可以调用 spawn_agent 创建 Worker，并说明已交给后台 Worker。" +
+                            "分析完成后调用 screen_suggest 注册一个推荐动作和最多三个替代动作；" +
+                            "类型只能使用 explain、extract、compare、navigate、translate、" +
+                            "search、operate、open_app；" +
+                            "按钮文字可以具体到当前页面，但不能超出这些已实现能力。" +
+                            "必须根据页面内容判断下一步：有任务列表时推荐提取待办；" +
+                            "有多个选项时推荐比较；有问题时推荐回答或搜索；有外文时推荐翻译；" +
+                            "不要总是推荐“解释当前页面”。" +
+                            "\n\n用户请求：\n",
+                        "You are the independent screen-reader agent. Read and explain the " +
+                            "current container screen, but do not directly tap, type or navigate. " +
+                            "Call screen_read first. Infer intent from the screen and request; " +
+                            "offer two to four choices when ambiguous. Use screen_highlight when " +
+                            "locating content. If the user explicitly asks for a long-running page " +
+                            "operation, create a Worker with spawn_agent and report that it was " +
+                            "delegated. After the analysis, call screen_suggest with one " +
+                            "recommended action and up to three alternatives. Types must be " +
+                            "one of explain, extract, compare, navigate, translate, search, " +
+                            "operate or open_app. Infer the next useful action from page content: " +
+                            "recommend extracting a task list, comparing options, answering or " +
+                            "searching a question, or translating foreign text instead of always " +
+                            "recommending a generic explanation. Labels may " +
+                            "be specific to this screen but must stay within those implemented " +
+                            "capabilities.\n\nUser request:\n"
+                    )
+                )
+                append(task.goal)
+            }
+        } else if (task.runCount <= 1 && task.lastProgress.isBlank()) {
             task.goal
         } else {
             buildString {
@@ -629,6 +692,9 @@ object AssistantTaskCoordinator {
             canCancel = controls.canCancel,
             queuePosition = queueIndex(snapshot.id),
             progress = snapshot.message,
+            stateRevision = snapshot.stateRevision,
+            progressRevision = snapshot.progressRevision,
+            idleMilliseconds = snapshot.idleMilliseconds,
             result = snapshot.result,
             error = snapshot.error,
             createdAt = snapshot.createdAt,
