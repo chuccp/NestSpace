@@ -718,8 +718,19 @@ class ContainerContext(
     override fun createConfigurationContext(
         overrideConfiguration: Configuration
     ): Context {
-        val newBase = super.createConfigurationContext(overrideConfiguration)
-        return wrapDerived(newBase)
+        val configuration = Configuration(targetResources.configuration).apply {
+            updateFrom(overrideConfiguration)
+        }
+        val metrics = targetResources.displayMetrics
+        val dynamicResources = Resources(
+            targetResources.assets,
+            metrics,
+            configuration
+        )
+        return object : ContextWrapper(this) {
+            override fun getResources(): Resources = dynamicResources
+            override fun getAssets() = dynamicResources.assets
+        }
     }
 
     /**

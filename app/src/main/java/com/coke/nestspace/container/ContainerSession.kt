@@ -1112,6 +1112,33 @@ class ContainerSession private constructor(
         normalizeApplicationInfo(context.applicationInfo)
         normalizeApplicationInfo(application.applicationInfo)
         normalizeApplicationInfo(spec.applicationInfo)
+        runCatching {
+            val threadClass = Class.forName("android.app.ActivityThread")
+            val thread = threadClass.getMethod("currentActivityThread").invoke(null)
+            val bound = threadClass.getDeclaredField("mBoundApplication")
+                .apply { isAccessible = true }
+                .get(thread)
+                ?: return@runCatching
+            bound.javaClass.getDeclaredField("appInfo")
+                .apply { isAccessible = true }
+                .set(bound, spec.applicationInfo)
+            val loadedApk = bound.javaClass.getDeclaredField("info")
+                .apply { isAccessible = true }
+                .get(bound)
+                ?: return@runCatching
+            val loadedApkClass = Class.forName("android.app.LoadedApk")
+            loadedApkClass.getDeclaredField("mApplicationInfo")
+                .apply { isAccessible = true }
+                .set(loadedApk, spec.applicationInfo)
+            loadedApkClass.getDeclaredField("mAppDir")
+                .apply { isAccessible = true }
+                .set(loadedApk, spec.baseApkPath)
+            loadedApkClass.getDeclaredField("mResDir")
+                .apply { isAccessible = true }
+                .set(loadedApk, spec.baseApkPath)
+        }.onFailure {
+            Log.w(TAG, "normalize published activity application info failed", it)
+        }
         Log.d(
             TAG,
             "resolve activity requested=$className info=${info.name} " +

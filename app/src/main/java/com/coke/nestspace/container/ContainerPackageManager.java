@@ -327,9 +327,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             throw new NameNotFoundException();
         }
         if (isTarget(packageName)) {
-            return spec.getTargetUid() > 0
-                    ? spec.getTargetUid()
-                    : Process.myUid();
+            return Process.myUid();
         }
         if (isVirtualPackage(packageName)) {
             Integer uid = virtualPackages.packageUid(packageName);
@@ -343,7 +341,13 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         if (hostPackage.equals(packageName)) {
             throw new NameNotFoundException();
         }
-        if (isTarget(packageName)) return targetPackageGids();
+        if (isTarget(packageName)) {
+            try {
+                return super.getPackageGids(hostPackage);
+            } catch (NameNotFoundException ignored) {
+                return new int[0];
+            }
+        }
         if (isVirtualPackage(packageName)) return new int[0];
         return super.getPackageGids(packageName);
     }
@@ -353,23 +357,19 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         if (hostPackage.equals(packageName)) {
             throw new NameNotFoundException();
         }
-        if (isTarget(packageName)) return targetPackageGids();
+        if (isTarget(packageName)) {
+            try {
+                return super.getPackageGids(hostPackage, flags);
+            } catch (NameNotFoundException ignored) {
+                return new int[0];
+            }
+        }
         if (isVirtualPackage(packageName)) return new int[0];
         return super.getPackageGids(packageName, flags);
     }
 
-    private int[] targetPackageGids() {
-        List<Integer> gids = spec.getPackageGids();
-        int[] result = new int[gids.size()];
-        for (int index = 0; index < gids.size(); index++) {
-            result[index] = gids.get(index);
-        }
-        return result;
-    }
-
     @Override
     public String[] getPackagesForUid(int uid) {
-        if (uid == ContainerIdentity.INSTANCE.hostUid()) return null;
         if (uid == Process.myUid() ||
                 (spec.getTargetUid() > 0 && uid == spec.getTargetUid())) {
             return new String[]{targetPackage};
@@ -381,7 +381,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     @Override
     public String getNameForUid(int uid) {
-        if (uid == ContainerIdentity.INSTANCE.hostUid()) return null;
         if (uid == Process.myUid() ||
                 (spec.getTargetUid() > 0 && uid == spec.getTargetUid())) {
             return targetPackage;
@@ -1605,9 +1604,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
 
     private ApplicationInfo copyApplicationInfo(int flags) {
         ApplicationInfo copy = cloneParcelable(targetAppInfo, ApplicationInfo.CREATOR);
-        copy.uid = spec.getTargetUid() > 0
-                ? spec.getTargetUid()
-                : Process.myUid();
+        copy.uid = Process.myUid();
         // TargetPM snapshots may have been captured while the same package was
         // installed on the host. AppCompat calls getResourcesForApplication()
         // with this object, so stale /data/app paths crash before the first
