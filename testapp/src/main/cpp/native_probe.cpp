@@ -11,7 +11,9 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/auxv.h>
+#include <sys/mman.h>
 #include <sys/ptrace.h>
+#include <sys/resource.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/prctl.h>
@@ -801,6 +803,91 @@ std::string socket_loopback_summary() {
     return accepted >= 0
         ? "ok port=" + std::to_string(ntohs(address.sin_port))
         : "error=" + std::to_string(error);
+}
+
+std::string fd_resource_summary() {
+    struct rlimit limit {};
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+        return "limit-error=" + std::to_string(errno);
+    }
+    int count = 0;
+    DIR* directory = opendir("/proc/self/fd");
+    if (directory != nullptr) {
+        while (dirent* entry = readdir(directory)) {
+            if (entry->d_name[0] != '.') ++count;
+        }
+        closedir(directory);
+    }
+    int opened = 0;
+    int open_error = 0;
+    std::array<int, 32> descriptors {};
+    descriptors.fill(-1);
+    for (int& descriptor : descriptors) {
+        descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (descriptor < 0) {
+            open_error = errno;
+            break;
+        }
+        ++opened;
+    }
+    for (int descriptor : descriptors) {
+        if (descriptor >= 0) close(descriptor);
+    }
+    return "count=" + std::to_string(count) +
+        " soft=" + std::to_string(limit.rlim_cur) +
+        " hard=" + std::to_string(limit.rlim_max) +
+        " opened=" + std::to_string(opened) +
+        " openError=" + std::to_string(open_error);
+}
+
+std::string mapping_summary() {
+    const std::string maps = read_file("/proc/self/maps");
+    int rwx = 0;
+    std::string samples;
+    size_t offset = 0;
+    while (offset < maps.size()) {
+        const size_t end = maps.find('\n', offset);
+        const std::string line = maps.substr(
+            offset,
+            end == std::string::npos ? std::string::npos : end - offset
+        );
+        offset = end == std::string::npos ? maps.size() : end + 1;
+        if (line.find(" rwx") == std::string::npos) continue;
+        ++rwx;
+        if (samples.size() < 512) {
+            if (!samples.empty()) samples += "; ";
+            samples += line;
+        }
+    }
+    const long page_size = sysconf(_SC_PAGESIZE);
+    void* memory = mmap(
+        nullptr,
+        static_cast<size_t>(page_size),
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0
+    );
+    int map_ok = memory != MAP_FAILED;
+    int protect_ok = 0;
+    int unmap_ok = 0;
+    if (memory != MAP_FAILED) {
+        memset(memory, 0, static_cast<size_t>(page_size));
+        protect_ok = mprotect(
+            memory,
+            static_cast<size_t>(page_size),
+            PROT_READ
+        ) == 0;
+        unmap_ok = munmap(
+            memory,
+            static_cast<size_t>(page_size)
+        ) == 0;
+    }
+    return "rwx=" + std::to_string(rwx) +
+        " map=" + std::to_string(map_ok) +
+        " mprotect=" + std::to_string(protect_ok) +
+        " munmap=" + std::to_string(unmap_ok) +
+        " samples=" + (samples.empty() ? "0" : samples);
 }
 
 std::string path_summary(
@@ -1868,7 +1955,9 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
     report +=
         "\nsignal.scan=" + signal_scan_summary() +
         "\npopen.identity=" + popen_identity_summary() +
-        "\nsocket.loopback=" + socket_loopback_summary();
+        "\nsocket.loopback=" + socket_loopback_summary() +
+        "\nresource.fd=" + fd_resource_summary() +
+        "\nmapping.scan=" + mapping_summary();
 
     const std::vector<std::pair<std::string, std::pair<std::string, bool>>> paths = {
         {"dataDir", {data_root, true}},

@@ -377,6 +377,25 @@ final class IntegrityProbe {
             socketLoopback,
             socketLoopback.startsWith("ok port=")
         );
+        String fdResource = field(nativeReport, "resource.fd=");
+        add(
+            rows,
+            "native 文件描述符资源",
+            fdResource,
+            fdResource.contains("opened=32 ") &&
+                fdResource.contains("openError=0") &&
+                !fdResource.contains("limit-error=")
+        );
+        String mappingScan = field(nativeReport, "mapping.scan=");
+        add(
+            rows,
+            "native 匿名映射/mprotect",
+            mappingScan,
+            mappingScan.contains("rwx=0 ") &&
+                mappingScan.contains("map=1 ") &&
+                mappingScan.contains("mprotect=1 ") &&
+                mappingScan.contains("munmap=1 ")
+        );
         String rawProcStatus = field(
             nativeReport,
             "raw.syscall.newfstatat.procStatus="
