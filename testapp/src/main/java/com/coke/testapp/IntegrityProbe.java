@@ -77,8 +77,6 @@ final class IntegrityProbe {
         } catch (Throwable error) {
             add(rows, "PackageInfo", describe(error), false);
         }
-        FeishuPackageProbe.appendRows(rows, activity);
-
         add(rows, "Process.myUid", String.valueOf(expectedUid), true);
         add(
             rows,
@@ -393,6 +391,8 @@ final class IntegrityProbe {
         AntiTamperRuleProbe.appendRows(rows, activity, nativeReport);
         RuntimeIntegrityProbe.appendRows(rows, activity, nativeReport);
         AdvancedTamperProbe.appendRows(activity, nativeReport, rows);
+        SystemSurfaceProbe.appendRows(activity, rows);
+        KernelSurfaceProbe.appendRows(activity, rows);
 
         boolean passed = true;
         for (String row : rows) {

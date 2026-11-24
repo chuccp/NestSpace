@@ -513,6 +513,11 @@ class ContainerSession private constructor(
         context.broadcastManager = broadcastManager
         broadcastManager.adopt(context.earlyReceiverRegistry?.drain().orEmpty())
         context.earlyReceiverRegistry = null
+        runCatching {
+            System.setProperty("java.io.tmpdir", context.cacheDir.absolutePath)
+        }.onFailure {
+            Log.w(TAG, "publish target java.io.tmpdir failed", it)
+        }
         context.jobScheduler = jobScheduler
         context.virtualRegistry = virtualPackages
         context.permissions.attachRegistry(virtualPackages)
