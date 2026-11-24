@@ -89,7 +89,7 @@ class ContainerClassLoader(
             if (resolve) resolveClass(clazz)
             clazz
         }
-        if (clazz.classLoader === this) {
+        if (clazz.classLoader === this && shouldSeedEarly(name)) {
             seedContext(clazz, name)
         }
         return clazz
@@ -111,6 +111,11 @@ class ContainerClassLoader(
         if (!seededClasses.add(name)) return
         TargetContextSeeder.seed(type, context)
     }
+
+    private fun shouldSeedEarly(name: String): Boolean =
+        name.endsWith("Builder") ||
+            name.endsWith("ContextHolder") ||
+            name.endsWith("ContextProvider")
 
     companion object {
         /**

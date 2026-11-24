@@ -140,7 +140,7 @@ class RuntimeDexPathClassLoader(
             }
         }
         noteTargetClass(loaded, name)
-        if (loaded.classLoader === this) {
+        if (loaded.classLoader === this && shouldSeedEarly(name)) {
             seedContext(loaded, name)
         }
         return loaded
@@ -263,6 +263,11 @@ class RuntimeDexPathClassLoader(
         if (!seededClasses.add(name)) return
         TargetContextSeeder.seed(type, context)
     }
+
+    private fun shouldSeedEarly(name: String): Boolean =
+        name.endsWith("Builder") ||
+            name.endsWith("ContextHolder") ||
+            name.endsWith("ContextProvider")
 
     private fun noteTargetClass(type: Class<*>, name: String) {
         if (type.classLoader === this) targetLoadedClasses.add(name)
