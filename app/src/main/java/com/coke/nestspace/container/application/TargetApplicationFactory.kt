@@ -88,7 +88,8 @@ object TargetApplicationFactory {
                     loader,
                     if (ExternalApplicationBootstrap.isExternalApplication(
                             spec.applicationInfo.className,
-                            spec.packageName
+                            spec.packageName,
+                            listOf(spec.baseApkPath) + spec.splitApkPaths
                         )
                     ) {
                         hardenedAttachContext

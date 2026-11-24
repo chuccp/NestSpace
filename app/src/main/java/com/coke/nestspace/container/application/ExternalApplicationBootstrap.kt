@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
 import android.util.Log
+import com.coke.nestspace.container.ContainerLaunchSpec
+import com.coke.nestspace.container.loader.ApkClassIndex
 import java.io.File
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -29,6 +31,31 @@ internal object ExternalApplicationBootstrap {
     fun isExternalApplication(className: String?, packageName: String): Boolean {
         if (className.isNullOrBlank()) return false
         return !className.startsWith("$packageName.")
+    }
+
+    /**
+     * An Application class in a sibling namespace is still a normal target
+     * class when its DEX is packaged inside the target APK. Only treat it as
+     * an external wrapper when the declared class is actually absent from the
+     * target code paths.
+     */
+    fun isExternalApplication(spec: ContainerLaunchSpec): Boolean {
+        val className = spec.applicationInfo.className
+        return isExternalApplication(
+            className,
+            spec.packageName,
+            listOf(spec.baseApkPath) + spec.splitApkPaths
+        )
+    }
+
+    fun isExternalApplication(
+        className: String?,
+        packageName: String,
+        apkPaths: List<String>
+    ): Boolean {
+        if (className.isNullOrBlank()) return false
+        if (className.startsWith("$packageName.")) return false
+        return className !in ApkClassIndex.classNames(apkPaths)
     }
 
     fun cachedEntryName(dataRoot: File, baseApkPath: String): String? =

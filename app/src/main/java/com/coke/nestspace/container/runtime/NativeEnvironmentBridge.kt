@@ -152,6 +152,60 @@ object NativeEnvironmentBridge {
             .getOrDefault(false)
     }
 
+    /**
+     * Publishes only the target-to-instance path mapping.
+     *
+     * AppComponentFactory.instantiateClassLoader can run before the complete
+     * process identity is configured. Security wrappers commonly create and
+     * enumerate files from ApplicationInfo.dataDir during that callback, so
+     * the mapping and Java file bridge must be active before target runtime
+     * code is decrypted. The complete install later replaces this snapshot.
+     */
+    fun installPathMapping(
+        instanceId: String,
+        packageName: String,
+        hostPackageName: String,
+        dataRoot: String,
+        externalDataRoot: String?,
+        processName: String,
+        hostBaseApkPath: String,
+        hostNativeLibraryDir: String,
+        nativeLibraryDir: String?,
+        virtualNativeLibraryDir: String?,
+        runtimeLibraryDirs: List<String>,
+        runtimeLibraryPaths: List<String>,
+        actualBaseApkPath: String,
+        virtualBaseApkPath: String,
+        actualSplitApkPaths: List<String>,
+        virtualSplitApkPaths: List<String>
+    ): Boolean {
+        if (!ensureLoaded()) return false
+        return runCatching {
+            nativeInstallPathMapping(
+                instanceId,
+                packageName,
+                hostPackageName,
+                dataRoot,
+                externalDataRoot.orEmpty(),
+                processName,
+                hostBaseApkPath,
+                hostNativeLibraryDir,
+                nativeLibraryDir.orEmpty(),
+                virtualNativeLibraryDir.orEmpty(),
+                runtimeLibraryDirs.toTypedArray(),
+                runtimeLibraryPaths.toTypedArray(),
+                actualBaseApkPath,
+                virtualBaseApkPath,
+                actualSplitApkPaths.toTypedArray(),
+                virtualSplitApkPaths.toTypedArray()
+            )
+        }.onSuccess {
+            Log.d(TAG, "bootstrap path mapping=$it package=$packageName")
+        }.onFailure {
+            Log.w(TAG, "bootstrap path mapping failed package=$packageName", it)
+        }.getOrDefault(false)
+    }
+
     fun install(
         environment: VirtualEnvironment,
         identity: VirtualIdentitySnapshot,
@@ -366,6 +420,26 @@ object NativeEnvironmentBridge {
         virtualPid: Int,
         identityRevision: Long,
         capabilityMask: Long
+    ): Boolean
+
+    @JvmStatic
+    private external fun nativeInstallPathMapping(
+        instanceId: String,
+        packageName: String,
+        hostPackageName: String,
+        dataRoot: String,
+        externalDataRoot: String,
+        processName: String,
+        hostBaseApkPath: String,
+        hostNativeLibraryDir: String,
+        nativeLibraryDir: String,
+        virtualNativeLibraryDir: String,
+        runtimeLibraryDirs: Array<String>,
+        runtimeLibraryPaths: Array<String>,
+        actualBaseApkPath: String,
+        virtualBaseApkPath: String,
+        actualSplitApkPaths: Array<String>,
+        virtualSplitApkPaths: Array<String>
     ): Boolean
 
     @JvmStatic

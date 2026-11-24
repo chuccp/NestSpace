@@ -28,7 +28,8 @@ object ContainerCompat {
     fun installRuntimeClassLoader(
         spec: ContainerLaunchSpec,
         loader: ClassLoader,
-        appInfo: ApplicationInfo
+        appInfo: ApplicationInfo,
+        nativeLibraryDir: String? = null
     ): ClassLoader {
         val factoryClass = findAppComponentFactory(spec, loader) ?: return loader
         return runCatching {
@@ -44,10 +45,24 @@ object ContainerCompat {
                     ClassLoader::class.java,
                     ApplicationInfo::class.java
                 )
-                // Some factories rewrite ApplicationInfo.className while
-                // setting up the runtime loader. Keep the launch spec's
-                // manifest ApplicationInfo intact for the attachment step.
-                .invoke(factory, loader, ApplicationInfo(appInfo)) as? ClassLoader
+                // The framework invokes this hook before publishing the
+                // package's virtual identity. Packer runtimes use these
+                // bootstrap paths to extract and inject their runtime DEX, so
+                // give the isolated copy real on-disk paths. The target
+                // Application is still attached with the original virtual
+                // ApplicationInfo.
+                .invoke(
+                    factory,
+                    loader,
+                    ApplicationInfo(appInfo).apply {
+                        dataDir = spec.dataDir
+                        sourceDir = spec.baseApkPath
+                        publicSourceDir = spec.baseApkPath
+                        splitSourceDirs = spec.splitApkPaths.toTypedArray()
+                        this.nativeLibraryDir = nativeLibraryDir
+                            ?: appInfo.nativeLibraryDir
+                    }
+                ) as? ClassLoader
                 ?: loader
             Log.d(
                 TAG,

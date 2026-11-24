@@ -6,6 +6,7 @@ import com.coke.nestspace.container.identity.HostIdentity
 import com.coke.nestspace.container.identity.SystemServiceIdentity
 import com.coke.nestspace.container.runtime.RuntimeBootGraphDiagnostics
 import com.coke.nestspace.container.loader.withContainerClassLoader
+import com.coke.nestspace.container.remote.ContainerRemoteServices
 
 
 import android.app.Activity
@@ -934,6 +935,20 @@ open class StageAActivity : Activity() {
             TAG,
             "schedule target start instance=${hashCode()} mirror=$mirrorMode"
         )
+        ContainerRemoteServices.prepareForSlot(
+            this,
+            slotIndexFor(javaClass)
+        ) {
+            if (isFinishing || isDestroyed) return@prepareForSlot
+            scheduleTargetStartAfterHelper(frame, launchIntent, savedState)
+        }
+    }
+
+    private fun scheduleTargetStartAfterHelper(
+        frame: FrameLayout,
+        launchIntent: Intent,
+        savedState: Bundle?
+    ) {
         if (mirrorMode) {
             // The 1x1 mirror host is sent to the back and its own window is
             // never drawn, so onPreDraw would never fire. Child hosts created

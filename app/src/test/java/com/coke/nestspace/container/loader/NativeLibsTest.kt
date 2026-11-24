@@ -59,6 +59,19 @@ class NativeLibsTest {
             assertEquals(first.canonicalPath, second.canonicalPath)
             assertTrue(sentinel.isFile)
 
+            // A legacy or interrupted cache with one surviving library must
+            // not suppress other libraries declared by the same APK.
+            File(first, "libdemo.so").delete()
+            val repaired = NativeLibs.extractAbiIfNeeded(
+                listOf(apk.absolutePath),
+                "arm64-v8a",
+                cache,
+                setOf("libskip.so")
+            ) ?: error("incomplete library set recovery failed")
+            assertEquals(first.canonicalPath, repaired.canonicalPath)
+            assertTrue(File(repaired, "libdemo.so").isFile)
+            assertFalse(sentinel.exists())
+
             // An interrupted build can leave a directory without .ready.
             File(first, ".ready").delete()
             val recovered = NativeLibs.extractAbiIfNeeded(

@@ -42,6 +42,7 @@ import com.coke.nestspace.container.runtime.VirtualEnvironmentFacts
 import com.coke.nestspace.container.runtime.VirtualEnvironmentValidator
 import com.coke.nestspace.container.runtime.EnvironmentValidation
 import com.coke.nestspace.container.runtime.VirtualStorageProbe
+import com.coke.nestspace.container.runtime.VirtualStorageLayout
 import com.coke.nestspace.container.runtime.VirtualInstallLayout
 import com.coke.nestspace.container.runtime.VirtualInstallLayoutFactory
 import com.coke.nestspace.container.runtime.VirtualWebViewDataDirectory
@@ -2188,10 +2189,7 @@ class ContainerSession private constructor(
             }
             val externalApplicationName = spec.applicationInfo.className
             val externalApplication =
-                ExternalApplicationBootstrap.isExternalApplication(
-                    externalApplicationName,
-                    spec.packageName
-                )
+                ExternalApplicationBootstrap.isExternalApplication(spec)
             val useDynamicExternalLoader =
                 NativeEnvironmentBridge.readPropertyForDiagnostics(
                     "debug.nestspace.external_dynamic_loader"
@@ -2207,9 +2205,26 @@ class ContainerSession private constructor(
             val classPath = (selectedClassPath + pluginMount.apkPaths)
                 .filter { it.isNotBlank() }
                 .joinToString(File.pathSeparator)
-            val nativeAbis = spec.nativeAbis
             val preferredNativeAbi = NativeLibs.preferredHostAbi(host)
+            val declaredNativeAbis = spec.nativeAbis
+            val detectedNativeAbis = NativeLibs.abisOf(apkPaths)
+            val nativeAbis =
+                if (NativeLibs.supportedAbi(
+                        declaredNativeAbis,
+                        preferredNativeAbi
+                    ) != null
+                ) {
+                    declaredNativeAbis
+                } else {
+                    detectedNativeAbis
+                }
             val nativeAbi = NativeLibs.supportedAbi(nativeAbis, preferredNativeAbi)
+            Log.d(
+                TAG,
+                "native abi declared=${declaredNativeAbis.sorted()} " +
+                    "detected=${detectedNativeAbis.sorted()} " +
+                    "selected=$nativeAbi"
+            )
             val nativeCacheRoot = File(
                 host.applicationContext.filesDir,
                 "vspace/native-cache"
@@ -2390,7 +2405,40 @@ class ContainerSession private constructor(
             // AppComponentFactory hook that Android normally calls while
             // creating LoadedApk. Manually attached virtual applications skip
             // that framework path, so run the hook before attaching the target.
-            loader = ContainerCompat.installRuntimeClassLoader(spec, loader, appInfo)
+            NativeEnvironmentBridge.installPathMapping(
+                instanceId = spec.instanceId,
+                packageName = spec.packageName,
+                hostPackageName = HostIdentity.packageName,
+                dataRoot = dataRoot.absolutePath,
+                externalDataRoot = VirtualStorageLayout
+                    .externalInstanceRoot(spec.packageName, spec.instanceId)
+                    .absolutePath,
+                processName = spec.targetProcessName,
+                hostBaseApkPath = HostIdentity.baseApkPath,
+                hostNativeLibraryDir = HostIdentity.nativeLibraryDir,
+                nativeLibraryDir = runtimeNativeLibs?.absolutePath,
+                virtualNativeLibraryDir = installLayout.virtualNativeLibraryDir,
+                runtimeLibraryDirs = runtimeNativeLibraries.directories
+                    .map(File::getAbsolutePath),
+                runtimeLibraryPaths = runtimeNativeLibraries.files
+                    .map(File::getAbsolutePath),
+                actualBaseApkPath = spec.baseApkPath,
+                virtualBaseApkPath = installLayout.virtualBaseApkPath,
+                actualSplitApkPaths = spec.splitApkPaths,
+                virtualSplitApkPaths = installLayout.virtualSplitApkPaths
+            )
+            NativeEnvironmentBridge.installCoreFileBridge()
+            loader = ContainerCompat.installRuntimeClassLoader(
+                spec,
+                loader,
+                appInfo,
+                runtimeNativeLibs?.absolutePath
+            )
+            NativeLibs.addNativeSearchPaths(
+                loader,
+                installedNativeSearchDirectories +
+                    pluginMount.nativeLibraryDirs
+            )
             if (!externalApplication) {
                 exposeVirtualClassPath(loader, installLayout)
             }
@@ -2399,17 +2447,26 @@ class ContainerSession private constructor(
             // the Activity attachment path uses framework-private fields.
             HiddenApiCompat.ensure(force = true)
             Log.d(TAG, "session class loader: ${loader.javaClass.name}")
-            val resources = runCatching {
-                host.packageManager.getResourcesForApplication(spec.packageName)
-            }.onSuccess {
-                Log.d(TAG, "using package resources for ${spec.packageName}")
-            }.getOrElse {
-                createResources(
-                    host,
-                    apkPaths + pluginMount.apkPaths,
-                    loader
+            val installedResources = runCatching {
+                val installedInfo = host.packageManager.getApplicationInfo(
+                    spec.packageName,
+                    0
                 )
-            }
+                if (installedInfo.sourceDir == spec.baseApkPath) {
+                    host.packageManager.getResourcesForApplication(
+                        spec.packageName
+                    )
+                } else {
+                    null
+                }
+            }.getOrNull()
+            val resources = installedResources?.also {
+                Log.d(TAG, "using matching package resources for ${spec.packageName}")
+            } ?: createResources(
+                host,
+                apkPaths + pluginMount.apkPaths,
+                loader
+            )
             ContainerLaunchProgress.advance(LaunchProgressStage.LOADING_RESOURCES)
             Log.d(TAG, "resources ready classLoader=${loader.javaClass.simpleName}")
             startupCoordinator.mark(
@@ -2876,6 +2933,19 @@ class ContainerSession private constructor(
                         loadedApkClass.getDeclaredField("mResDir")
                             .apply { isAccessible = true }
                             .set(loadedApk, context.packageResourcePath)
+                    }
+                    runCatching {
+                        val factoryField = loadedApkClass
+                            .getDeclaredField("mAppComponentFactory")
+                            .apply { isAccessible = true }
+                        val current = factoryField.get(loadedApk)
+                            as? android.app.AppComponentFactory
+                        if (current !is ContainerAppComponentFactory) {
+                            factoryField.set(
+                                loadedApk,
+                                ContainerAppComponentFactory(current)
+                            )
+                        }
                     }
                 }
             }.onFailure { Log.w(TAG, "prepublish appInfo failed", it) }
@@ -3359,10 +3429,7 @@ class ContainerSession private constructor(
                 spec.applicationInfo
             )
             val externalApplicationName = applicationSpec.applicationInfo.className
-            if (ExternalApplicationBootstrap.isExternalApplication(
-                    externalApplicationName,
-                    spec.packageName
-                )
+            if (ExternalApplicationBootstrap.isExternalApplication(spec)
             ) {
                 val externalApplication = try {
                     ExternalApplicationBootstrap.attach(
@@ -3420,7 +3487,8 @@ class ContainerSession private constructor(
                 context.targetApplication = application
                 if (ExternalApplicationBootstrap.isExternalApplication(
                         application.javaClass.name,
-                        spec.packageName
+                        spec.packageName,
+                        listOf(spec.baseApkPath) + spec.splitApkPaths
                     )
                 ) {
                     runCatching {

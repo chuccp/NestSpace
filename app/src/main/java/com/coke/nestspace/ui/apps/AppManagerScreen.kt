@@ -27,6 +27,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,8 +67,12 @@ internal fun AppManagerScreen(
 ) {
     var pendingUninstall by remember { mutableStateOf<VirtualApp?>(null) }
     var showSystemPicker by remember { mutableStateOf(false) }
-    val instanceEntries = remember(virtualApps) {
-        virtualApps.flatMap { app ->
+    var appSortModeName by rememberSaveable {
+        mutableStateOf(AppSortMode.INSTALLED_TIME.name)
+    }
+    val appSortMode = AppSortMode.valueOf(appSortModeName)
+    val instanceEntries = remember(virtualApps, appSortMode) {
+        sortVirtualApps(virtualApps, appSortMode).flatMap { app ->
             app.instances
                 .sortedWith(compareBy({ it.createdAt }, { it.id }))
                 .mapIndexed { index, instance ->
@@ -126,9 +132,36 @@ internal fun AppManagerScreen(
         }
 
         item {
-            SettingsSection(
-                AppLanguage.tr("应用（$appCount）", "Apps ($appCount)")
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SettingsSection(
+                    AppLanguage.tr("应用（$appCount）", "Apps ($appCount)")
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = appSortMode == AppSortMode.INSTALLED_TIME,
+                        onClick = {
+                            appSortModeName = AppSortMode.INSTALLED_TIME.name
+                        },
+                        label = {
+                            Text(
+                                AppLanguage.tr(
+                                    "安装时间",
+                                    "Install time"
+                                )
+                            )
+                        }
+                    )
+                    FilterChip(
+                        selected = appSortMode == AppSortMode.ALPHABETICAL,
+                        onClick = {
+                            appSortModeName = AppSortMode.ALPHABETICAL.name
+                        },
+                        label = {
+                            Text(AppLanguage.tr("字母", "Alphabetical"))
+                        }
+                    )
+                }
+            }
         }
         if (appCount == 0) {
             item {
@@ -213,6 +246,26 @@ private data class ManagedInstance(
     val number: Int,
     val displayLabel: String
 )
+
+internal enum class AppSortMode {
+    INSTALLED_TIME,
+    ALPHABETICAL
+}
+
+internal fun sortVirtualApps(
+    apps: List<VirtualApp>,
+    mode: AppSortMode
+): List<VirtualApp> = when (mode) {
+    AppSortMode.INSTALLED_TIME -> apps.sortedWith(
+        compareByDescending<VirtualApp> { it.installedAt }
+            .thenBy { it.label.lowercase() }
+            .thenBy { it.packageName }
+    )
+    AppSortMode.ALPHABETICAL -> apps.sortedWith(
+        compareBy<VirtualApp> { it.label.lowercase() }
+            .thenBy { it.packageName }
+    )
+}
 
 @Composable
 private fun SystemAppPickerDialog(

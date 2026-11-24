@@ -2,8 +2,10 @@ package com.coke.nestspace.container.remote
 
 import android.app.Service
 import android.content.ComponentName
+import android.content.Context
 import android.content.ContentValues
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.res.AssetFileDescriptor
 import android.os.Bundle
 import android.os.Binder
@@ -349,9 +351,12 @@ abstract class ContainerRemoteService : Service() {
     }
 
     override fun onCreate() {
+        Log.d(TAG, "onCreate begin slot=$slot pid=${android.os.Process.myPid()}")
         super.onCreate()
+        Log.d(TAG, "onCreate super complete slot=$slot")
         ContainerProcessPool.markCurrentSlot(slot)
         ContainerProcessPool.markSlotProcess(this, slot)
+        Log.d(TAG, "onCreate slot state complete slot=$slot")
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -511,4 +516,106 @@ object ContainerRemoteServices {
 
     fun componentFor(context: android.content.Context, slot: Int): ComponentName =
         ComponentName(context.packageName, classForSlot(slot).name)
+
+    /**
+     * Creates and binds the slot helper before a target Application starts.
+     *
+     * Target startup can keep the process main thread busy for tens of
+     * seconds. Starting the helper at that point makes AMS count the helper as
+     * an unresponsive service even though it is only queued behind target
+     * initialization. Preparing it after the host's first Activity exists,
+     * before target code is attached, keeps the infrastructure service off the
+     * target startup critical path.
+     */
+    fun prepareForSlot(
+        context: Context,
+        slot: Int,
+        onReady: () -> Unit
+    ) {
+        val boundedSlot = slot.coerceIn(0, classes.lastIndex)
+        val callback: () -> Unit = { mainHandler.post(onReady) }
+        val existing = synchronized(prewarmLock) {
+            prewarmStates[boundedSlot]?.also { state ->
+                if (state.ready) {
+                    callback()
+                } else {
+                    state.waiters += callback
+                }
+            }
+        }
+        if (existing != null) return
+
+        val state = PrewarmState()
+        synchronized(prewarmLock) {
+            prewarmStates[boundedSlot]?.let { current ->
+                if (current.ready) {
+                    callback()
+                } else {
+                    current.waiters += callback
+                }
+                return
+            }
+            state.waiters += callback
+            prewarmStates[boundedSlot] = state
+        }
+
+        val app = context.applicationContext
+        val component = componentFor(app, boundedSlot)
+        val intent = Intent().setComponent(component)
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(
+                name: ComponentName?,
+                service: IBinder?
+            ) {
+                completePrewarm(boundedSlot, state)
+            }
+
+            override fun onServiceDisconnected(name: ComponentName?) {
+                synchronized(prewarmLock) {
+                    state.ready = false
+                    if (prewarmStates[boundedSlot] === state) {
+                        prewarmStates.remove(boundedSlot)
+                    }
+                }
+            }
+
+            override fun onBindingDied(name: ComponentName?) {
+                onServiceDisconnected(name)
+            }
+
+            override fun onNullBinding(name: ComponentName?) {
+                completePrewarm(boundedSlot, state)
+            }
+        }
+        state.connection = connection
+        runCatching { app.startService(intent) }
+        val bound = runCatching {
+            app.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        }.getOrDefault(false)
+        if (!bound) {
+            Log.w(TAG, "prewarm bind failed slot=$boundedSlot")
+            completePrewarm(boundedSlot, state)
+        }
+    }
+
+    private fun completePrewarm(slot: Int, state: PrewarmState) {
+        val waiters = synchronized(prewarmLock) {
+            if (state.ready) return
+            state.ready = true
+            state.waiters.toList().also { state.waiters.clear() }
+        }
+        Log.d(TAG, "prewarm ready slot=$slot callbacks=${waiters.size}")
+        waiters.forEach { it() }
+    }
+
+    private class PrewarmState {
+        var connection: ServiceConnection? = null
+        var ready: Boolean = false
+        val waiters = mutableListOf<() -> Unit>()
+    }
+
+    private val prewarmLock = Any()
+    private val prewarmStates = mutableMapOf<Int, PrewarmState>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private const val TAG = "ContainerRemoteServices"
 }

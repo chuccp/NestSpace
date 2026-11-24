@@ -103,6 +103,52 @@ std::string data_alias(const std::string& path) {
     return {};
 }
 
+void configure_path_mapping(nestspace::Environment* environment) {
+    environment->target_data_root =
+        "/data/user/0/" + environment->package_name;
+    environment->target_data_alias =
+        "/data/data/" + environment->package_name;
+    environment->target_device_root =
+        "/data/user_de/0/" + environment->package_name;
+    environment->target_external_root =
+        "/storage/emulated/0/Android/data/" + environment->package_name;
+    environment->target_external_alias =
+        "/sdcard/Android/data/" + environment->package_name;
+    environment->virtual_runtime_library_dirs.clear();
+    environment->virtual_runtime_library_dirs.reserve(
+        environment->runtime_library_dirs.size()
+    );
+    for (const auto& directory : environment->runtime_library_dirs) {
+        if (directory.rfind(environment->data_root, 0) == 0) {
+            environment->virtual_runtime_library_dirs.push_back(
+                environment->target_data_root +
+                    directory.substr(environment->data_root.size())
+            );
+        } else {
+            environment->virtual_runtime_library_dirs.push_back(directory);
+        }
+    }
+    environment->virtual_runtime_library_paths.clear();
+    environment->virtual_runtime_library_paths.reserve(
+        environment->runtime_library_paths.size()
+    );
+    for (const auto& path : environment->runtime_library_paths) {
+        if (path.rfind(environment->data_root, 0) == 0) {
+            environment->virtual_runtime_library_paths.push_back(
+                environment->target_data_root +
+                    path.substr(environment->data_root.size())
+            );
+        } else {
+            environment->virtual_runtime_library_paths.push_back(path);
+        }
+    }
+    environment->actual_device_root =
+        environment->data_root + "/device_protected";
+    environment->native_library_dir_alias =
+        data_alias(environment->native_library_dir);
+    environment->data_root_alias = data_alias(environment->data_root);
+}
+
 jlongArray hook_state_array(JNIEnv* env, nestspace::HookState state) {
     const jlong values[10] = {
         static_cast<jlong>(state.patch_count),
@@ -1095,49 +1141,7 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
         env,
         supplementary_groups
     );
-    environment->target_data_root =
-        "/data/user/0/" + environment->package_name;
-    environment->target_data_alias =
-        "/data/data/" + environment->package_name;
-    environment->target_device_root =
-        "/data/user_de/0/" + environment->package_name;
-    environment->target_external_root =
-        "/storage/emulated/0/Android/data/" + environment->package_name;
-    environment->target_external_alias =
-        "/sdcard/Android/data/" + environment->package_name;
-    environment->virtual_runtime_library_dirs.clear();
-    environment->virtual_runtime_library_dirs.reserve(
-        environment->runtime_library_dirs.size()
-    );
-    for (const auto& directory : environment->runtime_library_dirs) {
-        if (directory.rfind(environment->data_root, 0) == 0) {
-            environment->virtual_runtime_library_dirs.push_back(
-                environment->target_data_root +
-                    directory.substr(environment->data_root.size())
-            );
-        } else {
-            environment->virtual_runtime_library_dirs.push_back(directory);
-        }
-    }
-    environment->virtual_runtime_library_paths.clear();
-    environment->virtual_runtime_library_paths.reserve(
-        environment->runtime_library_paths.size()
-    );
-    for (const auto& path : environment->runtime_library_paths) {
-        if (path.rfind(environment->data_root, 0) == 0) {
-            environment->virtual_runtime_library_paths.push_back(
-                environment->target_data_root +
-                    path.substr(environment->data_root.size())
-            );
-        } else {
-            environment->virtual_runtime_library_paths.push_back(path);
-        }
-    }
-    environment->actual_device_root =
-        environment->data_root + "/device_protected";
-    environment->native_library_dir_alias =
-        data_alias(environment->native_library_dir);
-    environment->data_root_alias = data_alias(environment->data_root);
+    configure_path_mapping(environment.get());
     environment->property_snapshot = nestspace::build_property_snapshot(
         to_properties(env, properties)
     );
@@ -1181,6 +1185,76 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
             }).detach();
         }
     }
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstallPathMapping(
+    JNIEnv* env,
+    jclass,
+    jstring instance_id,
+    jstring package_name,
+    jstring host_package_name,
+    jstring data_root,
+    jstring external_data_root,
+    jstring process_name,
+    jstring host_base_apk_path,
+    jstring host_native_library_dir,
+    jstring native_library_dir,
+    jstring virtual_native_library_dir,
+    jobjectArray runtime_library_dirs,
+    jobjectArray runtime_library_paths,
+    jstring actual_base_apk_path,
+    jstring virtual_base_apk_path,
+    jobjectArray actual_split_apk_paths,
+    jobjectArray virtual_split_apk_paths
+) {
+    auto environment = std::make_unique<nestspace::Environment>();
+    environment->instance_id = to_string(env, instance_id);
+    environment->package_name = to_string(env, package_name);
+    environment->host_package_name = to_string(env, host_package_name);
+    environment->data_root = to_string(env, data_root);
+    environment->external_data_root = to_string(env, external_data_root);
+    environment->process_name = to_string(env, process_name);
+    environment->host_base_apk_path = to_string(env, host_base_apk_path);
+    environment->host_native_library_dir = to_string(
+        env,
+        host_native_library_dir
+    );
+    environment->native_library_dir = to_string(env, native_library_dir);
+    environment->virtual_native_library_dir = to_string(
+        env,
+        virtual_native_library_dir
+    );
+    environment->runtime_library_dirs = to_strings(
+        env,
+        runtime_library_dirs
+    );
+    environment->runtime_library_paths = to_strings(
+        env,
+        runtime_library_paths
+    );
+    environment->actual_base_apk_path = to_string(
+        env,
+        actual_base_apk_path
+    );
+    environment->virtual_base_apk_path = to_string(
+        env,
+        virtual_base_apk_path
+    );
+    environment->actual_split_apk_paths = to_strings(
+        env,
+        actual_split_apk_paths
+    );
+    environment->virtual_split_apk_paths = to_strings(
+        env,
+        virtual_split_apk_paths
+    );
+    environment->host_uid = getuid();
+    environment->observed_uid = getuid();
+    environment->virtual_pid = getpid();
+    configure_path_mapping(environment.get());
+    nestspace::publish_environment(std::move(environment));
     return JNI_TRUE;
 }
 
