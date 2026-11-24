@@ -2,13 +2,16 @@
 
 #include <android/log.h>
 #include <dlfcn.h>
+#include <elf.h>
 #include <fcntl.h>
+#include <link.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -17,6 +20,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 extern "C" void install_native_crash_trace(const char* path);
 extern "C" void set_native_packer_guard(bool enabled);
@@ -522,6 +526,495 @@ void virtualize_process_environment() {
     }
 }
 
+using StackTraceFunction = jobjectArray (*)(JNIEnv*, jclass, jobject);
+
+std::atomic<bool> g_stack_trace_filter_installed{false};
+thread_local bool g_stack_trace_filter_active = false;
+StackTraceFunction g_throwable_stack_trace = nullptr;
+StackTraceFunction g_vmstack_thread_trace = nullptr;
+jclass g_stack_trace_element_class = nullptr;
+jfieldID g_stack_trace_declaring_class = nullptr;
+
+bool has_class_prefix(const std::string& value, const std::string& prefix) {
+    return value.size() > prefix.size() &&
+        value.compare(0, prefix.size(), prefix) == 0 &&
+        value[prefix.size()] == '.';
+}
+
+jobjectArray filter_stack_trace(JNIEnv* env, jobjectArray stack) {
+    if (env == nullptr || stack == nullptr ||
+        g_stack_trace_filter_active) {
+        return stack;
+    }
+    const nestspace::Environment* environment =
+        nestspace::current_environment();
+    if (environment == nullptr ||
+        environment->package_name.empty() ||
+        environment->host_package_name.empty() ||
+        g_stack_trace_element_class == nullptr ||
+        g_stack_trace_declaring_class == nullptr) {
+        return stack;
+    }
+    g_stack_trace_filter_active = true;
+
+    const jsize count = env->GetArrayLength(stack);
+    std::vector<jobject> frames;
+    frames.reserve(static_cast<size_t>(count));
+    std::vector<std::string> classes;
+    classes.reserve(static_cast<size_t>(count));
+    bool contains_host_frame = false;
+    for (jsize index = 0; index < count; ++index) {
+        jobject frame = env->GetObjectArrayElement(stack, index);
+        frames.push_back(frame);
+        auto name = frame == nullptr
+            ? static_cast<jstring>(nullptr)
+            : static_cast<jstring>(
+                env->GetObjectField(frame, g_stack_trace_declaring_class)
+            );
+        const std::string class_name = to_string(env, name);
+        if (name != nullptr) env->DeleteLocalRef(name);
+        classes.push_back(class_name);
+        if (has_class_prefix(class_name, environment->host_package_name)) {
+            contains_host_frame = true;
+        }
+    }
+    if (!contains_host_frame) {
+        for (jobject frame : frames) {
+            if (frame != nullptr) env->DeleteLocalRef(frame);
+        }
+        g_stack_trace_filter_active = false;
+        return stack;
+    }
+
+    std::vector<jobject> filtered;
+    filtered.reserve(frames.size());
+    for (size_t index = 0; index < frames.size(); ++index) {
+        if (!has_class_prefix(
+                classes[index],
+                environment->host_package_name
+            )) {
+            filtered.push_back(frames[index]);
+        }
+    }
+    jobjectArray result = env->NewObjectArray(
+        static_cast<jsize>(filtered.size()),
+        g_stack_trace_element_class,
+        nullptr
+    );
+    if (result != nullptr) {
+        for (size_t index = 0; index < filtered.size(); ++index) {
+            env->SetObjectArrayElement(
+                result,
+                static_cast<jsize>(index),
+                filtered[index]
+            );
+        }
+    }
+    for (jobject frame : frames) {
+        if (frame != nullptr) env->DeleteLocalRef(frame);
+    }
+    g_stack_trace_filter_active = false;
+    return result == nullptr ? stack : result;
+}
+
+jobjectArray hook_throwable_stack_trace(
+    JNIEnv* env,
+    jclass clazz,
+    jobject backtrace
+) {
+    jobjectArray stack = g_throwable_stack_trace == nullptr
+        ? nullptr
+        : g_throwable_stack_trace(env, clazz, backtrace);
+    return filter_stack_trace(env, stack);
+}
+
+jobjectArray hook_vmstack_thread_trace(
+    JNIEnv* env,
+    jclass clazz,
+    jobject thread
+) {
+    jobjectArray stack = g_vmstack_thread_trace == nullptr
+        ? nullptr
+        : g_vmstack_thread_trace(env, clazz, thread);
+    return filter_stack_trace(env, stack);
+}
+
+using ThreadCurrentFunction = void* (*)();
+using ArtMethodFromReflectedFunction = void* (*)(void*, jobject);
+
+struct LoadedSymbolSearch {
+    const char* module;
+    const char* symbol;
+    void* result;
+};
+
+void* dynamic_pointer(uintptr_t base, ElfW(Addr) value) {
+    return reinterpret_cast<void*>(
+        value >= base ? value : base + value
+    );
+}
+
+int find_loaded_symbol(
+    struct dl_phdr_info* info,
+    size_t,
+    void* data
+) {
+    auto* search = static_cast<LoadedSymbolSearch*>(data);
+    if (search == nullptr || info == nullptr ||
+        info->dlpi_name == nullptr ||
+        strstr(info->dlpi_name, search->module) == nullptr) {
+        return 0;
+    }
+    const ElfW(Dyn)* dynamic = nullptr;
+    for (ElfW(Half) index = 0; index < info->dlpi_phnum; ++index) {
+        const ElfW(Phdr)& header = info->dlpi_phdr[index];
+        if (header.p_type == PT_DYNAMIC) {
+            dynamic = reinterpret_cast<const ElfW(Dyn)*>(
+                info->dlpi_addr + header.p_vaddr
+            );
+            break;
+        }
+    }
+    if (dynamic == nullptr) return 0;
+
+    const ElfW(Sym)* symbols = nullptr;
+    const char* strings = nullptr;
+    const uint32_t* gnu_hash = nullptr;
+    for (const ElfW(Dyn)* entry = dynamic; entry->d_tag != DT_NULL; ++entry) {
+        switch (entry->d_tag) {
+            case DT_SYMTAB:
+                symbols = reinterpret_cast<const ElfW(Sym)*>(
+                    dynamic_pointer(info->dlpi_addr, entry->d_un.d_ptr)
+                );
+                break;
+            case DT_STRTAB:
+                strings = reinterpret_cast<const char*>(
+                    dynamic_pointer(info->dlpi_addr, entry->d_un.d_ptr)
+                );
+                break;
+            case DT_GNU_HASH:
+                gnu_hash = reinterpret_cast<const uint32_t*>(
+                    dynamic_pointer(info->dlpi_addr, entry->d_un.d_ptr)
+                );
+                break;
+            default:
+                break;
+        }
+    }
+    if (symbols == nullptr || strings == nullptr || gnu_hash == nullptr) {
+        return 0;
+    }
+    const uint32_t bucket_count = gnu_hash[0];
+    const uint32_t symbol_offset = gnu_hash[1];
+    const uint32_t bloom_size = gnu_hash[2];
+    const auto* buckets = gnu_hash + 4 +
+        bloom_size * (sizeof(ElfW(Addr)) / sizeof(uint32_t));
+    uint32_t max_bucket = 0;
+    for (uint32_t index = 0; index < bucket_count; ++index) {
+        if (buckets[index] > max_bucket) max_bucket = buckets[index];
+    }
+    if (max_bucket < symbol_offset) return 0;
+    const uint32_t* chains = buckets + bucket_count;
+    uint32_t symbol_count = max_bucket + 1;
+    while ((chains[symbol_count - symbol_offset] & 1u) == 0) {
+        ++symbol_count;
+    }
+    for (uint32_t index = symbol_offset; index < symbol_count; ++index) {
+        const ElfW(Sym)& symbol = symbols[index];
+        if (symbol.st_name == 0 ||
+            strcmp(strings + symbol.st_name, search->symbol) != 0) {
+            continue;
+        }
+        search->result = reinterpret_cast<void*>(
+            info->dlpi_addr + symbol.st_value
+        );
+        return 1;
+    }
+    return 0;
+}
+
+void* resolve_loaded_symbol(const char* module, const char* symbol) {
+    LoadedSymbolSearch search{module, symbol, nullptr};
+    dl_iterate_phdr(find_loaded_symbol, &search);
+    return search.result;
+}
+
+jobject find_reflected_method(
+    JNIEnv* env,
+    jclass owner,
+    const char* name,
+    jint parameter_count
+) {
+    if (env == nullptr || owner == nullptr || name == nullptr) {
+        return nullptr;
+    }
+    jclass class_class = env->FindClass("java/lang/Class");
+    jclass method_class = env->FindClass("java/lang/reflect/Method");
+    if (class_class == nullptr || method_class == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    }
+    const jmethodID get_declared_methods = env->GetMethodID(
+        class_class,
+        "getDeclaredMethods",
+        "()[Ljava/lang/reflect/Method;"
+    );
+    const jmethodID get_name = env->GetMethodID(
+        method_class,
+        "getName",
+        "()Ljava/lang/String;"
+    );
+    const jmethodID get_parameter_count = env->GetMethodID(
+        method_class,
+        "getParameterCount",
+        "()I"
+    );
+    auto methods = get_declared_methods == nullptr
+        ? static_cast<jobjectArray>(nullptr)
+        : static_cast<jobjectArray>(
+            env->CallObjectMethod(owner, get_declared_methods)
+        );
+    jobject result = nullptr;
+    if (methods != nullptr && get_name != nullptr &&
+        get_parameter_count != nullptr) {
+        const jsize count = env->GetArrayLength(methods);
+        for (jsize index = 0; index < count; ++index) {
+            jobject method = env->GetObjectArrayElement(methods, index);
+            if (method == nullptr) continue;
+            auto method_name = static_cast<jstring>(
+                env->CallObjectMethod(method, get_name)
+            );
+            const std::string current_name = to_string(env, method_name);
+            if (method_name != nullptr) env->DeleteLocalRef(method_name);
+            const jint current_parameters = env->CallIntMethod(
+                method,
+                get_parameter_count
+            );
+            if (current_name == name &&
+                current_parameters == parameter_count) {
+                result = method;
+                break;
+            }
+            env->DeleteLocalRef(method);
+        }
+    }
+    if (methods != nullptr) env->DeleteLocalRef(methods);
+    env->DeleteLocalRef(class_class);
+    env->DeleteLocalRef(method_class);
+    return result;
+}
+
+bool find_art_method_data_offset(
+    void* method,
+    const char* module_marker,
+    size_t* result
+) {
+    if (method == nullptr || module_marker == nullptr || result == nullptr) {
+        return false;
+    }
+    const auto address = reinterpret_cast<uintptr_t>(method);
+    if (address < 0x10000 || (address & (sizeof(void*) - 1)) != 0) {
+        return false;
+    }
+    for (size_t offset = 0; offset <= 64; offset += sizeof(void*)) {
+        void* value = *reinterpret_cast<void**>(address + offset);
+        Dl_info info {};
+        if (value != nullptr &&
+            dladdr(value, &info) != 0 &&
+            info.dli_fname != nullptr &&
+            strstr(info.dli_fname, module_marker) != nullptr) {
+            *result = offset % 32;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hook_art_stack_method(
+    void* method,
+    size_t data_offset,
+    void* replacement,
+    StackTraceFunction* original
+) {
+    if (method == nullptr || original == nullptr) {
+        return false;
+    }
+    const auto address = reinterpret_cast<uintptr_t>(method);
+    if (address < 0x10000 || (address & (sizeof(void*) - 1)) != 0) {
+        return false;
+    }
+    auto native = *reinterpret_cast<void**>(address + data_offset);
+    if (native == nullptr || native == replacement) return false;
+    void* trampoline = nullptr;
+    if (!nestspace::install_shared_inline_hook(
+            native,
+            replacement,
+            &trampoline
+        ) || trampoline == nullptr) {
+        return false;
+    }
+    *original = reinterpret_cast<StackTraceFunction>(trampoline);
+    return true;
+}
+
+void install_stack_trace_filter(JNIEnv* env) {
+    char disabled[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.disable_stack_trace_filter",
+        disabled
+    );
+    if (strcmp(disabled, "1") == 0) {
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "stack trace filter disabled"
+        );
+        return;
+    }
+    bool expected = false;
+    if (!g_stack_trace_filter_installed.compare_exchange_strong(
+            expected,
+            true
+        )) {
+        return;
+    }
+    jclass bridge = env->FindClass(
+        "com/coke/nestspace/container/runtime/NativeEnvironmentBridge"
+    );
+    if (bridge == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return;
+    }
+    auto thread_current = reinterpret_cast<ThreadCurrentFunction>(
+        resolve_loaded_symbol(
+            "libart.so",
+            "_ZN3art6Thread14CurrentFromGdbEv"
+        )
+    );
+    auto method_from_reflected =
+        reinterpret_cast<ArtMethodFromReflectedFunction>(
+            resolve_loaded_symbol(
+                "libart.so",
+                "_ZN3art9ArtMethod19FromReflectedMethodERKNS_33ScopedObjectAccessAlreadyRunnableEP8_jobject"
+            )
+        );
+    if (thread_current == nullptr || method_from_reflected == nullptr) {
+        env->DeleteLocalRef(bridge);
+        g_stack_trace_filter_installed.store(false);
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "stack trace ART decoder unavailable"
+        );
+        return;
+    }
+    void* thread = thread_current();
+    if (thread == nullptr) {
+        env->DeleteLocalRef(bridge);
+        g_stack_trace_filter_installed.store(false);
+        return;
+    }
+    jobject probe = find_reflected_method(
+        env,
+        bridge,
+        "nativePageSize",
+        0
+    );
+    void* scope = thread;
+    void* probe_method = probe == nullptr
+        ? nullptr
+        : method_from_reflected(&scope, probe);
+    size_t data_offset = 0;
+    const bool offset_found = find_art_method_data_offset(
+        probe_method,
+        "libnestspace_runtime.so",
+        &data_offset
+    );
+    if (probe != nullptr) env->DeleteLocalRef(probe);
+    env->DeleteLocalRef(bridge);
+    if (!offset_found) {
+        g_stack_trace_filter_installed.store(false);
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "stack trace native data offset unavailable"
+        );
+        return;
+    }
+
+    jclass element_class = env->FindClass("java/lang/StackTraceElement");
+    g_stack_trace_declaring_class = element_class == nullptr
+        ? nullptr
+        : env->GetFieldID(
+            element_class,
+            "declaringClass",
+            "Ljava/lang/String;"
+        );
+    g_stack_trace_element_class = element_class == nullptr
+        ? nullptr
+        : static_cast<jclass>(env->NewGlobalRef(element_class));
+    if (element_class != nullptr) env->DeleteLocalRef(element_class);
+    if (g_stack_trace_element_class == nullptr ||
+        g_stack_trace_declaring_class == nullptr) {
+        g_stack_trace_filter_installed.store(false);
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            "NestSpaceNative",
+            "stack trace element fields unavailable"
+        );
+        return;
+    }
+
+    jclass throwable = env->FindClass("java/lang/Throwable");
+    jobject throwable_native = find_reflected_method(
+        env,
+        throwable,
+        "nativeGetStackTrace",
+        1
+    );
+    const bool throwable_hooked = hook_art_stack_method(
+        throwable_native == nullptr
+            ? nullptr
+            : method_from_reflected(&scope, throwable_native),
+        data_offset,
+        reinterpret_cast<void*>(hook_throwable_stack_trace),
+        &g_throwable_stack_trace
+    );
+    if (throwable_native != nullptr) {
+        env->DeleteLocalRef(throwable_native);
+    }
+    jclass vmstack = env->FindClass("dalvik/system/VMStack");
+    jobject vmstack_thread = find_reflected_method(
+        env,
+        vmstack,
+        "getThreadStackTrace",
+        1
+    );
+    const bool vmstack_hooked = hook_art_stack_method(
+        vmstack_thread == nullptr
+            ? nullptr
+            : method_from_reflected(&scope, vmstack_thread),
+        data_offset,
+        reinterpret_cast<void*>(hook_vmstack_thread_trace),
+        &g_vmstack_thread_trace
+    );
+    if (vmstack_thread != nullptr) {
+        env->DeleteLocalRef(vmstack_thread);
+    }
+    if (throwable != nullptr) env->DeleteLocalRef(throwable);
+    if (vmstack != nullptr) env->DeleteLocalRef(vmstack);
+    __android_log_print(
+        throwable_hooked && vmstack_hooked
+            ? ANDROID_LOG_DEBUG
+            : ANDROID_LOG_WARN,
+        "NestSpaceNative",
+        "stack trace filter installed throwable=%d vmstack=%d offset=%zu",
+        throwable_hooked ? 1 : 0,
+        vmstack_hooked ? 1 : 0,
+        data_offset
+    );
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jint JNICALL
@@ -668,6 +1161,7 @@ Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(
     }
     install_runtime_exit_guard(env);
     nestspace::install_jni_registration_hook(env);
+    install_stack_trace_filter(env);
     nestspace::refresh_hooks(false);
     static std::mutex watcher_lock;
     static bool watcher_started = false;

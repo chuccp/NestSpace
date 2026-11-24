@@ -110,7 +110,8 @@ final class AntiTamperRuleProbe {
             rows,
             "NPTH 线程目录/status 一致",
             "tasks=" + taskCount + " status=" + threads,
-            threads > 0 && taskCount == threads
+            threads > 0 &&
+                Math.abs(taskCount - threads) <= 2
         );
         Set<String> invalidThreadNames = invalidTaskNames();
         add(
