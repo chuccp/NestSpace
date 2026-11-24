@@ -89,6 +89,9 @@ class ContainerClassLoader(
             if (resolve) resolveClass(clazz)
             clazz
         }
+        if (clazz.classLoader === this) {
+            seedContext(clazz, name)
+        }
         return clazz
     }
 

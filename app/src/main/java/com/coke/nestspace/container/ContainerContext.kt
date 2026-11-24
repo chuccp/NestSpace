@@ -83,6 +83,7 @@ class ContainerContext(
     var targetContentResolver: ContentResolver? = null
     var targetPackageManager: PackageManager? = null
     var broadcastManager: ContainerBroadcastManager? = null
+    internal var earlyReceiverRegistry: ContainerEarlyReceiverRegistry? = null
     var jobScheduler: JobScheduler? = null
     var virtualRegistry: VirtualPackageRegistry? = null
 
@@ -955,8 +956,12 @@ class ContainerContext(
         filter: IntentFilter?
     ): Intent? {
         val manager = broadcastManager
+        val early = earlyReceiverRegistry
         return if (manager != null) {
             manager.register(receiver, filter, null, null, 0)
+        } else if (early != null && receiver != null) {
+            early.register(receiver, filter, null, null, 0)
+            runCatching { super.registerReceiver(null, filter) }.getOrNull()
         } else {
             super.registerReceiver(receiver, filter)
         }
@@ -968,8 +973,12 @@ class ContainerContext(
         flags: Int
     ): Intent? {
         val manager = broadcastManager
+        val early = earlyReceiverRegistry
         return if (manager != null) {
             manager.register(receiver, filter, null, null, flags)
+        } else if (early != null && receiver != null) {
+            early.register(receiver, filter, null, null, flags)
+            runCatching { super.registerReceiver(null, filter) }.getOrNull()
         } else {
             super.registerReceiver(receiver, filter, flags)
         }
@@ -982,8 +991,12 @@ class ContainerContext(
         scheduler: Handler?
     ): Intent? {
         val manager = broadcastManager
+        val early = earlyReceiverRegistry
         return if (manager != null) {
             manager.register(receiver, filter, broadcastPermission, scheduler, 0)
+        } else if (early != null && receiver != null) {
+            early.register(receiver, filter, broadcastPermission, scheduler, 0)
+            runCatching { super.registerReceiver(null, filter) }.getOrNull()
         } else {
             super.registerReceiver(receiver, filter, broadcastPermission, scheduler)
         }
@@ -997,8 +1010,12 @@ class ContainerContext(
         flags: Int
     ): Intent? {
         val manager = broadcastManager
+        val early = earlyReceiverRegistry
         return if (manager != null) {
             manager.register(receiver, filter, broadcastPermission, scheduler, flags)
+        } else if (early != null && receiver != null) {
+            early.register(receiver, filter, broadcastPermission, scheduler, flags)
+            runCatching { super.registerReceiver(null, filter) }.getOrNull()
         } else {
             super.registerReceiver(receiver, filter, broadcastPermission, scheduler, flags)
         }
@@ -1006,6 +1023,7 @@ class ContainerContext(
 
     override fun unregisterReceiver(receiver: BroadcastReceiver) {
         if (broadcastManager?.unregister(receiver) == true) return
+        if (earlyReceiverRegistry?.unregister(receiver) == true) return
         super.unregisterReceiver(receiver)
     }
 

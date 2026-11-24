@@ -20,6 +20,8 @@ interface IContainerRemoteService {
     ComponentName startTargetService(String packageName, String instanceId, String targetProcess, in Intent intent, boolean foreground);
     void stopTargetService(String packageName, String instanceId, String targetProcess, in Intent intent);
     void sendTargetBroadcast(String packageName, String instanceId, String targetProcess, in Intent intent);
+
+    void sendTargetDynamicBroadcast(String packageName, String instanceId, String targetProcess, in Intent intent);
     Bundle queryTargetProvider(
             String packageName,
             String instanceId,
@@ -68,6 +70,7 @@ interface IContainerRemoteService {
             String authority,
             String method,
             String arg,
+            int callerPid,
             in Bundle extras);
     ParcelFileDescriptor openTargetProviderFile(
             String packageName,

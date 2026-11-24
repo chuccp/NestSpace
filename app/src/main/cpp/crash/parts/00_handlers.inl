@@ -271,6 +271,16 @@ void write_code_window(const char* label, uintptr_t address) {
     );
 }
 
+[[noreturn]] __attribute__((naked)) void guard_exit_process() {
+    __asm__ __volatile__(
+        "bti c\n"
+        "mov x0, #0\n"
+        "mov x8, #94\n"
+        "svc #0\n"
+        "brk #0\n"
+    );
+}
+
 bool find_mapping_bounds(
     uintptr_t address,
     uintptr_t* begin,
@@ -1208,7 +1218,8 @@ void log_packer_relocation_guard_state(const char* stage) {
 bool read_user_string(
     uintptr_t address,
     char* buffer,
-    size_t capacity
+    size_t capacity,
+    pid_t target_pid = getpid()
 ) {
     if (address == 0 || buffer == nullptr || capacity < 2) return false;
     struct iovec local {
@@ -1221,7 +1232,7 @@ bool read_user_string(
     };
     const long copied = syscall(
         SYS_process_vm_readv,
-        getpid(),
+        target_pid,
         &local,
         1,
         &remote,

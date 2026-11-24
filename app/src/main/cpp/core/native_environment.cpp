@@ -1,6 +1,7 @@
 #include "nestspace/native_environment_internal.h"
 
 #include <android/log.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/syscall.h>
@@ -23,6 +24,8 @@ extern "C" bool install_native_kill_guard();
 extern "C" bool install_native_syscall_gateway();
 
 namespace {
+
+thread_local jint g_deferred_binder_calling_pid = 0;
 
 std::string to_string(JNIEnv* env, jstring value) {
     if (value == nullptr) return {};
@@ -134,12 +137,46 @@ void property_callback_probe(
 jint virtual_binder_calling_uid(JNIEnv*, jclass) {
     const nestspace::Environment* environment =
         nestspace::current_environment();
-    return environment == nullptr ? static_cast<jint>(getuid())
-                                  : environment->observed_uid;
+    return environment == nullptr
+        ? static_cast<jint>(getuid())
+        : environment->observed_uid;
 }
 
 jint virtual_binder_calling_pid(JNIEnv*, jclass) {
-    return static_cast<jint>(getpid());
+    using IpcThreadStateSelf = void* (*)();
+    using IpcThreadStateCallingPid = jint (*)(const void*);
+    static const auto self = []() -> IpcThreadStateSelf {
+        void* binder = dlopen("libbinder.so", RTLD_NOW | RTLD_NOLOAD);
+        return binder == nullptr
+            ? nullptr
+            : reinterpret_cast<IpcThreadStateSelf>(dlsym(
+                binder,
+                "_ZN7android14IPCThreadState4selfEv"
+            ));
+    }();
+    static const auto get_calling_pid =
+        []() -> IpcThreadStateCallingPid {
+            void* binder = dlopen(
+                "libbinder.so",
+                RTLD_NOW | RTLD_NOLOAD
+            );
+            return binder == nullptr
+                ? nullptr
+                : reinterpret_cast<IpcThreadStateCallingPid>(dlsym(
+                    binder,
+                    "_ZNK7android14IPCThreadState13getCallingPidEv"
+                ));
+        }();
+    if (self == nullptr || get_calling_pid == nullptr) {
+        return g_deferred_binder_calling_pid;
+    }
+    const void* thread_state = self();
+    const jint kernel_pid = thread_state == nullptr
+        ? 0
+        : get_calling_pid(thread_state);
+    return kernel_pid > 0
+        ? kernel_pid
+        : g_deferred_binder_calling_pid;
 }
 
 jint virtual_process_group(JNIEnv*, jclass, jint pid) {
@@ -157,11 +194,10 @@ void virtual_process_signal(JNIEnv*, jclass, jint pid, jint signal) {
         __android_log_print(
             ANDROID_LOG_WARN,
             "NestSpaceNative",
-            "ignored Process.sendSignal self SIGKILL pid=%d tid=%d",
+            "forwarding Process.sendSignal self SIGKILL pid=%d tid=%d",
             getpid(),
             gettid()
         );
-        return;
     }
     syscall(
         SYS_kill,
@@ -183,13 +219,12 @@ void virtual_process_tg_signal(
         __android_log_print(
             ANDROID_LOG_WARN,
             "NestSpaceNative",
-            "ignored Process.sendTgSignal self SIGKILL pid=%d tid=%d"
+            "forwarding Process.sendTgSignal self SIGKILL pid=%d tid=%d"
             " target=%d",
             getpid(),
             gettid(),
             thread
         );
-        return;
     }
     syscall(
         SYS_tgkill,
@@ -294,7 +329,7 @@ void install_identity_jni_hooks(JNIEnv* env) {
                 const_cast<char*>("getCallingPid"),
                 const_cast<char*>("()I"),
                 reinterpret_cast<void*>(virtual_binder_calling_pid)
-                },
+                }
             };
             const jint result = env->RegisterNatives(
                 binder,
@@ -488,6 +523,17 @@ void virtualize_process_environment() {
 }
 
 }  // namespace
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeSetBinderCallingPid(
+    JNIEnv*,
+    jclass,
+    jint pid
+) {
+    const jint previous = g_deferred_binder_calling_pid;
+    g_deferred_binder_calling_pid = pid > 0 ? pid : 0;
+    return previous;
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_coke_nestspace_container_runtime_NativeEnvironmentBridge_nativeInstall(

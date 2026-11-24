@@ -126,41 +126,68 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     public PackageInfo getPackageInfo(String packageName, int flags)
             throws NameNotFoundException {
         if (isTarget(packageName)) {
-            return copyPackageInfo(flags);
+            return ensureApplicationInfo(
+                    copyPackageInfo(flags), packageName, flags);
         }
         if (isVirtualPackage(packageName)) {
             PackageInfo installed = installedPackageInfo(packageName, flags);
-            if (installed != null) return installed;
+            if (installed != null) {
+                return ensureApplicationInfo(installed, packageName, flags);
+            }
             PackageInfo copy = copyVirtualPackageInfo(packageName, flags);
-            if (copy != null) return copy;
+            if (copy != null) {
+                return ensureApplicationInfo(copy, packageName, flags);
+            }
         }
-        PackageInfo external = super.getPackageInfo(packageName, flags);
-        if (!canSeePackage(external.applicationInfo)) {
+        PackageInfo external = normalizeExternalPackageInfo(
+                super.getPackageInfo(packageName, flags),
+                packageName,
+                flags);
+        if (external == null || !canSeePackage(external.applicationInfo)) {
             throw new NameNotFoundException(packageName);
         }
-        return external;
+        return ensureApplicationInfo(external, packageName, flags);
     }
 
     @Override
     public PackageInfo getPackageInfo(VersionedPackage versionedPackage, int flags)
             throws NameNotFoundException {
         if (versionedPackage != null && isTarget(versionedPackage.getPackageName())) {
-            return copyPackageInfo(flags);
+            return ensureApplicationInfo(
+                    copyPackageInfo(flags),
+                    versionedPackage.getPackageName(),
+                    flags);
         }
         if (versionedPackage != null && isVirtualPackage(versionedPackage.getPackageName())) {
             PackageInfo installed = installedPackageInfo(
                     versionedPackage.getPackageName(), flags);
-            if (installed != null) return installed;
+            if (installed != null) {
+                return ensureApplicationInfo(
+                        installed,
+                        versionedPackage.getPackageName(),
+                        flags);
+            }
             PackageInfo copy = copyVirtualPackageInfo(
                     versionedPackage.getPackageName(), flags);
-            if (copy != null) return copy;
+            if (copy != null) {
+                return ensureApplicationInfo(
+                        copy,
+                        versionedPackage.getPackageName(),
+                        flags);
+            }
         }
-        PackageInfo external = super.getPackageInfo(versionedPackage, flags);
+        String packageName = versionedPackage == null
+                ? null
+                : versionedPackage.getPackageName();
+        PackageInfo external = normalizeExternalPackageInfo(
+                super.getPackageInfo(versionedPackage, flags),
+                packageName,
+                flags);
         if (external == null || !canSeePackage(external.applicationInfo)) {
             throw new NameNotFoundException(
-                    versionedPackage == null ? "<null>" : versionedPackage.getPackageName());
+                    packageName == null ? "<null>" : packageName);
         }
-        return external;
+        return ensureApplicationInfo(external, packageName, flags);
     }
 
     @Override
@@ -1421,9 +1448,15 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         PackageInfo source = full
                 ? virtualPackages.findFullPackageInfo(packageName)
                 : virtualPackages.findPackageInfo(packageName);
+        if (source == null && full) {
+            source = virtualPackages.findPackageInfo(packageName);
+        }
         if (source == null) return null;
         PackageInfoCopy result = shallowPackageInfoCopy(source);
         ApplicationInfo app = copyVirtualApplicationInfo(packageName, flags);
+        if (app == null) {
+            app = copyVirtualApplicationInfo(packageName, 0);
+        }
         applyPackageInfoFlags(result.value, app, flags, result.alreadyDeepCopied);
         return result.value;
     }
@@ -1455,12 +1488,67 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         ApplicationInfo source = full
                 ? virtualPackages.findFullApplicationInfo(packageName)
                 : virtualPackages.findApplicationInfo(packageName);
+        if (source == null && full) {
+            source = virtualPackages.findApplicationInfo(packageName);
+        }
         if (source == null) return null;
         ApplicationInfo copy = cloneParcelable(source, ApplicationInfo.CREATOR);
         Integer uid = virtualPackages.packageUid(packageName);
         if (uid != null) copy.uid = uid;
         applyApplicationInfoFlags(copy, flags);
         return copy;
+    }
+
+    private PackageInfo normalizeExternalPackageInfo(
+            PackageInfo info,
+            String packageName,
+            int flags) {
+        if (info == null || info.applicationInfo != null ||
+                packageName == null) {
+            return info;
+        }
+        try {
+            info.applicationInfo = super.getApplicationInfo(packageName, flags);
+        } catch (NameNotFoundException ignored) {
+            // Preserve the original package result. canSeePackage() will
+            // reject it if the PackageManager genuinely hid the package.
+        }
+        return info;
+    }
+
+    private PackageInfo ensureApplicationInfo(
+            PackageInfo info,
+            String packageName,
+            int flags) {
+        if (info == null || info.applicationInfo != null ||
+                packageName == null) {
+            return info;
+        }
+        if (isTarget(packageName)) {
+            info.applicationInfo = copyApplicationInfo(flags);
+        } else if (isVirtualPackage(packageName)) {
+            info.applicationInfo = copyVirtualApplicationInfo(
+                    packageName, flags);
+            if (info.applicationInfo == null) {
+                info.applicationInfo = copyVirtualApplicationInfo(
+                        packageName, 0);
+            }
+        } else {
+            try {
+                info.applicationInfo = super.getApplicationInfo(
+                        packageName, flags);
+            } catch (NameNotFoundException ignored) {
+                // The caller will observe the same missing package below.
+            }
+        }
+        if (info.applicationInfo == null) {
+            Log.e(
+                    TAG,
+                    "PackageInfo missing applicationInfo package="
+                            + packageName + " flags=" + flags
+            );
+        }
+        return info;
     }
 
     private ActivityInfo copyVirtualActivityInfo(

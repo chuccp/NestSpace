@@ -245,8 +245,14 @@ final class AntiTamperRuleProbe {
         List<Integer> ids = taskIds();
         Set<String> identityLeaks = new LinkedHashSet<>();
         Set<String> statLeaks = new LinkedHashSet<>();
+        Set<String> cgroupLeaks = new LinkedHashSet<>();
+        Set<String> attrLeaks = new LinkedHashSet<>();
+        Set<String> schedulerLeaks = new LinkedHashSet<>();
+        String processCgroup = compact(read("/proc/self/cgroup"));
+        String processAttr = compact(read("/proc/self/attr/current"));
         for (Integer tid : ids) {
-            String status = read("/proc/self/task/" + tid + "/status");
+            String base = "/proc/self/task/" + tid;
+            String status = read(base + "/status");
             String statusUid = field(status, "Uid:");
             String statusGid = field(status, "Gid:");
             String tgid = field(status, "Tgid:");
@@ -271,6 +277,27 @@ final class AntiTamperRuleProbe {
                 containsAny(prefix, VIRTUAL_PATH_RULES)) {
                 statLeaks.add(tid + ":" + prefix);
             }
+
+            String taskCgroup = compact(read(base + "/cgroup"));
+            if (taskCgroup.startsWith("error=") ||
+                !taskCgroup.equals(processCgroup) ||
+                containsAny(taskCgroup, VIRTUAL_PATH_RULES)) {
+                cgroupLeaks.add(tid + ":" + taskCgroup);
+            }
+
+            String taskAttr = compact(read(base + "/attr/current"));
+            if (taskAttr.startsWith("error=") ||
+                !taskAttr.equals(processAttr) ||
+                containsAny(taskAttr, VIRTUAL_PATH_RULES)) {
+                attrLeaks.add(tid + ":" + taskAttr);
+            }
+
+            String schedstat = compact(read(base + "/schedstat"));
+            if (schedstat.startsWith("error=") ||
+                schedstat.split("\\s+").length < 3 ||
+                containsAny(schedstat, VIRTUAL_PATH_RULES)) {
+                schedulerLeaks.add(tid + ":" + schedstat);
+            }
         }
         add(
             rows,
@@ -287,6 +314,30 @@ final class AntiTamperRuleProbe {
                 ? "tasks=" + ids.size()
                 : String.join("; ", statLeaks),
             !ids.isEmpty() && statLeaks.isEmpty()
+        );
+        add(
+            rows,
+            "NPTH task/cgroup 身份",
+            cgroupLeaks.isEmpty()
+                ? "tasks=" + ids.size() + " cgroup=" + processCgroup
+                : String.join("; ", cgroupLeaks),
+            !ids.isEmpty() && cgroupLeaks.isEmpty()
+        );
+        add(
+            rows,
+            "NPTH task/SELinux 身份",
+            attrLeaks.isEmpty()
+                ? "tasks=" + ids.size() + " attr=" + processAttr
+                : String.join("; ", attrLeaks),
+            !ids.isEmpty() && attrLeaks.isEmpty()
+        );
+        add(
+            rows,
+            "NPTH task/schedstat 视图",
+            schedulerLeaks.isEmpty()
+                ? "tasks=" + ids.size()
+                : String.join("; ", schedulerLeaks),
+            !ids.isEmpty() && schedulerLeaks.isEmpty()
         );
     }
 

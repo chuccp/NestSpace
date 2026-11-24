@@ -334,6 +334,20 @@ object ContainerProcessPool {
         return SlotOwner(owner.first, owner.second)
     }
 
+    /** Live target processes for one package instance, paired with host slots. */
+    fun liveProcessesFor(packageName: String, instanceId: String): List<Pair<Int, String>> {
+        val prefix = "$packageName@$instanceId"
+        return slotState.liveAssignments().mapNotNull { assignment ->
+            val process = when {
+                assignment.key == prefix -> packageName
+                assignment.key.startsWith("$prefix|") ->
+                    assignment.key.substringAfter('|')
+                else -> return@mapNotNull null
+            }
+            assignment.slot to process
+        }
+    }
+
     /**
      * Resolve a live slot from its process id. Slot processes rename argv[0],
      * so callers cannot rely on the manifest process name after target startup.

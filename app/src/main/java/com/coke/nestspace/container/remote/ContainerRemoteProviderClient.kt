@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.util.Log
 import com.coke.nestspace.container.ContainerProcessRouter
 import com.coke.nestspace.container.ContainerSession
@@ -193,6 +194,7 @@ object ContainerRemoteProviderClient {
             authority,
             method,
             arg,
+            Process.myPid(),
             extras
         )
     }

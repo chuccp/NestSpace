@@ -283,6 +283,34 @@ std::string data_alias_path(const std::string& path) {
     return "/data/data/" + path.substr(kUserPrefix.size());
 }
 
+pid_t process_parent_pid(pid_t pid) {
+    if (pid <= 0) return -1;
+    const std::string path =
+        "/proc/" + std::to_string(pid) + "/status";
+    const std::string status = read_text_file(path.c_str());
+    const size_t key = status.find("\nPPid:");
+    if (key == std::string::npos) return -1;
+    const char* value = status.c_str() + key + strlen("\nPPid:");
+    while (*value == ' ' || *value == '\t') ++value;
+    char* end = nullptr;
+    const long parent = strtol(value, &end, 10);
+    return end == value || parent <= 0
+        ? -1
+        : static_cast<pid_t>(parent);
+}
+
+bool is_target_descendant(pid_t pid) {
+    if (pid == getpid()) return true;
+    pid_t current = pid;
+    for (int depth = 0; depth < 16 && current > 1; ++depth) {
+        const pid_t parent = process_parent_pid(current);
+        if (parent == getpid()) return true;
+        if (parent <= 1) break;
+        current = parent;
+    }
+    return false;
+}
+
 bool virtual_task_suffix(
     const char* path,
     pid_t* process_pid,
@@ -305,7 +333,8 @@ bool virtual_task_suffix(
     } else if (strncmp(path, "/proc/", 6) == 0) {
         char* pid_end = nullptr;
         const long pid = strtol(path + 6, &pid_end, 10);
-        if ((pid != getpid() && pid != getppid()) ||
+        if ((!is_target_descendant(static_cast<pid_t>(pid)) &&
+                pid != getppid()) ||
             pid_end == path + 6 ||
             strncmp(pid_end, "/task/", 6) != 0) {
             return false;
@@ -332,7 +361,8 @@ bool is_task_directory(const char* path) {
     if (strncmp(path, "/proc/", 6) != 0) return false;
     char* end = nullptr;
     const long pid = strtol(path + 6, &end, 10);
-    return (pid == getpid() || pid == getppid()) &&
+    return (is_target_descendant(static_cast<pid_t>(pid)) ||
+            pid == getppid()) &&
         end != path + 6 &&
         strcmp(end, "/task") == 0;
 }
@@ -344,7 +374,8 @@ bool is_task_directory(const char* path) {
     if (strncmp(path, "/proc/", 6) != 0) return -1;
     char* end = nullptr;
     const long pid = strtol(path + 6, &end, 10);
-    if ((pid == getpid() || pid == getppid()) &&
+    if ((is_target_descendant(static_cast<pid_t>(pid)) ||
+            pid == getppid()) &&
         end != path + 6 &&
         strcmp(end, "/task") == 0) {
         return static_cast<pid_t>(pid);
@@ -433,7 +464,9 @@ const char* virtual_proc_path(const char* path) {
     char* end = nullptr;
     const long pid = strtol(path + 6, &end, 10);
     if (end == path + 6 || pid <= 0 ||
-        (pid != getpid() && pid != getppid()) || *end != '/') {
+        (!is_target_descendant(static_cast<pid_t>(pid)) &&
+            pid != getppid()) ||
+        *end != '/') {
         return nullptr;
     }
     if (strcmp(end, "/status") == 0) return "/proc/self/status";
@@ -570,7 +603,8 @@ std::string virtualized_status(
     const Environment* environment,
     pid_t pid,
     pid_t reported_pid = -1,
-    const std::string& thread_name = {}
+    const std::string& thread_name = {},
+    bool preserve_process_identity = false
 ) {
     const std::string path = proc_path(pid, "status");
     const std::string real = read_text_file(path.c_str());
@@ -585,6 +619,13 @@ std::string virtualized_status(
                                                        : end - offset;
         const std::string line = real.substr(offset, length);
         if (line.rfind("Name:", 0) == 0) {
+            if (preserve_process_identity) {
+                virtual_value += line;
+                if (end == std::string::npos) break;
+                virtual_value.push_back('\n');
+                offset = end + 1;
+                continue;
+            }
             std::string name = thread_name.empty()
                 ? environment->process_name
                 : thread_name;
@@ -637,11 +678,15 @@ std::string virtualized_status(
         } else if (line.rfind("Seccomp_filters:", 0) == 0) {
             virtual_value += "Seccomp_filters:\t1";
         } else if (line.rfind("Threads:", 0) == 0) {
-            const size_t count = virtual_task_threads(
-                environment,
-                pid
-            ).size();
-            virtual_value += "Threads:\t" + std::to_string(count);
+            if (preserve_process_identity) {
+                virtual_value += line;
+            } else {
+                const size_t count = virtual_task_threads(
+                    environment,
+                    pid
+                ).size();
+                virtual_value += "Threads:\t" + std::to_string(count);
+            }
         } else {
             virtual_value += line;
         }

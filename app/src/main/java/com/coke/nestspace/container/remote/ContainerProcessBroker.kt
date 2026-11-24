@@ -56,6 +56,17 @@ class ContainerProcessBrokerService : Service() {
                 Log.w(TAG, "acquire $process failed", it)
             }.getOrDefault(-1)
         }
+
+        override fun liveProcessSlots(
+            packageName: String?,
+            instanceId: String?
+        ): Array<String> {
+            val pkg = packageName ?: return emptyArray()
+            val instance = instanceId ?: return emptyArray()
+            return ContainerProcessPool.liveProcessesFor(pkg, instance)
+                .map { (slot, process) -> "$slot|$process" }
+                .toTypedArray()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -144,6 +155,28 @@ object ContainerProcessBrokerClient {
             Log.w(TAG, "broker acquire $normalized failed", it)
             synchronized(lock) { if (service === broker) service = null }
         }.getOrNull()?.takeIf { it in 0 until ContainerProcessPool.SLOT_COUNT }
+    }
+
+    fun liveProcesses(
+        context: Context,
+        packageName: String,
+        instanceId: String
+    ): List<Pair<Int, String>> {
+        if (ContainerProcessPool.currentSlot() < 0) {
+            return ContainerProcessPool.liveProcessesFor(packageName, instanceId)
+        }
+        val broker = broker(context) ?: return emptyList()
+        return runCatching {
+            broker.liveProcessSlots(packageName, instanceId)
+                .mapNotNull { value ->
+                    val slot = value.substringBefore('|').toIntOrNull()
+                        ?: return@mapNotNull null
+                    val process = value.substringAfter('|', "")
+                    if (process.isBlank()) null else slot to process
+                }
+        }.onFailure {
+            Log.w(TAG, "broker live processes failed", it)
+        }.getOrDefault(emptyList())
     }
 
     private fun broker(context: Context): IContainerBroker? {

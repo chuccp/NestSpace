@@ -42,11 +42,44 @@ object ContainerRemoteBroadcastClient {
         }
     }
 
+    fun sendToLiveSiblingProcesses(session: ContainerSession, intent: Intent) {
+        io.execute {
+            val processes = ContainerProcessBrokerClient.liveProcesses(
+                session.hostContext,
+                session.spec.packageName,
+                session.spec.instanceId
+            )
+            processes.forEach { (slot, process) ->
+                if (process == session.spec.targetProcessName) return@forEach
+                bindAndSendDynamic(session, process, slot, Intent(intent))
+            }
+        }
+    }
+
     private fun bindAndSend(
         session: ContainerSession,
         targetProcess: String,
         slot: Int,
         intent: Intent
+    ) {
+        bindAndSendInternal(session, targetProcess, slot, intent, dynamicOnly = false)
+    }
+
+    private fun bindAndSendDynamic(
+        session: ContainerSession,
+        targetProcess: String,
+        slot: Int,
+        intent: Intent
+    ) {
+        bindAndSendInternal(session, targetProcess, slot, intent, dynamicOnly = true)
+    }
+
+    private fun bindAndSendInternal(
+        session: ContainerSession,
+        targetProcess: String,
+        slot: Int,
+        intent: Intent,
+        dynamicOnly: Boolean
     ) {
         val hostIntent = Intent().setClassName(
             HostIdentity.packageName,
@@ -58,12 +91,21 @@ object ContainerRemoteBroadcastClient {
                 val remote = IContainerRemoteService.Stub.asInterface(binder) ?: return
                 io.execute {
                     runCatching {
-                        remote.sendTargetBroadcast(
-                            session.spec.packageName,
-                            session.spec.instanceId,
-                            targetProcess,
-                            intent
-                        )
+                        if (dynamicOnly) {
+                            remote.sendTargetDynamicBroadcast(
+                                session.spec.packageName,
+                                session.spec.instanceId,
+                                targetProcess,
+                                intent
+                            )
+                        } else {
+                            remote.sendTargetBroadcast(
+                                session.spec.packageName,
+                                session.spec.instanceId,
+                                targetProcess,
+                                intent
+                            )
+                        }
                     }.onFailure {
                         Log.w(TAG, "remote broadcast failed process=$targetProcess", it)
                     }

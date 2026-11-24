@@ -4,6 +4,63 @@ std::atomic<bool> g_identity_notify_installed{false};
 
 void* user_notification_loop(void*);
 
+pid_t notification_thread_group(pid_t tid) {
+    if (tid <= 0) return -1;
+    char path[64] = {};
+    snprintf(path, sizeof(path), "/proc/%d/status", tid);
+    const int fd = static_cast<int>(syscall(
+        SYS_openat,
+        AT_FDCWD,
+        path,
+        O_RDONLY | O_CLOEXEC,
+        0
+    ));
+    if (fd < 0) return -1;
+    char status[4096] = {};
+    const ssize_t length = read(fd, status, sizeof(status) - 1);
+    close(fd);
+    if (length <= 0) return -1;
+    const char* key = strstr(status, "\nTgid:");
+    if (key == nullptr) return -1;
+    key += strlen("\nTgid:");
+    while (*key == ' ' || *key == '\t') ++key;
+    return static_cast<pid_t>(strtol(key, nullptr, 10));
+}
+
+pid_t notification_parent_pid(pid_t process_id) {
+    if (process_id <= 0) return -1;
+    char path[64] = {};
+    snprintf(path, sizeof(path), "/proc/%d/status", process_id);
+    const int fd = static_cast<int>(syscall(
+        SYS_openat,
+        AT_FDCWD,
+        path,
+        O_RDONLY | O_CLOEXEC,
+        0
+    ));
+    if (fd < 0) return -1;
+    char status[4096] = {};
+    const ssize_t length = read(fd, status, sizeof(status) - 1);
+    close(fd);
+    if (length <= 0) return -1;
+    const char* key = strstr(status, "\nPPid:");
+    if (key == nullptr) return -1;
+    key += strlen("\nPPid:");
+    while (*key == ' ' || *key == '\t') ++key;
+    return static_cast<pid_t>(strtol(key, nullptr, 10));
+}
+
+bool notification_is_descendant(pid_t process_id) {
+    pid_t current = process_id;
+    for (int depth = 0; depth < 16 && current > 1; ++depth) {
+        const pid_t parent = notification_parent_pid(current);
+        if (parent == getpid()) return true;
+        if (parent <= 1) break;
+        current = parent;
+    }
+    return false;
+}
+
 bool notification_proc_path(const char* path, pid_t process_id) {
     if (path == nullptr) return false;
     if (strncmp(path, "/proc/self/", 11) == 0 ||
@@ -13,6 +70,16 @@ bool notification_proc_path(const char* path, pid_t process_id) {
     const std::string prefix =
         "/proc/" + std::to_string(process_id) + "/";
     if (strncmp(path, prefix.c_str(), prefix.size()) == 0) return true;
+    if (strncmp(path, "/proc/", 6) == 0) {
+        char* end = nullptr;
+        const long parsed = strtol(path + 6, &end, 10);
+        if (end != path + 6 &&
+            parsed > 0 &&
+            *end == '/' &&
+            notification_is_descendant(static_cast<pid_t>(parsed))) {
+            return true;
+        }
+    }
     const auto* environment = nestspace::current_environment();
     if (environment == nullptr || environment->virtual_pid <= 0) {
         return false;
@@ -98,6 +165,46 @@ void respond_user_notification(
 ) {
     const long syscall_number = request.data.nr;
     const auto* environment = nestspace::current_environment();
+    const pid_t notification_tgid = notification_thread_group(
+        static_cast<pid_t>(request.pid)
+    );
+    const bool descendant_process =
+        notification_tgid > 0 && notification_tgid != getpid();
+    const bool identity_syscall =
+        syscall_number == SYS_getuid ||
+        syscall_number == SYS_geteuid ||
+        syscall_number == SYS_getgid ||
+        syscall_number == SYS_getegid ||
+#if defined(SYS_getresuid)
+        syscall_number == SYS_getresuid ||
+#endif
+#if defined(SYS_getresgid)
+        syscall_number == SYS_getresgid ||
+#endif
+        syscall_number == SYS_getgroups;
+    bool descendant_proc_open = false;
+    if (descendant_process && syscall_number == SYS_openat) {
+        char descendant_path[PATH_MAX] = {};
+        descendant_proc_open = read_user_string(
+            static_cast<uintptr_t>(request.data.args[1]),
+            descendant_path,
+            sizeof(descendant_path),
+            static_cast<pid_t>(request.pid)
+        ) && notification_proc_path(
+            descendant_path,
+            static_cast<pid_t>(request.pid)
+        );
+    }
+    if (descendant_process &&
+        !identity_syscall &&
+        !descendant_proc_open) {
+        // fork() and execve() inherit the filter. Helpers still need the real
+        // filesystem and process environment, while identity syscalls remain
+        // synthesized from the target container below.
+        response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
 #if defined(SYS_getresuid)
     if (syscall_number == SYS_getresuid) {
         if (environment == nullptr) {
@@ -197,13 +304,13 @@ void respond_user_notification(
             __android_log_print(
                 ANDROID_LOG_WARN,
                 kLogTag,
-                "ignored self SIGKILL via user-notify syscall=%lld"
+                "forwarding self SIGKILL via user-notify syscall=%lld"
                 " pid=%d tid=%d",
                 static_cast<long long>(syscall_number),
                 getpid(),
                 request.pid
             );
-            response.val = 0;
+            response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
         } else {
             response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
         }
@@ -256,21 +363,31 @@ void respond_user_notification(
         return;
     }
 #endif
-    if (syscall_number == SYS_getuid ||
+    const bool id_syscall =
+        syscall_number == SYS_getuid ||
         syscall_number == SYS_geteuid ||
         syscall_number == SYS_getgid ||
-        syscall_number == SYS_getegid) {
+        syscall_number == SYS_getegid;
+    if (id_syscall) {
         if (environment == nullptr) {
-            response.error = -EPERM;
+            response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
         } else {
-            response.val = nestspace::identity_syscall_uses_target_identity(
-                static_cast<uintptr_t>(
-                    request.data.instruction_pointer
+            response.val = descendant_process ||
+                nestspace::identity_syscall_uses_target_identity(
+                    static_cast<uintptr_t>(
+                        request.data.instruction_pointer
+                    )
                 )
-            )
                 ? environment->observed_uid
                 : environment->host_uid;
         }
+        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+        return;
+    }
+    if (!descendant_process && syscall_number == SYS_openat) {
+        // Target-process openat calls are already virtualized by the libc and
+        // syscall guards. Avoid duplicating them in user notification.
+        response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
         return;
     }
@@ -281,7 +398,8 @@ void respond_user_notification(
         if (!read_user_string(
                 static_cast<uintptr_t>(request.data.args[1]),
                 virtual_path,
-                sizeof(virtual_path)
+                sizeof(virtual_path),
+                static_cast<pid_t>(request.pid)
             )) {
             response.error = -EFAULT;
             ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
@@ -352,7 +470,8 @@ void respond_user_notification(
         if (!read_user_string(
                 static_cast<uintptr_t>(request.data.args[1]),
                 virtual_path,
-                sizeof(virtual_path)
+                sizeof(virtual_path),
+                static_cast<pid_t>(request.pid)
             )) {
             response.error = -EFAULT;
             ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
@@ -423,7 +542,8 @@ void respond_user_notification(
         if (!read_user_string(
                 static_cast<uintptr_t>(request.data.args[1]),
                 virtual_path,
-                sizeof(virtual_path)
+                sizeof(virtual_path),
+                static_cast<pid_t>(request.pid)
             )) {
             response.error = -EFAULT;
             ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
@@ -470,7 +590,8 @@ void respond_user_notification(
         if (!read_user_string(
                 static_cast<uintptr_t>(request.data.args[1]),
                 virtual_path,
-                sizeof(virtual_path)
+                sizeof(virtual_path),
+                static_cast<pid_t>(request.pid)
             )) {
             response.error = -EFAULT;
             ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
@@ -543,7 +664,8 @@ void respond_user_notification(
     if (!read_user_string(
             static_cast<uintptr_t>(request.data.args[1]),
             virtual_path,
-            sizeof(virtual_path)
+        sizeof(virtual_path),
+        static_cast<pid_t>(request.pid)
         )) {
         response.error = -EFAULT;
         ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
@@ -672,6 +794,10 @@ void respond_user_notification(
 #endif
 #if defined(__NR_getgroups)
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getgroups, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+#if defined(__NR_openat)
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
 #endif
 #if defined(__NR_newfstatat)

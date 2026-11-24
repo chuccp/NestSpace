@@ -320,6 +320,16 @@ object NativeEnvironmentBridge {
         return runCatching { nativeReadPropertyCallback(name) }.getOrNull()
     }
 
+    fun <T> withBinderCallingPid(pid: Int, block: () -> T): T {
+        if (!ensureLoaded()) return block()
+        val previous = nativeSetBinderCallingPid(pid)
+        return try {
+            block()
+        } finally {
+            nativeSetBinderCallingPid(previous)
+        }
+    }
+
     fun clear() {
         if (loaded) {
             runCatching { nativeClear() }
@@ -417,6 +427,9 @@ object NativeEnvironmentBridge {
 
     @JvmStatic
     private external fun nativePublishIdentity(revision: Long): Boolean
+
+    @JvmStatic
+    private external fun nativeSetBinderCallingPid(pid: Int): Int
 
     @JvmStatic
     private external fun nativeClear()

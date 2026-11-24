@@ -819,7 +819,7 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
             __android_log_print(
                 ANDROID_LOG_WARN,
                 kLogTag,
-                "ignored self SIGKILL syscall=%llu"
+                "forwarding self SIGKILL syscall=%llu"
                 " pid=%d tid=%d caller=%016llx",
                 static_cast<unsigned long long>(syscall_number),
                 getpid(),
@@ -828,7 +828,6 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
                     context->uc_mcontext.pc
                 )
             );
-            return;
         }
         const bool fatal_thread_signal =
             (syscall_number == SYS_kill ||
@@ -836,7 +835,7 @@ void syscall_guard_handler(int sig, siginfo_t* info, void* raw_context) {
             signal_number == SIGKILL;
         if (fatal_thread_signal) {
             context->uc_mcontext.pc = reinterpret_cast<uintptr_t>(
-                &guard_exit_thread
+                kills_this_process ? &guard_exit_process : &guard_exit_thread
             );
         }
     }

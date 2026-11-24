@@ -511,6 +511,8 @@ class ContainerSession private constructor(
         context.virtualEnvironment = virtualEnvironment
         context.targetPackageManager = packageManager
         context.broadcastManager = broadcastManager
+        broadcastManager.adopt(context.earlyReceiverRegistry?.drain().orEmpty())
+        context.earlyReceiverRegistry = null
         context.jobScheduler = jobScheduler
         context.virtualRegistry = virtualPackages
         context.permissions.attachRegistry(virtualPackages)
@@ -2676,6 +2678,7 @@ class ContainerSession private constructor(
             )
             ContainerLaunchProgress.advance(LaunchProgressStage.ATTACHING_APPLICATION)
             val applicationAttachStartedAt = SystemClock.elapsedRealtime()
+            context.earlyReceiverRegistry = ContainerEarlyReceiverRegistry()
             val attachedApplication = ProcessNameCompat.withProcessName(spec.targetProcessName) {
                 withContainerClassLoader(loader) {
                     attachApplication(

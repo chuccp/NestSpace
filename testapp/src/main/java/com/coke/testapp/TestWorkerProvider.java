@@ -1,12 +1,17 @@
 package com.coke.testapp;
 
+import android.Manifest;
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
+import android.os.Binder;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
+import android.content.pm.PackageInfo;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -80,6 +85,47 @@ public class TestWorkerProvider extends ContentProvider {
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
         Bundle result = new Bundle();
+        result.putInt("callerUid", Binder.getCallingUid());
+        result.putInt("callerPid", Binder.getCallingPid());
+        result.putInt(
+            "callerWorkSourceUid",
+            Binder.getCallingWorkSourceUid()
+        );
+        result.putInt(
+            "callerUser",
+            callingUser()
+        );
+        result.putString("callerSid", callingSid());
+        result.putInt(
+            "callerNetworkPermission",
+            getContext().checkCallingPermission(
+                Manifest.permission.ACCESS_NETWORK_STATE
+            )
+        );
+        try {
+            String[] packages = getContext().getPackageManager()
+                .getPackagesForUid(Binder.getCallingUid());
+            result.putString(
+                "callerPackages",
+                java.util.Arrays.toString(packages)
+            );
+        } catch (Throwable error) {
+            result.putString("callerPackages", "");
+        }
+        result.putInt("workerUid", Process.myUid());
+        result.putInt("workerPid", Process.myPid());
+        result.putString("workerProcess", ProcessInfo.name());
+        try {
+            PackageInfo self = getContext().getPackageManager()
+                .getPackageInfo(getContext().getPackageName(), 0);
+            result.putBoolean(
+                "workerPackageApplicationInfo",
+                self.applicationInfo != null
+            );
+        } catch (Throwable error) {
+            result.putBoolean("workerPackageApplicationInfo", false);
+            result.putString("workerPackageError", error.toString());
+        }
         result.putString(
             "value",
             "worker-call pid=" + android.os.Process.myPid()
@@ -87,6 +133,32 @@ public class TestWorkerProvider extends ContentProvider {
                 + " arg=" + arg
         );
         return result;
+    }
+
+    private static String callingSid() {
+        try {
+            java.lang.reflect.Method method =
+                Binder.class.getDeclaredMethod("getCallingSid");
+            method.setAccessible(true);
+            return String.valueOf(method.invoke(null));
+        } catch (Throwable error) {
+            return "unavailable";
+        }
+    }
+
+    private static int callingUser() {
+        try {
+            java.lang.reflect.Method method =
+                android.os.UserHandle.class.getDeclaredMethod(
+                    "getIdentifier"
+                );
+            method.setAccessible(true);
+            return ((Number) method.invoke(
+                Binder.getCallingUserHandle()
+            )).intValue();
+        } catch (Throwable error) {
+            return Binder.getCallingUserHandle().hashCode();
+        }
     }
 
     @Override

@@ -487,6 +487,8 @@ std::string virtualized_proc_content(
     pid_t task_id = 0;
     const char* task_suffix = nullptr;
     const pid_t pid = self_pid > 0 ? self_pid : getpid();
+    const bool descendant_process =
+        pid != getpid() && pid != getppid();
     if (virtual_task_suffix(
             path,
             &process_pid,
@@ -586,7 +588,9 @@ std::string virtualized_proc_content(
         char* end = nullptr;
         const long parsed = strtol(path + 6, &end, 10);
         if (parsed <= 0 ||
-            (parsed != pid && parsed != getppid())) {
+            (parsed != pid &&
+                parsed != getppid() &&
+                !is_target_descendant(static_cast<pid_t>(parsed)))) {
             return {};
         }
         process_id = static_cast<pid_t>(parsed);
@@ -637,9 +641,20 @@ std::string virtualized_proc_content(
         return cgroup;
     }
     if (proc_suffix(path, "/status")) {
-        return virtualized_status(environment, process_id);
+        return virtualized_status(
+            environment,
+            process_id,
+            -1,
+            {},
+            descendant_process
+        );
     }
     if (proc_suffix(path, "/cmdline")) {
+        if (descendant_process) {
+            return read_text_file(
+                proc_path(process_id, "cmdline").c_str()
+            );
+        }
         // Android zygotes keep the argv buffer padded with NUL bytes. Readers
         // can observe its full length, so virtualize only the first argument
         // and preserve the process's real cmdline length.
@@ -655,6 +670,11 @@ std::string virtualized_proc_content(
         return value;
     }
     if (proc_suffix(path, "/comm")) {
+        if (descendant_process) {
+            return read_text_file(
+                proc_path(process_id, "comm").c_str()
+            );
+        }
         return process_thread_name(environment) + "\n";
     }
     if (proc_suffix(path, "/stat") ||

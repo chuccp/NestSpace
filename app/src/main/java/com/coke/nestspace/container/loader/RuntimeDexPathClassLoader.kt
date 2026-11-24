@@ -140,6 +140,9 @@ class RuntimeDexPathClassLoader(
             }
         }
         noteTargetClass(loaded, name)
+        if (loaded.classLoader === this) {
+            seedContext(loaded, name)
+        }
         return loaded
     }
 

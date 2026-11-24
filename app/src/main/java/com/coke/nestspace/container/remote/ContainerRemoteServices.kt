@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.res.AssetFileDescriptor
 import android.os.Bundle
+import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -17,6 +18,7 @@ import com.coke.nestspace.container.ContainerSession
 import com.coke.nestspace.container.ContainerSessions
 import com.coke.nestspace.container.ContainerSpecFactory
 import com.coke.nestspace.container.IContainerRemoteService
+import com.coke.nestspace.container.runtime.NativeEnvironmentBridge
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -99,6 +101,24 @@ abstract class ContainerRemoteService : Service() {
             val process = ContainerProcessRouter.normalize(pkg, targetProcess)
             val target = sessionFor(pkg, instance, process) ?: return
             onMain { target.broadcastManager.deliverRemoteBroadcast(intent ?: Intent()) }
+        }
+
+        override fun sendTargetDynamicBroadcast(
+            packageName: String?,
+            instanceId: String?,
+            targetProcess: String?,
+            intent: Intent?
+        ) {
+            val pkg = packageName ?: return
+            val instance = instanceId ?: return
+            val process = ContainerProcessRouter.normalize(pkg, targetProcess)
+            val target = sessionFor(pkg, instance, process) ?: return
+            onMain {
+                target.broadcastManager.deliverRemoteBroadcast(
+                    intent ?: Intent(),
+                    dynamicOnly = true
+                )
+            }
         }
 
         override fun queryTargetProvider(
@@ -215,6 +235,7 @@ abstract class ContainerRemoteService : Service() {
             authority: String?,
             method: String?,
             arg: String?,
+            callerPid: Int,
             extras: Bundle?
         ): Bundle? {
             val pkg = packageName ?: return null
@@ -223,8 +244,20 @@ abstract class ContainerRemoteService : Service() {
             val callMethod = method ?: return null
             val process = ContainerProcessRouter.normalize(pkg, targetProcess)
             val target = sessionFor(pkg, instance, process) ?: return null
-            return onMain {
-                target.callProviderDirect(callAuthority, callMethod, arg, extras)
+            val effectiveCallerPid = callerPid.takeIf { it > 0 }
+                ?: Binder.getCallingPid()
+            // ContentProvider.call() is normally delivered on the receiving
+            // process's Binder thread. Keeping it there preserves the calling
+            // UID/PID that target providers observe through Binder.
+            return NativeEnvironmentBridge.withBinderCallingPid(
+                effectiveCallerPid
+            ) {
+                target.callProviderDirect(
+                    callAuthority,
+                    callMethod,
+                    arg,
+                    extras
+                )
             }
         }
 

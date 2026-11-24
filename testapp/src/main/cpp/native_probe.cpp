@@ -6,6 +6,7 @@
 #include <linux/capability.h>
 #include <linux/stat.h>
 #include <sched.h>
+#include <sys/auxv.h>
 #include <sys/ptrace.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
@@ -23,6 +24,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstdio>
+#include <cinttypes>
 #include <cstring>
 #include <iterator>
 #include <string>
@@ -413,9 +415,6 @@ std::string raw_syscall_summary(const char* data_root) {
             0,
             0
         );
-    if (files_fd >= 0) {
-        raw_syscall6(SYS_close, files_fd, 0, 0, 0, 0, 0);
-    }
 
     struct stat raw_status {};
     const char* status_path = "/proc/self/status";
@@ -546,12 +545,21 @@ std::string raw_syscall_summary(const char* data_root) {
         struct stat value {};
         const int stat_result = fstat(files_fd, &value);
         if (stat_result == 0) {
-            files_open_result = close(files_fd) == 0
+            files_open_result = raw_syscall6(
+                SYS_close,
+                files_fd,
+                0,
+                0,
+                0,
+                0,
+                0
+            ) == 0
                 ? "ok"
                 : "close-failed";
         } else {
             files_open_result = "fstat-error=" +
                 std::to_string(errno);
+            raw_syscall6(SYS_close, files_fd, 0, 0, 0, 0, 0);
         }
     }
     return "raw.syscall.supported=1"
@@ -658,6 +666,162 @@ std::string path_summary(
             " statvfs=" + statvfs_summary(path);
     }
     return output;
+}
+
+struct ExecCapture {
+    int exit_code = -1;
+    int signal = 0;
+    std::string output;
+};
+
+std::string compact_output(std::string value, size_t limit = 4096) {
+    if (value.size() > limit) value.resize(limit);
+    for (char& item : value) {
+        if (item == '\n' || item == '\r' || item == '\t') item = '|';
+    }
+    while (!value.empty() && value.back() == '|') value.pop_back();
+    for (size_t index = 0; index + 1 < value.size();) {
+        if (value[index] == '|' && value[index + 1] == '|') {
+            value.erase(index, 1);
+        } else {
+            ++index;
+        }
+    }
+    return value.empty() ? "<empty>" : value;
+}
+
+ExecCapture run_exec_capture(
+    const char* executable,
+    const std::vector<std::string>& arguments
+) {
+    ExecCapture capture;
+    int pipe_fds[2] = {-1, -1};
+    if (pipe2(pipe_fds, O_CLOEXEC) != 0) {
+        capture.output = "pipe-error=" + std::to_string(errno);
+        return capture;
+    }
+    const pid_t child = fork();
+    if (child == 0) {
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        if (pipe_fds[1] > STDERR_FILENO) close(pipe_fds[1]);
+
+        std::vector<char*> argv;
+        argv.reserve(arguments.size() + 1);
+        for (const std::string& argument : arguments) {
+            argv.push_back(const_cast<char*>(argument.c_str()));
+        }
+        argv.push_back(nullptr);
+        execv(executable, argv.data());
+        dprintf(
+            STDERR_FILENO,
+            "exec-error=%s errno=%d",
+            executable,
+            errno
+        );
+        _exit(127);
+    }
+    close(pipe_fds[1]);
+    if (child < 0) {
+        close(pipe_fds[0]);
+        capture.output = "fork-error=" + std::to_string(errno);
+        return capture;
+    }
+
+    std::array<char, 1024> buffer{};
+    while (true) {
+        const ssize_t count = read(
+            pipe_fds[0],
+            buffer.data(),
+            buffer.size()
+        );
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) break;
+        if (capture.output.size() < 8192) {
+            const size_t available = 8192 - capture.output.size();
+            capture.output.append(
+                buffer.data(),
+                std::min(
+                    available,
+                    static_cast<size_t>(count)
+                )
+            );
+        }
+    }
+    close(pipe_fds[0]);
+
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    if (WIFEXITED(status)) {
+        capture.exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        capture.signal = WTERMSIG(status);
+    }
+    capture.output = compact_output(capture.output);
+    return capture;
+}
+
+std::string auxiliary_exec_report() {
+    static const char* kShellProbe =
+        "printf 'uid='; id -u; "
+        "printf 'pid='; echo $$; "
+        "printf 'exe='; readlink /proc/$$/exe; "
+        "printf 'cmdline='; tr '\\0' '|' < /proc/$$/cmdline; echo; "
+        "grep -E "
+        "'^(Name|Tgid|Pid|PPid|Uid|Gid|NSpid|Seccomp|"
+        "Seccomp_filters|TracerPid|CapEff):' /proc/$$/status";
+    const ExecCapture shell = run_exec_capture(
+        "/system/bin/sh",
+        {"sh", "-c", kShellProbe}
+    );
+    const ExecCapture getprop = run_exec_capture(
+        "/system/bin/getprop",
+        {"getprop", "ro.build.version.sdk"}
+    );
+    const ExecCapture logcat = run_exec_capture(
+        "/system/bin/logcat",
+        {"logcat", "-d", "-t", "1", "-v", "brief"}
+    );
+    return
+        "helper.sh.exit=" + std::to_string(shell.exit_code) +
+        "\nhelper.sh.signal=" + std::to_string(shell.signal) +
+        "\nhelper.sh.output=" + shell.output +
+        "\nhelper.getprop.exit=" + std::to_string(getprop.exit_code) +
+        "\nhelper.getprop.signal=" + std::to_string(getprop.signal) +
+        "\nhelper.getprop.output=" + getprop.output +
+        "\nhelper.logcat.exit=" + std::to_string(logcat.exit_code) +
+        "\nhelper.logcat.signal=" + std::to_string(logcat.signal) +
+        "\nhelper.logcat.output=" + logcat.output;
+}
+
+std::string auxv_report() {
+    const unsigned long execfn_address =
+        getauxval(AT_EXECFN);
+    const char* execfn = execfn_address == 0
+        ? nullptr
+        : reinterpret_cast<const char*>(execfn_address);
+    return
+        "auxv.execfn=" + std::string(
+            execfn == nullptr ? "<missing>" : execfn
+        ) +
+        "\nauxv.uid=" + std::to_string(getauxval(AT_UID)) +
+        "\nauxv.euid=" + std::to_string(getauxval(AT_EUID)) +
+        "\nauxv.gid=" + std::to_string(getauxval(AT_GID)) +
+        "\nauxv.egid=" + std::to_string(getauxval(AT_EGID)) +
+        "\nauxv.secure=" + std::to_string(getauxval(AT_SECURE)) +
+        "\nauxv.entry=" + std::to_string(getauxval(AT_ENTRY));
+}
+
+std::string loaded_probe_library_path() {
+    Dl_info info {};
+    if (dladdr(
+        reinterpret_cast<void*>(&auxv_report),
+        &info
+    ) == 0 || info.dli_fname == nullptr) {
+        return "<missing>";
+    }
+    return info.dli_fname;
 }
 
 void read_into_buffer(
@@ -824,8 +988,105 @@ struct ElfScanState {
     int modules = 0;
     int host_modules = 0;
     int virtualized_host_modules = 0;
+    int target_modules = 0;
+    int build_ids = 0;
+    int missing_build_ids = 0;
+    int relro_writable = 0;
     std::vector<std::string> samples;
+    std::vector<std::string> build_id_samples;
+    std::vector<std::string> relro_samples;
 };
+
+bool mapping_is_writable(uintptr_t address) {
+    const std::string maps = read_file("/proc/self/maps", 1024 * 1024);
+    if (maps.empty()) return false;
+    size_t offset = 0;
+    while (offset < maps.size()) {
+        const size_t end = maps.find('\n', offset);
+        const std::string line = maps.substr(
+            offset,
+            end == std::string::npos ? std::string::npos : end - offset
+        );
+        unsigned long start = 0;
+        unsigned long finish = 0;
+        char permissions[8] = {};
+        if (sscanf(
+                line.c_str(),
+                "%lx-%lx %7s",
+                &start,
+                &finish,
+                permissions
+            ) == 3 &&
+            address >= start &&
+            address < finish) {
+            return permissions[1] == 'w';
+        }
+        if (end == std::string::npos) break;
+        offset = end + 1;
+    }
+    return false;
+}
+
+std::string elf_build_id(
+    const struct dl_phdr_info* info,
+    uintptr_t* relro_start,
+    size_t* relro_size
+) {
+    if (info == nullptr) return {};
+    *relro_start = 0;
+    *relro_size = 0;
+    for (ElfW(Half) index = 0; index < info->dlpi_phnum; ++index) {
+        const ElfW(Phdr)& header = info->dlpi_phdr[index];
+        if (header.p_type == PT_GNU_RELRO) {
+            *relro_start =
+                static_cast<uintptr_t>(info->dlpi_addr + header.p_vaddr);
+            *relro_size = static_cast<size_t>(header.p_memsz);
+            continue;
+        }
+        if (header.p_type != PT_NOTE ||
+            header.p_filesz < sizeof(ElfW(Nhdr))) {
+            continue;
+        }
+        const auto* note = reinterpret_cast<const uint8_t*>(
+            info->dlpi_addr + header.p_vaddr
+        );
+        size_t cursor = 0;
+        while (cursor + sizeof(ElfW(Nhdr)) <= header.p_filesz) {
+            const auto* name_note =
+                reinterpret_cast<const ElfW(Nhdr)*>(note + cursor);
+            const size_t name_start =
+                cursor + sizeof(ElfW(Nhdr));
+            const size_t name_end = name_start + name_note->n_namesz;
+            const size_t description_unaligned =
+                (name_end + 3) & ~size_t{3};
+            const size_t description_end =
+                description_unaligned + name_note->n_descsz;
+            if (name_end > header.p_filesz ||
+                description_end > header.p_filesz) {
+                break;
+            }
+            if (name_note->n_type == 3 &&
+                name_note->n_namesz == 4 &&
+                memcmp(note + name_start, "GNU", 4) == 0 &&
+                name_note->n_descsz > 0) {
+                static constexpr char kHex[] = "0123456789abcdef";
+                std::string value;
+                const size_t count = std::min(
+                    static_cast<size_t>(name_note->n_descsz),
+                    static_cast<size_t>(16)
+                );
+                for (size_t byte = 0; byte < count; ++byte) {
+                    const uint8_t item = note[description_unaligned + byte];
+                    value.push_back(kHex[item >> 4]);
+                    value.push_back(kHex[item & 0x0f]);
+                }
+                return value;
+            }
+            cursor = (description_end + 3) & ~size_t{3};
+        }
+    }
+    return {};
+}
 
 int scan_elf_module(
     struct dl_phdr_info* info,
@@ -835,11 +1096,59 @@ int scan_elf_module(
     auto* state = static_cast<ElfScanState*>(data);
     if (state == nullptr) return 0;
     ++state->modules;
-    const std::string name =
+    std::string name =
         info->dlpi_name == nullptr ? "" : info->dlpi_name;
+    if (name.empty() && info->dlpi_addr != 0) {
+        Dl_info resolved {};
+        if (dladdr(
+                reinterpret_cast<void*>(info->dlpi_addr + 1),
+                &resolved
+            ) != 0 &&
+            resolved.dli_fname != nullptr) {
+            name = resolved.dli_fname;
+        }
+    }
     if (host_marker(name)) {
         ++state->host_modules;
         if (state->samples.size() < 4) state->samples.push_back(name);
+    }
+    if (name.find("/data/app/") != std::string::npos) {
+        ++state->target_modules;
+        uintptr_t relro_start = 0;
+        size_t relro_size = 0;
+        const std::string build_id = elf_build_id(
+            info,
+            &relro_start,
+            &relro_size
+        );
+        if (build_id.empty()) {
+            ++state->missing_build_ids;
+        } else {
+            ++state->build_ids;
+            if (state->build_id_samples.size() < 4) {
+                state->build_id_samples.push_back(
+                    name.substr(name.find_last_of('/') + 1) +
+                    "=" + build_id
+                );
+            }
+        }
+        if (relro_size > 0 && mapping_is_writable(relro_start)) {
+            ++state->relro_writable;
+            if (state->relro_samples.size() < 4) {
+                state->relro_samples.push_back(
+                    name + "@0x" + [&] {
+                        char address[32] = {};
+                        snprintf(
+                            address,
+                            sizeof(address),
+                            "%" PRIxPTR,
+                            relro_start
+                        );
+                        return std::string(address);
+                    }()
+                );
+            }
+        }
     }
     return 0;
 }
@@ -1327,6 +1636,9 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
                 "/sdcard/" + external_root.substr(strlen(kStoragePrefix));
         }
     }
+    const std::string apk_fd_path = apk_root.empty()
+        ? "unavailable"
+        : fd_link(apk_root.c_str());
 
     std::string report =
         "jni.activityThread.currentOpPackageName=" +
@@ -1337,6 +1649,8 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
             android_application_package(env, "getPackageName") +
         "\njni.currentApplication.getOpPackageName=" +
             android_application_package(env, "getOpPackageName") +
+        "\n" + auxv_report() +
+        "\nnative.libraryPath=" + loaded_probe_library_path() +
         "\n" +
         "libc.getuid=" + std::to_string(getuid()) +
         "\nlibc.geteuid=" + std::to_string(geteuid()) +
@@ -1428,7 +1742,8 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
         "\nreadlink.procCwd=" + readlink_summary("/proc/self/cwd") +
         "\nreadlink.procExe=" + readlink_summary("/proc/self/exe") +
         "\nreadlink.procRoot=" + readlink_summary("/proc/self/root") +
-        "\nreadlink.procUserNs=" + readlink_summary("/proc/self/ns/user");
+        "\nreadlink.procUserNs=" + readlink_summary("/proc/self/ns/user") +
+        "\nnative.fd.apkPath=" + apk_fd_path;
     if (!data_root.empty()) {
         const int directory_fd = open(
             data_root.c_str(),
@@ -1512,6 +1827,18 @@ Java_com_coke_testapp_NativeProbe_nativeHookProbe(
             std::to_string(elf_scan.virtualized_host_modules) +
         "\nnative.elf.hostSamples=" +
             join_samples(elf_scan.samples) +
+        "\nnative.elf.targetModules=" +
+            std::to_string(elf_scan.target_modules) +
+        "\nnative.elf.buildIds=" +
+            std::to_string(elf_scan.build_ids) +
+        "\nnative.elf.missingBuildIds=" +
+            std::to_string(elf_scan.missing_build_ids) +
+        "\nnative.elf.buildIdSamples=" +
+            join_samples(elf_scan.build_id_samples) +
+        "\nnative.elf.relroWritable=" +
+            std::to_string(elf_scan.relro_writable) +
+        "\nnative.elf.relroSamples=" +
+            join_samples(elf_scan.relro_samples) +
         "\nnative.rawMaps.read=" +
             (starts_with(raw_maps, "error=") ? raw_maps : "ok") +
         "\nnative.rawMaps.hostLeaks=" +
@@ -1606,4 +1933,12 @@ Java_com_coke_testapp_NativeProbe_nativeFdPath(
     const std::string value = fd_link(chars);
     env->ReleaseStringUTFChars(path, chars);
     return to_string(env, value);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_coke_testapp_NativeProbe_nativeAuxiliaryProbe(
+    JNIEnv* env,
+    jclass
+) {
+    return to_string(env, auxiliary_exec_report());
 }

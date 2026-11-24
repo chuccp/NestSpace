@@ -22,4 +22,5 @@ public final class NativeProbe {
     public static native String nativeFopenPath(String path);
     public static native String nativeSyscallOpenPath(String path);
     public static native String nativeFdPath(String path);
+    public static native String nativeAuxiliaryProbe();
 }

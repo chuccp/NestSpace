@@ -13,6 +13,53 @@ import android.util.Log
 import com.coke.nestspace.container.remote.ContainerRemoteBroadcastClient
 
 /**
+ * Buffers dynamic receivers registered from Application.attachBaseContext().
+ * Android creates the Application before container startup has assembled the
+ * process-local session; those registrations still belong to the target and
+ * must survive until the full broadcast manager is available.
+ */
+internal class ContainerEarlyReceiverRegistry {
+    data class PendingRegistration(
+        val receiver: BroadcastReceiver,
+        val filter: IntentFilter,
+        val permission: String?,
+        val scheduler: Handler?,
+        val flags: Int
+    )
+
+    private val registrations = mutableListOf<PendingRegistration>()
+
+    fun register(
+        receiver: BroadcastReceiver?,
+        filter: IntentFilter?,
+        permission: String?,
+        scheduler: Handler?,
+        flags: Int
+    ) {
+        if (receiver == null || filter == null) return
+        synchronized(registrations) {
+            registrations += PendingRegistration(
+                receiver = receiver,
+                filter = IntentFilter(filter),
+                permission = permission,
+                scheduler = scheduler,
+                flags = flags
+            )
+        }
+    }
+
+    fun unregister(receiver: BroadcastReceiver): Boolean =
+        synchronized(registrations) {
+            registrations.removeAll { it.receiver === receiver }
+        }
+
+    fun drain(): List<PendingRegistration> =
+        synchronized(registrations) {
+            registrations.toList().also { registrations.clear() }
+        }
+}
+
+/**
  * Local BroadcastReceiver host for one ContainerSession.
  *
  * Manifest receivers are instantiated on demand from the target APK. Dynamic
@@ -228,6 +275,13 @@ class ContainerBroadcastManager(
         }
 
         val targetScoped = component != null || targetPackage == session.spec.packageName
+        if (targetScoped) {
+            Log.d(
+                TAG,
+                "package-scoped broadcast action=${intent.action} " +
+                    "component=$component package=$targetPackage ordered=$ordered"
+            )
+        }
         if (receiverPermission != null) {
             Log.d(TAG, "broadcast receiverPermission=$receiverPermission (not enforced)")
         }
@@ -240,6 +294,14 @@ class ContainerBroadcastManager(
         }
         if (sticky) storeSticky(intent)
         if (!ordered) routeRemoteBroadcast(intent)
+        if (!ordered && component == null &&
+            targetPackage == session.spec.packageName
+        ) {
+            ContainerRemoteBroadcastClient.sendToLiveSiblingProcesses(
+                session,
+                Intent(intent)
+            )
+        }
         if (targets.isEmpty()) {
             // A target-scoped ordered broadcast with no matching receiver still
             // invokes its result receiver with the initial result.
@@ -279,6 +341,39 @@ class ContainerBroadcastManager(
         synchronized(stickyIntents) { stickyIntents.clear() }
     }
 
+    internal fun adopt(
+        registrations: List<ContainerEarlyReceiverRegistry.PendingRegistration>
+    ) {
+        if (registrations.isEmpty()) return
+        synchronized(dynamicRecords) {
+            dynamicRecords += registrations.map {
+                DynamicRecord(
+                    receiver = it.receiver,
+                    filter = IntentFilter(it.filter),
+                    permission = it.permission,
+                    scheduler = it.scheduler,
+                    flags = it.flags
+                )
+            }
+        }
+        ensureBridgedActions(
+            registrations.flatMap { registration ->
+                buildList {
+                    val iterator = registration.filter.actionsIterator()
+                    while (iterator.hasNext()) add(iterator.next())
+                }
+            }
+        )
+        registrations.forEach { registration ->
+            Log.d(
+                TAG,
+                "adopt early ${registration.receiver.javaClass.name} " +
+                    "actions=${registration.filter.countActions()} " +
+                    "permission=${registration.permission} flags=${registration.flags}"
+            )
+        }
+    }
+
     private fun staticTargets(intent: Intent): List<Target> =
         session.intents.queryReceivers(intent, 0)
             .filter { it.info.enabled }
@@ -307,8 +402,11 @@ class ContainerBroadcastManager(
     }
 
     /** Entry point used by a remote slot after cross-process routing. */
-    fun deliverRemoteBroadcast(intent: Intent) {
-        val targets = staticTargets(intent) + dynamicTargets(intent)
+    fun deliverRemoteBroadcast(intent: Intent, dynamicOnly: Boolean = false) {
+        val targets = buildList {
+            if (!dynamicOnly) addAll(staticTargets(intent))
+            addAll(dynamicTargets(intent))
+        }
         if (targets.isEmpty()) return
         dispatch(
             targets = targets,

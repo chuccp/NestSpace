@@ -309,7 +309,6 @@ int hook_kill(pid_t pid, int signal) {
                 ? info.dli_fname
                 : "?"
         );
-        if (signal == SIGKILL) return 0;
     }
     return g_real.killProcess
         ? g_real.killProcess(pid, signal)
@@ -352,8 +351,6 @@ int hook_raise(int signal) {
                 ? info.dli_fname
                 : "?"
         );
-        syscall(SYS_exit, 0);
-        __builtin_unreachable();
     }
     if (signal == SIGKILL &&
         current_environment() != nullptr &&
@@ -391,7 +388,6 @@ int hook_raise(int signal) {
                     ? info.dli_fname
                     : "?"
             );
-            return 0;
         }
     }
     __android_log_print(
@@ -448,6 +444,12 @@ bool is_runtime_module_path(const char* path) {
 
 void log_exit(const char* api, int status, uintptr_t caller) {
     if (current_environment() == nullptr) return;
+    char diagnostics[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.exit_diagnostics",
+        diagnostics
+    );
+    if (strcmp(diagnostics, "1") != 0) return;
     Dl_info info{};
     const bool resolved = g_real.dladdr != nullptr &&
         g_real.dladdr(reinterpret_cast<void*>(caller), &info) != 0;
@@ -677,7 +679,13 @@ long hook_ptrace(int request, pid_t pid, void* address, void* data) {
     const long real_result = result;
     const int saved_errno = errno;
     static std::atomic<int> traceme_count{0};
+    char ptrace_diagnostics[PROP_VALUE_MAX] = {};
+    __system_property_get(
+        "debug.nestspace.ptrace_diagnostics",
+        ptrace_diagnostics
+    );
     if (current_environment() != nullptr &&
+        strcmp(ptrace_diagnostics, "1") == 0 &&
         (request != PTRACE_TRACEME || traceme_count.fetch_add(1) < 8)) {
         __android_log_print(
             ANDROID_LOG_WARN,

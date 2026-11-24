@@ -575,17 +575,9 @@ int iterate_phdr_callback(
     auto* context = static_cast<IteratePhdrContext*>(data);
     if (context == nullptr || context->callback == nullptr) return 0;
     const Environment* environment = current_environment();
-    if (environment != nullptr && info->dlpi_name != nullptr &&
-        nestspace::host_runtime_path_matches(
-            info->dlpi_name,
-            environment
-        )) {
-        // Keep loader enumeration consistent with a directly installed app:
-        // host implementation modules are not part of the target process API.
-        return 0;
-    }
     struct dl_phdr_info copy = *info;
     ssize_t mapped_length = -1;
+    bool mapped = false;
     if (info->dlpi_name != nullptr &&
         virtual_path_from_actual(
             info->dlpi_name,
@@ -594,6 +586,18 @@ int iterate_phdr_callback(
             &mapped_length
         )) {
         copy.dlpi_name = context->path;
+        mapped = true;
+    }
+    if (!mapped &&
+        environment != nullptr &&
+        info->dlpi_name != nullptr &&
+        nestspace::host_runtime_path_matches(
+            info->dlpi_name,
+            environment
+        )) {
+        // Keep loader enumeration consistent with a directly installed app:
+        // host implementation modules are not part of the target process API.
+        return 0;
     }
     return context->callback(&copy, size, context->data);
 }

@@ -209,12 +209,13 @@ final class IntegrityProbe {
                 activity.getDataDir().getAbsolutePath(),
                 activity.getApplicationInfo().sourceDir,
                 ""
-            );
+            ) + "\n" + NativeProbe.nativeAuxiliaryProbe();
         } catch (Throwable error) {
             nativeReport = "error=" + describe(error);
         }
         checkNative(rows, nativeReport, "libc.getuid", expectedUid);
         checkNative(rows, nativeReport, "syscall.getuid", expectedUid);
+        checkNative(rows, nativeReport, "raw.syscall.getuid", expectedUid);
         checkNative(
             rows,
             nativeReport,
@@ -268,6 +269,40 @@ final class IntegrityProbe {
             "raw mountinfo 宿主泄漏",
             "native.rawMountinfo.hostLeaks",
             "native.rawMountinfo.hostSamples"
+        );
+        String targetElfModules = field(
+            nativeReport,
+            "native.elf.targetModules="
+        );
+        String targetBuildIds = field(
+            nativeReport,
+            "native.elf.buildIds="
+        );
+        add(
+            rows,
+            "native target ELF build-id",
+            "modules=" + targetElfModules + " buildIds=" + targetBuildIds
+                + " " + field(nativeReport, "native.elf.buildIdSamples="),
+            Integer.parseInt(targetElfModules.isEmpty()
+                    ? "-1"
+                    : targetElfModules) > 0 &&
+                Integer.parseInt(targetBuildIds.isEmpty()
+                    ? "-1"
+                    : targetBuildIds) > 0
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "native ELF missing build-id",
+            "native.elf.missingBuildIds",
+            "native.elf.buildIdSamples"
+        );
+        checkNativeCount(
+            rows,
+            nativeReport,
+            "native ELF writable RELRO",
+            "native.elf.relroWritable",
+            "native.elf.relroSamples"
         );
         checkNativeCount(
             rows,
@@ -356,6 +391,8 @@ final class IntegrityProbe {
         );
         PlatformEnvironmentProbe.appendRows(rows, activity);
         AntiTamperRuleProbe.appendRows(rows, activity, nativeReport);
+        RuntimeIntegrityProbe.appendRows(rows, activity, nativeReport);
+        AdvancedTamperProbe.appendRows(activity, nativeReport, rows);
 
         boolean passed = true;
         for (String row : rows) {

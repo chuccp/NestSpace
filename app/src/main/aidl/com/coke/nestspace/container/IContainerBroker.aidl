@@ -7,4 +7,8 @@ interface IContainerBroker {
             String instanceId,
             String targetProcess,
             int callerSlot);
+
+    String[] liveProcessSlots(
+            String packageName,
+            String instanceId);
 }
