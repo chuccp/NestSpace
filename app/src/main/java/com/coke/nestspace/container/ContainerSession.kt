@@ -1101,9 +1101,14 @@ class ContainerSession private constructor(
             )
         fun normalizeApplicationInfo(targetInfo: android.content.pm.ApplicationInfo?) {
             targetInfo ?: return
-            targetInfo.sourceDir = spec.baseApkPath
-            targetInfo.publicSourceDir = spec.baseApkPath
-            targetInfo.splitSourceDirs = spec.splitApkPaths
+            val virtualBaseApk = virtualEnvironment.virtualApkPaths.firstOrNull()
+                ?: spec.baseApkPath
+            targetInfo.sourceDir = virtualBaseApk
+            targetInfo.publicSourceDir = virtualBaseApk
+            targetInfo.nativeLibraryDir =
+                virtualEnvironment.virtualNativeLibraryDir
+                    ?: targetInfo.nativeLibraryDir
+            targetInfo.splitSourceDirs = virtualEnvironment.virtualSplitApkPaths
                 .takeIf { it.isNotEmpty() }
                 ?.toTypedArray()
                 ?: targetInfo.splitSourceDirs
@@ -1112,6 +1117,7 @@ class ContainerSession private constructor(
         normalizeApplicationInfo(context.applicationInfo)
         normalizeApplicationInfo(application.applicationInfo)
         normalizeApplicationInfo(spec.applicationInfo)
+        normalizeApplicationInfo(spec.packageInfo.applicationInfo)
         runCatching {
             val threadClass = Class.forName("android.app.ActivityThread")
             val thread = threadClass.getMethod("currentActivityThread").invoke(null)

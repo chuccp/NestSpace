@@ -338,6 +338,12 @@ bool virtual_path_from_actual(
         return true;
     }
     if (exact(
+            data_alias_path(environment->actual_base_apk_path),
+            environment->virtual_base_apk_path
+        )) {
+        return true;
+    }
+    if (exact(
             environment->host_base_apk_path,
             environment->virtual_base_apk_path
         )) {
@@ -404,6 +410,12 @@ bool virtual_path_from_actual(
     for (size_t index = 0; index < split_count; ++index) {
         if (exact(
                 environment->actual_split_apk_paths[index],
+                environment->virtual_split_apk_paths[index]
+            )) {
+            return true;
+        }
+        if (exact(
+                data_alias_path(environment->actual_split_apk_paths[index]),
                 environment->virtual_split_apk_paths[index]
             )) {
             return true;

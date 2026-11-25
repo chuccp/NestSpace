@@ -1103,9 +1103,26 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     }
 
     @Override
+    public PackageInfo getPackageArchiveInfo(String archiveFilePath, int flags) {
+        if (archiveFilePath != null &&
+                archiveFilePath.equals(targetAppInfo.sourceDir)) {
+            return copyPackageInfo(flags);
+        }
+        String actualPath = spec.getBaseApkPath().equals(archiveFilePath)
+                ? spec.getBaseApkPath()
+                : archiveFilePath;
+        PackageInfo info = super.getPackageArchiveInfo(actualPath, flags);
+        if (info == null) return null;
+        if (targetPackage.equals(info.packageName)) {
+            info.applicationInfo = copyApplicationInfo(flags);
+        }
+        return info;
+    }
+
+    @Override
     public PackageInfo getPackageArchiveInfo(String archiveFilePath,
             PackageInfoFlags flags) {
-        return base.getPackageArchiveInfo(archiveFilePath, (int) flags.getValue());
+        return getPackageArchiveInfo(archiveFilePath, (int) flags.getValue());
     }
 
     /*
@@ -1605,13 +1622,22 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     private ApplicationInfo copyApplicationInfo(int flags) {
         ApplicationInfo copy = cloneParcelable(targetAppInfo, ApplicationInfo.CREATOR);
         copy.uid = Process.myUid();
-        // TargetPM snapshots may have been captured while the same package was
-        // installed on the host. AppCompat calls getResourcesForApplication()
-        // with this object, so stale /data/app paths crash before the first
-        // Activity can attach. Always expose the imported container paths.
-        copy.sourceDir = spec.getBaseApkPath();
-        copy.publicSourceDir = spec.getBaseApkPath();
-        if (spec.getSplitApkPaths() != null && !spec.getSplitApkPaths().isEmpty()) {
+        // Keep PackageManager results on the same virtual install paths as the
+        // target Application and LoadedApk. The session normalizes these fields
+        // before constructing this manager.
+        if (targetAppInfo.sourceDir != null) {
+            copy.sourceDir = targetAppInfo.sourceDir;
+        }
+        if (targetAppInfo.publicSourceDir != null) {
+            copy.publicSourceDir = targetAppInfo.publicSourceDir;
+        }
+        if (targetAppInfo.nativeLibraryDir != null) {
+            copy.nativeLibraryDir = targetAppInfo.nativeLibraryDir;
+        }
+        if (targetAppInfo.splitSourceDirs != null) {
+            copy.splitSourceDirs = targetAppInfo.splitSourceDirs.clone();
+        } else if (spec.getSplitApkPaths() != null &&
+                !spec.getSplitApkPaths().isEmpty()) {
             copy.splitSourceDirs = spec.getSplitApkPaths().toArray(new String[0]);
         }
         applyApplicationInfoFlags(copy, flags);

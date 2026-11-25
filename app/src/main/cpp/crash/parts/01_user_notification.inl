@@ -385,11 +385,43 @@ void respond_user_notification(
         return;
     }
     if (!descendant_process && syscall_number == SYS_openat) {
-        // Target-process openat calls are already virtualized by the libc and
-        // syscall guards. Avoid duplicating them in user notification.
-        response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
-        ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
-        return;
+        // Framework-internal APK parsing uses a private syscall wrapper that
+        // bypasses the libc hooks. Handle only the container APK paths here;
+        // routing ordinary files through this listener would duplicate the
+        // existing guards and can recurse through ASEC and /proc opens.
+        char target_path[PATH_MAX] = {};
+        bool virtual_apk = false;
+        if (environment != nullptr &&
+            read_user_string(
+                static_cast<uintptr_t>(request.data.args[1]),
+                target_path,
+                sizeof(target_path),
+                static_cast<pid_t>(request.pid)
+            )) {
+            virtual_apk =
+                (!environment->virtual_base_apk_path.empty() &&
+                    strcmp(
+                        target_path,
+                        environment->virtual_base_apk_path.c_str()
+                    ) == 0);
+            const size_t split_count = std::min(
+                environment->actual_split_apk_paths.size(),
+                environment->virtual_split_apk_paths.size()
+            );
+            for (size_t index = 0;
+                 !virtual_apk && index < split_count;
+                 ++index) {
+                virtual_apk = strcmp(
+                    target_path,
+                    environment->virtual_split_apk_paths[index].c_str()
+                ) == 0;
+            }
+        }
+        if (!virtual_apk) {
+            response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+            ioctl(listener_fd, SECCOMP_IOCTL_NOTIF_SEND, &response);
+            return;
+        }
     }
 
 #if defined(SYS_newfstatat)
@@ -705,6 +737,23 @@ void respond_user_notification(
             virtual_path,
             static_cast<int>(request.data.args[2]),
             static_cast<pid_t>(request.pid)
+        );
+    } else if (mapped) {
+        // The listener thread can be covered by the same filter. Open the
+        // mapped APK in the unfiltered broker process and transfer its fd.
+        GatewayRequest broker_request {};
+        broker_request.type = kGatewayOpenat;
+        broker_request.client_pid = static_cast<pid_t>(request.pid);
+        broker_request.dirfd = static_cast<int>(request.data.args[0]);
+        broker_request.flags = static_cast<int>(request.data.args[2]);
+        broker_request.mode = static_cast<mode_t>(request.data.args[3]);
+        strncpy(
+            broker_request.path,
+            rewritten.c_str(),
+            sizeof(broker_request.path) - 1
+        );
+        source_fd = static_cast<int>(
+            call_syscall_broker(&broker_request)
         );
     } else {
         // The listener thread predates the filter and retains an unfiltered

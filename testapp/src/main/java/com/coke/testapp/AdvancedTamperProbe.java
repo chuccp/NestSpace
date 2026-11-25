@@ -210,7 +210,11 @@ final class AdvancedTamperProbe {
             boolean executable = permissions.length() > 2 &&
                 permissions.charAt(2) == 'x';
             if (writable && executable) writableExecutable.add(line);
-            if (executable && fields[5].contains("(deleted)")) {
+            boolean systemJitCache =
+                fields[5].contains("/memfd:jit-cache (deleted)") ||
+                fields[5].contains("/memfd:jit-zygote-cache (deleted)");
+            if (executable && fields[5].contains("(deleted)") &&
+                !systemJitCache) {
                 deletedExecutable.add(line);
             }
         }

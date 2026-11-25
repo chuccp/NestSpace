@@ -20,6 +20,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.VersionedPackage
 import android.content.res.Resources
+import android.os.Build
 import android.os.Process
 import android.os.IBinder
 import android.os.Parcel
@@ -1356,7 +1357,7 @@ object SystemServiceIdentity {
             val uid = values.firstOrNull() as? Int
             if (uid != null) {
                 if (uid == ContainerIdentity.hostUid() && isUidPackageQuery(name)) {
-                    return hiddenHostUidResult(method.returnType, name)
+                    return virtualUidPackageResult(method.returnType, name)
                 }
                 val packageForUid = when {
                     uid == Process.myUid() -> target
@@ -1399,20 +1400,44 @@ object SystemServiceIdentity {
             else -> null
         }
 
-        private fun hiddenHostUidResult(
+        private fun virtualUidPackageResult(
             returnType: Class<*>,
             name: String
         ): Any? = when {
             name == "getPackagesForUid" ->
                 java.lang.reflect.Array.newInstance(
                     returnType.componentType ?: String::class.java,
-                    0
-                )
+                    1
+                ).also {
+                    java.lang.reflect.Array.set(
+                        it,
+                        0,
+                        targetPackage
+                    )
+                }
+            name == "getPackagesForUidAndUser" ->
+                java.lang.reflect.Array.newInstance(
+                    returnType.componentType ?: String::class.java,
+                    1
+                ).also {
+                    java.lang.reflect.Array.set(
+                        it,
+                        0,
+                        targetPackage
+                    )
+                }
             name == "getNamesForUids" ->
                 java.lang.reflect.Array.newInstance(
                     returnType.componentType ?: String::class.java,
-                    0
-                )
+                    1
+                ).also {
+                    java.lang.reflect.Array.set(
+                        it,
+                        0,
+                        targetPackage
+                    )
+                }
+            name == "getNameForUid" -> targetPackage
             else -> null
         }
 
@@ -1461,6 +1486,14 @@ object SystemServiceIdentity {
                     if (!isContainerPackage(pkg)) return NOT_ROUTED
                     val flags = intFlags(args.getOrNull(1))
                     viaPm { pm.getPackageUid(pkg, flags) }
+                }
+                "getInstallSourceInfo" -> {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                        return NOT_ROUTED
+                    }
+                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
+                    if (!isContainerPackage(pkg)) return NOT_ROUTED
+                    viaPmNullable { pm.getInstallSourceInfo(pkg) }
                 }
                 "getActivityInfo", "getReceiverInfo", "getServiceInfo", "getProviderInfo" -> {
                     val component = args.getOrNull(0) as? ComponentName ?: return NOT_ROUTED

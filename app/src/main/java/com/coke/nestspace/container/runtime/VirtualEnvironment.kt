@@ -84,7 +84,6 @@ data class VirtualIdentitySnapshot(
 
 internal object VirtualEnvironmentFactory {
     private fun observedUid(spec: ContainerLaunchSpec): Int {
-        if (spec.targetUid > 0) return spec.targetUid
         return ContainerIdentity.hostUid()
     }
 
