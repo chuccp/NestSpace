@@ -1297,11 +1297,6 @@ object SystemServiceIdentity {
             if (requestedPackage == hostPackage && isHostPackageQuery(name)) {
                 return hiddenHostPackageResult(method.returnType, name)
             }
-            if (requestedPackage == targetPackage &&
-                name.startsWith("getPackageUid")
-            ) {
-                return Process.myUid()
-            }
             val legacy = legacyPackageManager
             if (legacy != null) {
                 val routed = routeThroughPackageManager(legacy, name, values)
@@ -1356,9 +1351,6 @@ object SystemServiceIdentity {
             }
             val uid = values.firstOrNull() as? Int
             if (uid != null) {
-                if (uid == ContainerIdentity.hostUid() && isUidPackageQuery(name)) {
-                    return virtualUidPackageResult(method.returnType, name)
-                }
                 val packageForUid = when {
                     uid == Process.myUid() -> target
                     else -> registry?.packageForUid(uid)
@@ -1383,12 +1375,6 @@ object SystemServiceIdentity {
                 name == "getLeanbackLaunchIntentForPackage" ||
                 name == "isPackageAvailable"
 
-        private fun isUidPackageQuery(name: String): Boolean =
-            name == "getPackagesForUid" ||
-                name == "getNameForUid" ||
-                name == "getNamesForUids" ||
-                name == "getPackagesForUidAndUser"
-
         private fun hiddenHostPackageResult(
             returnType: Class<*>,
             name: String
@@ -1397,47 +1383,6 @@ object SystemServiceIdentity {
             returnType == Int::class.javaPrimitiveType -> -1
             returnType == Long::class.javaPrimitiveType -> -1L
             name.startsWith("getPackageGids") -> IntArray(0)
-            else -> null
-        }
-
-        private fun virtualUidPackageResult(
-            returnType: Class<*>,
-            name: String
-        ): Any? = when {
-            name == "getPackagesForUid" ->
-                java.lang.reflect.Array.newInstance(
-                    returnType.componentType ?: String::class.java,
-                    1
-                ).also {
-                    java.lang.reflect.Array.set(
-                        it,
-                        0,
-                        targetPackage
-                    )
-                }
-            name == "getPackagesForUidAndUser" ->
-                java.lang.reflect.Array.newInstance(
-                    returnType.componentType ?: String::class.java,
-                    1
-                ).also {
-                    java.lang.reflect.Array.set(
-                        it,
-                        0,
-                        targetPackage
-                    )
-                }
-            name == "getNamesForUids" ->
-                java.lang.reflect.Array.newInstance(
-                    returnType.componentType ?: String::class.java,
-                    1
-                ).also {
-                    java.lang.reflect.Array.set(
-                        it,
-                        0,
-                        targetPackage
-                    )
-                }
-            name == "getNameForUid" -> targetPackage
             else -> null
         }
 

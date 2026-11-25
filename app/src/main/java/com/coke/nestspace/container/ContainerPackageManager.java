@@ -21,11 +21,9 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.Process;
 import android.util.Log;
-import com.coke.nestspace.container.identity.ContainerIdentity;
 import com.coke.nestspace.container.identity.HostIdentity;
 import com.coke.nestspace.container.intent.ContainerIntentResolver;
 import com.coke.nestspace.container.vpm.ContainerPermissions;
-import com.coke.nestspace.container.vpm.PackageVisibilityPolicy;
 import com.coke.nestspace.container.vpm.VirtualPackageRegistry;
 
 import java.lang.reflect.Array;
@@ -81,7 +79,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     private final PackageInfo targetPackageInfo;
     private final VirtualPackageRegistry virtualPackages;
     private final ContainerPermissions permissions;
-    private final PackageVisibilityPolicy visibility;
     private final String targetSignatureDigest;
     private final java.util.concurrent.atomic.AtomicBoolean signatureQueryLogged =
             new java.util.concurrent.atomic.AtomicBoolean();
@@ -105,7 +102,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         this.targetPackageInfo = spec.getPackageInfo();
         this.virtualPackages = virtualPackages;
         this.permissions = permissions;
-        this.visibility = PackageVisibilityPolicy.Companion.load(spec.getBaseApkPath());
         this.targetSignatureDigest = signatureDigest(targetPackageInfo);
         Log.d(TAG, "target " + targetPackage + " version "
                 + targetPackageInfo.versionName + " (" + targetPackageInfo.versionCode + ")"
@@ -130,23 +126,15 @@ public class ContainerPackageManager extends DelegatingPackageManager {
                     copyPackageInfo(flags), packageName, flags);
         }
         if (isVirtualPackage(packageName)) {
-            PackageInfo installed = installedPackageInfo(packageName, flags);
-            if (installed != null) {
-                return ensureApplicationInfo(installed, packageName, flags);
-            }
             PackageInfo copy = copyVirtualPackageInfo(packageName, flags);
             if (copy != null) {
                 return ensureApplicationInfo(copy, packageName, flags);
             }
         }
-        PackageInfo external = normalizeExternalPackageInfo(
+        return ensureApplicationInfo(
                 super.getPackageInfo(packageName, flags),
                 packageName,
                 flags);
-        if (external == null || !canSeePackage(external.applicationInfo)) {
-            throw new NameNotFoundException(packageName);
-        }
-        return ensureApplicationInfo(external, packageName, flags);
     }
 
     @Override
@@ -159,14 +147,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
                     flags);
         }
         if (versionedPackage != null && isVirtualPackage(versionedPackage.getPackageName())) {
-            PackageInfo installed = installedPackageInfo(
-                    versionedPackage.getPackageName(), flags);
-            if (installed != null) {
-                return ensureApplicationInfo(
-                        installed,
-                        versionedPackage.getPackageName(),
-                        flags);
-            }
             PackageInfo copy = copyVirtualPackageInfo(
                     versionedPackage.getPackageName(), flags);
             if (copy != null) {
@@ -179,15 +159,10 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         String packageName = versionedPackage == null
                 ? null
                 : versionedPackage.getPackageName();
-        PackageInfo external = normalizeExternalPackageInfo(
+        return ensureApplicationInfo(
                 super.getPackageInfo(versionedPackage, flags),
                 packageName,
                 flags);
-        if (external == null || !canSeePackage(external.applicationInfo)) {
-            throw new NameNotFoundException(
-                    packageName == null ? "<null>" : packageName);
-        }
-        return ensureApplicationInfo(external, packageName, flags);
     }
 
     @Override
@@ -197,16 +172,11 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             return copyApplicationInfo(flags);
         }
         if (isVirtualPackage(packageName)) {
-            ApplicationInfo installed = installedApplicationInfo(
-                    packageName, flags);
-            if (installed != null) return installed;
             ApplicationInfo copy = copyVirtualApplicationInfo(
                     packageName, flags);
             if (copy != null) return copy;
         }
-        ApplicationInfo external = super.getApplicationInfo(packageName, flags);
-        if (!canSeePackage(external)) throw new NameNotFoundException(packageName);
-        return external;
+        return super.getApplicationInfo(packageName, flags);
     }
 
     @Override
@@ -277,8 +247,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     public List<PackageInfo> getInstalledPackages(int flags) {
         Map<String, PackageInfo> byName = new LinkedHashMap<>();
         for (PackageInfo info : super.getInstalledPackages(flags)) {
-            if (info != null && !isVirtualPackage(info.packageName) &&
-                    canSeePackage(info.applicationInfo)) {
+            if (info != null && !isVirtualPackage(info.packageName)) {
                 byName.put(info.packageName, info);
             }
         }
@@ -294,9 +263,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     public List<ApplicationInfo> getInstalledApplications(int flags) {
         Map<String, ApplicationInfo> byName = new LinkedHashMap<>();
         for (ApplicationInfo info : super.getInstalledApplications(flags)) {
-            if (info != null && !isVirtualPackage(info.packageName) &&
-                    !hostPackage.equals(info.packageName) &&
-                    canSeePackage(info)) {
+            if (info != null && !isVirtualPackage(info.packageName)) {
                 byName.put(info.packageName, info);
             }
         }
@@ -810,8 +777,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         if (!virtual.isEmpty()) return virtual.get(0);
         if (isVirtualScoped(intent)) return null;
         ResolveInfo external = super.resolveActivity(intent, flags);
-        return isVirtualResolveInfo(external) ||
-                !visibility.allowsIntent(intent) ? null : external;
+        return isVirtualResolveInfo(external) ? null : external;
     }
 
     @Override
@@ -822,7 +788,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             result.add(intents.activityResolveInfo(match));
         }
         result.addAll(virtualPackages.queryActivities(intent, flags));
-        if (!isVirtualScoped(intent) && visibility.allowsIntent(intent)) {
+        if (!isVirtualScoped(intent)) {
             for (ResolveInfo info : super.queryIntentActivities(intent, flags)) {
                 if (!isVirtualResolveInfo(info)) result.add(info);
             }
@@ -838,8 +804,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         if (!virtual.isEmpty()) return virtual.get(0);
         if (isVirtualScoped(intent)) return null;
         ResolveInfo external = super.resolveService(intent, flags);
-        return isVirtualResolveInfo(external) ||
-                !visibility.allowsIntent(intent) ? null : external;
+        return isVirtualResolveInfo(external) ? null : external;
     }
 
     @Override
@@ -850,7 +815,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             result.add(intents.serviceResolveInfo(match));
         }
         result.addAll(virtualPackages.queryServices(intent, flags));
-        if (!isVirtualScoped(intent) && visibility.allowsIntent(intent)) {
+        if (!isVirtualScoped(intent)) {
             for (ResolveInfo info : super.queryIntentServices(intent, flags)) {
                 if (!isVirtualResolveInfo(info)) result.add(info);
             }
@@ -867,10 +832,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             return copyVirtualProviderInfo(virtual, virtual.packageName, flags);
         }
         ProviderInfo external = super.resolveContentProvider(authority, flags);
-        return isVirtualProvider(external) ||
-                (external != null &&
-                        !canSeePackage(external.applicationInfo) &&
-                        !visibility.allowsAuthority(authority)) ? null : external;
+        return isVirtualProvider(external) ? null : external;
     }
 
     @Override
@@ -883,9 +845,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             result.add(copyVirtualProviderInfo(info, info.packageName, flags));
         }
         for (ProviderInfo info : super.queryContentProviders(processName, uid, flags)) {
-            if (!isVirtualProvider(info) &&
-                    (canSeePackage(info.applicationInfo) ||
-                            visibility.allowsAuthority(info.authority))) {
+            if (!isVirtualProvider(info)) {
                 result.add(info);
             }
         }
@@ -898,7 +858,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         ProviderInfo local = intents.providerMatches(intent);
         if (local != null) result.add(intents.providerResolveInfo(local));
         result.addAll(virtualPackages.queryProviders(intent, flags));
-        if (!isVirtualScoped(intent) && visibility.allowsIntent(intent)) {
+        if (!isVirtualScoped(intent)) {
             for (ResolveInfo info : super.queryIntentContentProviders(intent, flags)) {
                 if (!isVirtualResolveInfo(info)) result.add(info);
             }
@@ -914,7 +874,7 @@ public class ContainerPackageManager extends DelegatingPackageManager {
             result.add(intents.activityResolveInfo(match));
         }
         result.addAll(virtualPackages.queryReceivers(intent, flags));
-        if (!isVirtualScoped(intent) && visibility.allowsIntent(intent)) {
+        if (!isVirtualScoped(intent)) {
             for (ResolveInfo info : super.queryBroadcastReceivers(intent, flags)) {
                 if (!isVirtualResolveInfo(info)) result.add(info);
             }
@@ -1297,16 +1257,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         return isTarget(packageName) || virtualPackages.isVirtualPackage(packageName);
     }
 
-    private boolean canSeePackage(ApplicationInfo info) {
-        if (info == null || info.packageName == null) return false;
-        if (isVirtualPackage(info.packageName)) return true;
-        if (hostPackage.equals(info.packageName)) return false;
-        long systemFlags = ApplicationInfo.FLAG_SYSTEM
-                | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP;
-        if ((info.flags & systemFlags) != 0) return true;
-        return visibility.allowsPackage(info.packageName);
-    }
-
     /**
      * Only queries that ask for components/signatures/meta-data need the APK
      * parsed. Plain package/version queries use the cheap install index so
@@ -1410,7 +1360,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
     }
 
     private String packageForUid(int uid) {
-        if (uid == ContainerIdentity.INSTANCE.hostUid()) return null;
         if (uid == Process.myUid()) return targetPackage;
         return virtualPackages.packageForUid(uid);
     }
@@ -1477,28 +1426,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         return result.value;
     }
 
-    private PackageInfo installedPackageInfo(String packageName, int flags) {
-        try {
-            PackageInfo installed = super.getPackageInfo(packageName, flags);
-            return installed != null && canSeePackage(installed.applicationInfo)
-                    ? installed
-                    : null;
-        } catch (NameNotFoundException ignored) {
-            return null;
-        }
-    }
-
-    private ApplicationInfo installedApplicationInfo(String packageName, int flags) {
-        try {
-            ApplicationInfo installed = super.getApplicationInfo(packageName, flags);
-            return installed != null && canSeePackage(installed)
-                    ? installed
-                    : null;
-        } catch (NameNotFoundException ignored) {
-            return null;
-        }
-    }
-
     private ApplicationInfo copyVirtualApplicationInfo(String packageName, int flags) {
         boolean full = needsComponentData(flags);
         ApplicationInfo source = full
@@ -1513,23 +1440,6 @@ public class ContainerPackageManager extends DelegatingPackageManager {
         if (uid != null) copy.uid = uid;
         applyApplicationInfoFlags(copy, flags);
         return copy;
-    }
-
-    private PackageInfo normalizeExternalPackageInfo(
-            PackageInfo info,
-            String packageName,
-            int flags) {
-        if (info == null || info.applicationInfo != null ||
-                packageName == null) {
-            return info;
-        }
-        try {
-            info.applicationInfo = super.getApplicationInfo(packageName, flags);
-        } catch (NameNotFoundException ignored) {
-            // Preserve the original package result. canSeePackage() will
-            // reject it if the PackageManager genuinely hid the package.
-        }
-        return info;
     }
 
     private PackageInfo ensureApplicationInfo(
