@@ -2,9 +2,11 @@ package com.coke.nestspace.agent.knowledge
 
 import android.content.Context
 import android.util.Log
+import com.coke.nestspace.agent.sdk.knowledge.KnowledgeCapability
 import com.coke.nestspace.agent.sdk.knowledge.KnowledgeEntry
 import com.coke.nestspace.agent.sdk.knowledge.KnowledgeIndex
 import com.coke.nestspace.agent.sdk.knowledge.KnowledgeMarkdownParser
+import com.coke.nestspace.agent.sdk.knowledge.KnowledgeTarget
 import org.json.JSONObject
 
 /**
@@ -13,6 +15,7 @@ import org.json.JSONObject
  */
 class KnowledgeStore private constructor(entries: List<KnowledgeEntry>) {
     private val index = KnowledgeIndex(entries)
+    private val capability = KnowledgeCapability(index)
 
     fun all(): List<KnowledgeEntry> = index.all()
 
@@ -20,6 +23,57 @@ class KnowledgeStore private constructor(entries: List<KnowledgeEntry>) {
         index.forPackage(packageName)
 
     fun forHost(host: String): KnowledgeEntry? = index.forHost(host)
+
+    fun attachForTool(
+        toolName: String,
+        args: JSONObject,
+        resultText: String
+    ): AttachedGuide? {
+        val target = targetForTool(toolName, args, resultText) ?: return null
+        val entry = capability.resolve(target) ?: return null
+        return AttachedGuide(
+            key = entry.key,
+            text = capability.attachGuide(
+                resultText = resultText,
+                target = target,
+                sourceLabel = "NestSpace guide"
+            )
+        )
+    }
+
+    data class AttachedGuide(
+        val key: String,
+        val text: String
+    )
+
+    private fun targetForTool(
+        toolName: String,
+        args: JSONObject,
+        resultText: String
+    ): KnowledgeTarget? = when (toolName) {
+        "space_launch", "space_multi_open" ->
+            args.optString("package")
+                .takeIf { it.isNotBlank() }
+                ?.let(KnowledgeTarget::App)
+
+        "ui_observe" -> {
+            val fromArgs = args.optString("package").takeIf { it.isNotBlank() }
+            val fromResult = runCatching {
+                JSONObject(resultText).optString("package")
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+            (fromArgs ?: fromResult)?.let(KnowledgeTarget::App)
+        }
+
+        "browser_open", "browser_navigate" -> {
+            val fromResult = runCatching {
+                JSONObject(resultText).optString("url")
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+            val url = fromResult ?: args.optString("url")
+            hostOf(url)?.let(KnowledgeTarget::Website)
+        }
+
+        else -> null
+    }
 
     fun forTool(
         toolName: String,

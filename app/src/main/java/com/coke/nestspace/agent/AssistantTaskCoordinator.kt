@@ -20,7 +20,6 @@ import com.coke.nestspace.agent.runtime.NestSpaceAgentRunner
 import com.coke.nestspace.agent.sdk.AgentKey
 import com.coke.nestspace.agent.sdk.AgentLane
 import com.coke.nestspace.agent.sdk.AgentLaneScheduler
-import com.coke.nestspace.agent.sdk.AgentRunContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -491,7 +490,6 @@ object AssistantTaskCoordinator {
         task: WorkerTask
     ): String {
         val app = context.applicationContext
-        val definition = NestSpaceAgents.require(task.agentKey)
         val runtime = NestSpaceAgentRunner.runtime(registry, task.agentKey)
         val memoryContext = withContext(Dispatchers.IO) {
             runCatching { MemoryStore(app).contextFor(task.goal) }.getOrNull()
@@ -499,16 +497,7 @@ object AssistantTaskCoordinator {
         val skillIndex = withContext(Dispatchers.IO) {
             runCatching { SkillStore(app).enabledIndex() }.getOrNull()
         }
-        val command = if (task.agentKey == NestSpaceAgents.screenReaderKey) {
-            definition.instructions.instructions(
-                AgentRunContext(
-                    sessionId = "assistant-task-${task.id}",
-                    userId = task.ownerId,
-                    parentTaskId = task.id,
-                    displayMode = task.displayMode.name
-                )
-            ) + task.goal
-        } else if (task.runCount <= 1 && task.lastProgress.isBlank()) {
+        val command = if (task.runCount <= 1 && task.lastProgress.isBlank()) {
             task.goal
         } else {
             buildString {

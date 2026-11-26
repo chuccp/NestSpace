@@ -69,6 +69,27 @@ class PackageBoundaryTest {
         )
     }
 
+    @Test
+    fun nestSpaceAgentsDelegateExecutionToTheSdkRuntime() {
+        val agentRoot = sourceRoot().resolve("com/coke/nestspace/agent")
+        val hostRuntime = agentRoot.resolve("LlmAgentRuntime.kt").readText()
+        val sdkAdapter = agentRoot.resolve("runtime/NestSpaceSdkAgent.kt").readText()
+
+        assertTrue(
+            "LlmAgentRuntime must delegate to the SDK adapter",
+            hostRuntime.contains("NestSpaceSdkAgent(")
+        )
+        assertTrue(sdkAdapter.contains("DefaultAgentRuntime("))
+        assertTrue(sdkAdapter.contains("AgentSession("))
+        assertTrue(sdkAdapter.contains("AgentToolExecutor("))
+        assertTrue(sdkAdapter.contains("AgentRunHook"))
+        assertTrue(sdkAdapter.contains("AgentToolExecutionHook"))
+        assertTrue(
+            "The host must not retain a second model/tool loop",
+            !hostRuntime.contains("while (step < maxToolRounds)")
+        )
+    }
+
     private fun assertNoForbiddenImports(root: File, forbidden: List<String>) {
         assertTrue("Missing source root: $root", root.isDirectory)
         val violations = root.walkTopDown()

@@ -2,6 +2,7 @@ package com.coke.nestspace.agent.tools
 
 import com.coke.nestspace.agent.sdk.AgentCapability
 import com.coke.nestspace.agent.sdk.AgentRunContext
+import com.coke.nestspace.agent.sdk.AgentTool
 import com.coke.nestspace.agent.sdk.AgentToolCall
 import com.coke.nestspace.agent.sdk.AgentToolResult
 import org.json.JSONObject
@@ -12,6 +13,14 @@ internal fun ToolRegistry.capabilityToolSpecs(
     nativeAsync: Boolean = false,
     maxWaitMs: (String) -> Long = { ToolSpec.DEFAULT_MAX_WAIT_MS }
 ): List<ToolSpec> = capability.tools().map { tool ->
+    agentToolSpec(tool, nativeAsync, maxWaitMs)
+}
+
+internal fun ToolRegistry.agentToolSpec(
+    tool: AgentTool,
+    nativeAsync: Boolean = false,
+    maxWaitMs: (String) -> Long = { ToolSpec.DEFAULT_MAX_WAIT_MS }
+): ToolSpec =
     ToolSpec(
         name = tool.descriptor.name,
         description = tool.descriptor.description,
@@ -29,7 +38,6 @@ internal fun ToolRegistry.capabilityToolSpecs(
         )
         result.toToolResult()
     }
-}
 
 private fun ToolContext.toAgentRunContext(): AgentRunContext = AgentRunContext(
     sessionId = sessionId,

@@ -5,66 +5,29 @@ import com.coke.nestspace.data.LlmConfig
 import com.coke.nestspace.data.ReasoningEffort
 import com.coke.nestspace.data.SystemPromptStore
 import com.coke.nestspace.core.i18n.AppLanguage
-import com.coke.nestspace.agent.sdk.AgentChatBlock
-import com.coke.nestspace.agent.sdk.AgentChatService
-import com.coke.nestspace.agent.sdk.ContextCompressor
 import com.coke.nestspace.agent.sdk.RunMetrics
 import com.coke.nestspace.agent.llm.ChatMessage
-import com.coke.nestspace.agent.llm.ChatRequest
-import com.coke.nestspace.agent.llm.ChatResponse
-import com.coke.nestspace.agent.llm.ChatRole
-import com.coke.nestspace.agent.llm.ChatServices
-import com.coke.nestspace.agent.llm.ChatTool
-import com.coke.nestspace.agent.llm.ChatUsageSink
-import com.coke.nestspace.agent.llm.toAgentReasoningEffort
-import com.coke.nestspace.agent.tools.Caller
 import com.coke.nestspace.agent.tools.ContainerDisplayMode
-import com.coke.nestspace.agent.tools.ToolContext
 import com.coke.nestspace.agent.tools.ToolRegistry
-import com.coke.nestspace.agent.tools.ToolResult
-import com.coke.nestspace.agent.tools.ToolSpec
 import com.coke.nestspace.agent.definitions.NestSpaceAgents
+import com.coke.nestspace.agent.runtime.NestSpaceSdkAgent
 import com.coke.nestspace.agent.sdk.AgentDefinition
-import com.coke.nestspace.plugins.host.AgentPluginSupport
-import com.coke.nestspace.plugins.host.AgentModelHookOutcome
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * LLM-driven local agent.
  *
- * The loop is provider-neutral: it builds [ChatMessage]/[AgentChatBlock] values and
- * lets the configured [AgentChatService] translate them to Claude or OpenAI wire
- * format. Tool execution still goes through the same ToolRegistry as the
- * rule-based agent and the remote MCP server.
+ * Host entry point for NestSpace's prompt, persistence and Android adapters.
+ * Model turns, tool execution, hooks, context budgets, events and cancellation
+ * are delegated to the Agent SDK.
  */
 class LlmAgentRuntime(
     private val registry: ToolRegistry,
     internal val definition: AgentDefinition = NestSpaceAgents.main,
     private val allowContinuePrompt: Boolean = true,
 ) {
-
-    private val disabledToolNames = AgentToolSettings.disabledTools(registry.context)
-    private val availableToolSpecs = AgentToolSettings.availableToolSpecs(registry)
-    private val externalToolSpecs: List<ToolSpec> =
-        availableToolSpecs.filter { it.description.startsWith("[MCP:", ignoreCase = true) }
-
-    private val toolSpecs: List<ToolSpec> = AgentToolSettings.enabledToolSpecs(
-        availableToolSpecs,
-        disabledToolNames
-    )
-        .filter { definition.toolPolicy.permits(it.name) }
-
-    private val chatTools: List<ChatTool> = toolSpecs.map {
-        ChatTool(it.name, it.description, it.inputSchema)
-    }
-
     suspend fun run(
         config: LlmConfig,
         command: String,
@@ -77,555 +40,34 @@ class LlmAgentRuntime(
         workerContext: String? = null,
         onToolCall: ((String, JSONObject) -> Unit)? = null,
         onMessage: ((AgentMessage) -> Unit)? = null,
-        /** Returns user messages typed while this run is in progress. */
         steeringProvider: (() -> List<String>)? = null,
-        /** Optional per-run counters persisted in run history. */
         metrics: RunMetrics? = null,
-        /** Receives assistant text as it streams in. */
         onTextDelta: ((String) -> Unit)? = null,
-        /** Receives a skill id whenever the agent reads a reusable skill. */
         onSkillUsed: ((String) -> Unit)? = null
     ): List<AgentMessage> = withContext(Dispatchers.IO) {
-        val trace = mutableListOf<AgentMessage>()
-        fun record(message: AgentMessage) {
-            trace.add(message)
-            onMessage?.invoke(message)
-        }
-
-        record(AgentMessage(AgentMessage.Role.USER, command))
-        AgentPluginSupport.answer(
-            userMessage = command,
-            recentUserMessages = listOf(command),
-            toolNames = chatTools.map { it.name }
-        )?.let { answer ->
-            onTextDelta?.invoke(answer.text)
-            record(AgentMessage(AgentMessage.Role.AGENT, answer.text))
-            return@withContext trace
-        }
-        if (!config.isConfigured) {
-            record(
-                AgentMessage(
-                    AgentMessage.Role.ERROR,
-                    AppLanguage.tr(
-                        "请先在 空间设置 → 模型设置 配置接口（Base URL / 模型 / API Key）。",
-                        "Configure an endpoint (Base URL / model / API key) in " +
-                            "Space settings → Model settings first."
-                    )
-                )
-            )
-            return@withContext trace
-        }
-
-        val userUtterances = mutableListOf(command)
-        val ctx = ToolContext(
-            sessionId,
-            Caller.LOCAL_AGENT,
-            VIRTUAL_SPACE,
-            parentTaskId = parentTaskId,
-            displayMode = displayMode,
-            userUtterances = userUtterances,
-            onSkillUsed = onSkillUsed
-        )
-        val messages = mutableListOf<ChatMessage>().apply {
-            addAll(history)
-            add(ChatMessage(ChatRole.USER, listOf(AgentChatBlock.Text(command))))
-        }
-
-        fun drainSteering(): Boolean {
-            val updates = steeringProvider?.invoke().orEmpty()
-            if (updates.isEmpty()) return false
-            updates.forEach { text ->
-                record(AgentMessage(AgentMessage.Role.USER, text))
-                appendSteeringText(messages, text)
-                userUtterances += text
-            }
-            return true
-        }
-
-        AgentPluginSupport.publishEvent(
-            "agent.run.started",
-            JSONObject()
-                .put("session_id", sessionId)
-                .put("model", config.model)
-        )
-        try {
-            val service = ChatServices.create(
-                config,
-                ChatUsageSink { usage, purpose ->
-                    TokenUsageStore.get(registry.context)
-                        .record(config, usage, kind = purpose)
-                    metrics?.recordRequest(usage)
-                }
-            )
-            val systemPrompt = nativeSystemPrompt(
+        NestSpaceSdkAgent(
+            registry = registry,
+            definition = definition,
+            config = config,
+            systemPrompt = nativeSystemPrompt(
                 config,
                 memoryContext,
                 skillIndex,
                 workerContext
-            ) +
-                AgentPluginSupport.promptBlock(
-                    userMessage = command,
-                    recentUserMessages = userUtterances.takeLast(6),
-                    toolNames = chatTools.map { it.name }
-                )
-            val maxToolRounds = config.maxToolRounds
-                .coerceIn(LlmConfig.MIN_TOOL_ROUNDS, LlmConfig.MAX_TOOL_ROUNDS)
-            var lastResponseText = ""
-            while (true) {
-                var step = 0
-                while (step < maxToolRounds) {
-                    step++
-                    drainSteering()
-                    val requestPrompt = when (
-                        val hooked = AgentPluginSupport.beforeModelRequest(
-                            requestId = "$sessionId-${System.currentTimeMillis()}-$step",
-                            protocol = config.protocol.name,
-                            model = config.model,
-                            userMessage = command,
-                            systemPrompt = systemPrompt,
-                            toolNames = chatTools.map { it.name },
-                            round = step
-                        )
-                    ) {
-                        is AgentModelHookOutcome.Proceed ->
-                            hooked.systemPrompt
-                        is AgentModelHookOutcome.Answer -> {
-                            onTextDelta?.invoke(hooked.text)
-                            record(AgentMessage(AgentMessage.Role.AGENT, hooked.text))
-                            return@withContext trace
-                        }
-                        is AgentModelHookOutcome.Blocked -> {
-                            record(AgentMessage(AgentMessage.Role.ERROR, hooked.message))
-                            return@withContext trace
-                        }
-                    }
-                    ContextCompressor.compact(
-                        messages = messages,
-                        systemPrompt = requestPrompt,
-                        tools = chatTools,
-                        maxOutputTokens = config.maxTokens,
-                        budgetTokens = config.contextTokens
-                    )
-                    val chatRequest = ChatRequest(
-                        model = config.model,
-                        system = requestPrompt,
-                        messages = messages.toList(),
-                        tools = chatTools,
-                        maxTokens = config.maxTokens,
-                        temperature = config.temperature,
-                        reasoningEffort = config.reasoningEffort.toAgentReasoningEffort()
-                    )
-                    var response = if (config.streamingEnabled) {
-                        service.streamChat(chatRequest) { delta ->
-                            onTextDelta?.invoke(delta)
-                        }
-                    } else {
-                        service.chat(chatRequest)
-                    }
-                    if (response.text.isBlank() && response.toolUses.isEmpty() &&
-                        response.stopReason?.lowercase() in setOf("length", "max_tokens")
-                    ) {
-                        // Reasoning models such as DeepSeek Flash count thinking
-                        // tokens against max_tokens. If thinking consumed the
-                        // whole budget, content is empty and finish_reason is
-                        // "length". Retry once with room for both.
-                        response = retryWithLargerBudget(
-                            service = service,
-                            config = config,
-                            systemPrompt = requestPrompt,
-                            messages = messages
-                        ) ?: response
-                    }
-
-                    val responseText = response.text.trim()
-                    if (responseText.isNotBlank()) {
-                        lastResponseText = responseText
-                    }
-                    val toolUses = response.toolUses
-                    if (toolUses.isNotEmpty() && responseText.isNotBlank()) {
-                        // Keep the preamble visible; it has already streamed to
-                        // the UI before the tool cards arrive.
-                        record(AgentMessage(AgentMessage.Role.AGENT, responseText))
-                    }
-                    if (toolUses.isEmpty()) {
-                        val answer = response.text.trim()
-                        val steering = steeringProvider?.invoke().orEmpty()
-                        if (steering.isNotEmpty()) {
-                            if (answer.isNotBlank()) {
-                                record(AgentMessage(AgentMessage.Role.AGENT, answer))
-                                messages.add(ChatMessage(ChatRole.ASSISTANT, response.blocks))
-                            }
-                            steering.forEach { text ->
-                                record(AgentMessage(AgentMessage.Role.USER, text))
-                                appendSteeringText(messages, text)
-                            }
-                            lastResponseText = ""
-                            continue
-                        }
-                        if (answer.isNotBlank()) {
-                            record(AgentMessage(AgentMessage.Role.AGENT, answer))
-                        } else {
-                            val summary = summarizeEmptyResponse(
-                                service = service,
-                                config = config,
-                                systemPrompt = requestPrompt,
-                                messages = messages
-                            ) ?: lastResponseText.takeIf { it.isNotBlank() }
-                            record(
-                                AgentMessage(
-                                    AgentMessage.Role.AGENT,
-                                    if (summary != null) {
-                                        emptySummaryPrefix() + summary
-                                    } else {
-                                        localEmptySummary(trace)
-                                    }
-                                )
-                            )
-                        }
-                        return@withContext trace
-                    }
-
-                    messages.add(ChatMessage(ChatRole.ASSISTANT, response.blocks))
-                    val resultBlocks = mutableListOf<AgentChatBlock>()
-                    val attachmentBlocks = mutableListOf<AgentChatBlock>()
-                    for (use in toolUses) {
-                        onToolCall?.invoke(use.name, use.input)
-                        metrics?.recordToolCall()
-                        val guard = AgentPluginSupport.beforeToolCall(
-                            use.name,
-                            use.input,
-                            ctx
-                        )
-                        val result = guard.blockedMessage?.let {
-                            ToolResult(
-                                false,
-                                it,
-                                errorCode = "PLUGIN_BLOCKED"
-                            )
-                        } ?: executeTool(
-                            use.copy(input = guard.arguments),
-                            ctx
-                        )
-                        AgentPluginSupport.afterToolCall(
-                            use.name,
-                            guard.arguments,
-                            result,
-                            ctx
-                        )
-                        AgentPluginSupport.publishEvent(
-                            "agent.tool.completed",
-                            JSONObject()
-                                .put("session_id", sessionId)
-                                .put("tool", use.name)
-                                .put("successful", result.ok)
-                                .put(
-                                    "error_code",
-                                    result.errorCode ?: JSONObject.NULL
-                                )
-                        )
-                        val header = if (result.ok) "ok" else result.errorCode ?: "error"
-                        val rawDisplayText = toolDisplayText(use.name, result)
-                        val presentation = AgentPluginSupport.presentTool(
-                            toolName = use.name,
-                            arguments = guard.arguments,
-                            resultText = rawDisplayText,
-                            successful = result.ok,
-                            errorCode = result.errorCode
-                        )
-                        record(
-                            AgentMessage(
-                                AgentMessage.Role.TOOL,
-                                AgentPluginSupport.formatToolMessage(
-                                    use.name,
-                                    header,
-                                    rawDisplayText,
-                                    presentation,
-                                    guard.arguments,
-                                    result.ok,
-                                    result.errorCode
-                                )
-                            )
-                        )
-                        resultBlocks += AgentChatBlock.ToolResult(
-                            toolUseId = use.id,
-                            content = resultForModel(result),
-                            isError = !result.ok
-                        )
-                        val screenshot = result.imageBase64
-                        if (service.supportsVision && !screenshot.isNullOrBlank()) {
-                            attachmentBlocks += AgentChatBlock.Text("Screenshot from ${use.name}:")
-                            attachmentBlocks += AgentChatBlock.Image(screenshot, result.imageMimeType)
-                        }
-                    }
-                    // Anthropic requires all tool_result blocks to precede
-                    // any text/image blocks in the next user message.
-                    messages.add(ChatMessage(ChatRole.USER, resultBlocks + attachmentBlocks))
-                }
-
-                val summary = summarizeAfterLimit(
-                    service = service,
-                    config = config,
-                    systemPrompt = systemPrompt,
-                    messages = messages,
-                    rounds = maxToolRounds
-                ) ?: lastResponseText.takeIf { it.isNotBlank() }
-                val replyText = if (summary != null) {
-                    limitSummaryPrefix(maxToolRounds) + summary
-                } else {
-                    localLimitSummary(trace, maxToolRounds)
-                }
-                record(AgentMessage(AgentMessage.Role.AGENT, replyText))
-
-                if (!allowContinuePrompt) return@withContext trace
-                val continueApproved = UserGateManager.askConfirmation(
-                    title = AppLanguage.tr(
-                        "已达到工具轮次上限",
-                        "Tool round limit reached"
-                    ),
-                    detail = AppLanguage.tr(
-                        "本次已执行 $maxToolRounds 轮工具调用。是否继续执行剩余操作？",
-                        "Used $maxToolRounds tool rounds. Continue with the remaining steps?"
-                    ),
-                    confirmLabel = AppLanguage.tr("继续", "Continue"),
-                    dismissLabel = AppLanguage.tr("停止", "Stop")
-                )
-                if (!continueApproved) return@withContext trace
-
-                messages.add(
-                    ChatMessage(
-                        ChatRole.ASSISTANT,
-                        listOf(AgentChatBlock.Text(replyText))
-                    )
-                )
-                messages.add(
-                    ChatMessage(
-                        ChatRole.USER,
-                        listOf(
-                            AgentChatBlock.Text(
-                                AppLanguage.tr(
-                                    "用户同意继续操作。请从刚才停下的地方继续，" +
-                                        "不要重复已经完成的步骤。",
-                                    "The user approved continuing. Resume from where you " +
-                                        "stopped and do not repeat completed steps."
-                                )
-                            )
-                        )
-                    )
-                )
-                lastResponseText = ""
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (t: Throwable) {
-            record(
-                AgentMessage(
-                    AgentMessage.Role.ERROR,
-                    AppLanguage.tr(
-                        "大模型调用失败：${t.message ?: t.javaClass.simpleName}",
-                        "Model call failed: ${t.message ?: t.javaClass.simpleName}"
-                    )
-                )
-            )
-        } finally {
-            AgentPluginSupport.publishEvent(
-                "agent.run.completed",
-                JSONObject()
-                    .put("session_id", sessionId)
-                    .put("messages", trace.size)
-            )
-            withContext(NonCancellable) {
-                runCatching {
-                    registry.execute("session_release", JSONObject(), ctx)
-                }
-            }
-        }
-        trace
-    }
-
-    private suspend fun retryWithLargerBudget(
-        service: AgentChatService,
-        config: LlmConfig,
-        systemPrompt: String,
-        messages: MutableList<ChatMessage>
-    ): ChatResponse? {
-        // Visible answer budget; the adapter adds hidden reasoning room.
-        val retryTokens = maxOf(config.maxTokens, 8_192).coerceAtMost(32_768)
-        ContextCompressor.compact(
-            messages = messages,
-            systemPrompt = systemPrompt,
-            tools = chatTools,
-            maxOutputTokens = retryTokens,
-            budgetTokens = config.contextTokens
-        )
-        return try {
-            service.chat(
-                ChatRequest(
-                    model = config.model,
-                    system = systemPrompt,
-                    messages = messages.toList(),
-                    tools = chatTools,
-                    maxTokens = retryTokens,
-                    temperature = config.temperature,
-                    reasoningEffort = config.reasoningEffort.toAgentReasoningEffort(),
-                    purpose = "retry"
-                )
-            )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (t: Throwable) {
-            null
-        }
-    }
-
-    /**
-     * Ask for one final answer with tools disabled. This runs after the tool
-     * budget is exhausted so the user still gets a readable summary instead
-     * of only a "round limit exceeded" error.
-     */
-    private suspend fun summarizeAfterLimit(
-        service: AgentChatService,
-        config: LlmConfig,
-        systemPrompt: String,
-        messages: MutableList<ChatMessage>,
-        rounds: Int
-    ): String? {
-        val instruction = AppLanguage.tr(
-            "你已达到 $rounds 轮工具调用上限，不能再调用任何工具。请根据上面的对话和" +
-                "工具结果，用中文给用户一个阶段性总结：1) 已经完成了什么；2) 得到了哪些" +
-                "确定的信息；3) 哪些步骤失败或未完成；4) 建议用户接下来怎么做。" +
-                "不要编造未验证的数据。",
-            "You have reached the $rounds-round tool-call limit and cannot call any " +
-                "more tools. Based on the conversation and tool results above, give " +
-                "the user a progress summary: 1) what was completed; 2) what was " +
-                "verified; 3) what failed or remains; 4) what the user should do next. " +
-                "Do not invent unverified data."
-        )
-        return requestSummary(service, config, systemPrompt, messages, instruction)
-    }
-
-    private suspend fun summarizeEmptyResponse(
-        service: AgentChatService,
-        config: LlmConfig,
-        systemPrompt: String,
-        messages: MutableList<ChatMessage>
-    ): String? {
-        val instruction = AppLanguage.tr(
-            "你上一条回复没有产生任何文字。不要再调用工具，请根据上面的对话和工具" +
-                "结果，用中文简短总结：已经完成了什么、得到了哪些确定的信息、哪些步骤" +
-                "失败或未完成。不要编造未验证的数据。",
-            "Your previous reply contained no text. Do not call any more tools; " +
-                "summarize the conversation and tool results: what was completed, " +
-                "what was verified, and what failed or remains. Do not invent data."
-        )
-        return requestSummary(service, config, systemPrompt, messages, instruction)
-    }
-
-    private suspend fun requestSummary(
-        service: AgentChatService,
-        config: LlmConfig,
-        systemPrompt: String,
-        messages: MutableList<ChatMessage>,
-        instruction: String
-    ): String? {
-        val summaryMessages = messages.toMutableList().apply {
-            add(ChatMessage(ChatRole.USER, listOf(AgentChatBlock.Text(instruction))))
-        }
-        // Summaries also go through reasoning models. maxTokens here is the
-        // visible answer budget; the provider adds thinking room on top.
-        val summaryTokens = maxOf(config.maxTokens, 2_048).coerceAtMost(8_192)
-        ContextCompressor.compact(
-            messages = summaryMessages,
-            systemPrompt = systemPrompt,
-            tools = emptyList(),
-            maxOutputTokens = summaryTokens,
-            budgetTokens = config.contextTokens
-        )
-        return try {
-            val response = service.chat(
-                ChatRequest(
-                    model = config.model,
-                    system = systemPrompt,
-                    messages = summaryMessages.toList(),
-                    tools = emptyList(),
-                    maxTokens = summaryTokens,
-                    temperature = config.temperature,
-                    reasoningEffort = config.reasoningEffort.toAgentReasoningEffort(),
-                    purpose = "summary"
-                )
-            )
-            response.text.trim().ifBlank { null }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (t: Throwable) {
-            null
-        }
-    }
-
-    private fun emptySummaryPrefix(): String = AppLanguage.tr(
-        "模型这次没有返回文本，以下是自动补的总结：\n\n",
-        "The model returned no text; here is an automatic summary:\n\n"
-    )
-
-    private fun localEmptySummary(trace: List<AgentMessage>): String {
-        val recent = trace.asReversed()
-            .firstOrNull { it.role == AgentMessage.Role.TOOL }
-            ?.text
-            ?.lineSequence()
-            ?.firstOrNull()
-            ?.take(240)
-        val last = if (recent.isNullOrBlank()) {
-            ""
-        } else {
-            AppLanguage.tr(" 最近一步：$recent。", " Last step: $recent.")
-        }
-        return AppLanguage.tr(
-            "模型返回了空文本，自动总结也没能生成。${last}请重试或缩小任务范围。",
-            "The model returned no text and the automatic summary failed. $last" +
-                "Try again or use a smaller task."
-        )
-    }
-
-    private fun limitSummaryPrefix(rounds: Int): String = AppLanguage.tr(
-        "已达到 $rounds 轮工具调用上限，先给你一个阶段性总结：\n\n",
-        "Reached the $rounds-round tool limit. Here is a progress summary:\n\n"
-    )
-
-    private fun localLimitSummary(trace: List<AgentMessage>, rounds: Int): String {
-        val recent = trace.asReversed()
-            .firstOrNull { it.role == AgentMessage.Role.TOOL }
-            ?.text
-            ?.lineSequence()
-            ?.firstOrNull()
-            ?.take(240)
-        val last = if (recent.isNullOrBlank()) {
-            ""
-        } else {
-            AppLanguage.tr(" 最近一步：$recent。", " Last step: $recent.")
-        }
-        return AppLanguage.tr(
-            "已达到 $rounds 轮工具调用上限，模型总结生成失败。$last" +
-                "请缩小任务范围后重试，或在模型设置里提高「最大工具轮次」。",
-            "Reached the $rounds-round tool limit and summary generation failed. $last" +
-                "Try a smaller task or raise Max tool rounds in the model settings."
-        )
-    }
-
-    private suspend fun executeTool(
-        use: AgentChatBlock.ToolUse,
-        ctx: ToolContext
-    ): ToolResult {
-        if (toolSpecs.none { it.name == use.name }) {
-            return ToolResult(
-                false,
-                "tool not allowed in this agent: ${use.name}",
-                errorCode = "TOOL_NOT_ALLOWED"
-            )
-        }
-        val external = externalToolSpecs.firstOrNull { it.name == use.name }
-        if (external != null) {
-            return external.handler(use.input, ctx)
-        }
-        return registry.execute(use.name, use.input, ctx)
+            ),
+            command = command,
+            sessionId = sessionId,
+            parentTaskId = parentTaskId,
+            displayMode = displayMode,
+            history = history,
+            allowContinuePrompt = allowContinuePrompt,
+            steeringProvider = steeringProvider,
+            metrics = metrics,
+            onToolCall = onToolCall,
+            onMessage = onMessage,
+            onTextDelta = onTextDelta,
+            onSkillUsed = onSkillUsed
+        ).run()
     }
 
     private fun nativeSystemPrompt(
@@ -635,9 +77,8 @@ class LlmAgentRuntime(
         workerContext: String?
     ): String {
         val base = SystemPromptStore(registry.context).load()
-        val now = SimpleDateFormat("yyyy-MM-dd HH:mm EEEE", Locale.getDefault()).format(Date())
         val hint = AppLanguage.tr(
-            "当前本地时间：$now。\n" +
+            "需要当前日期、时间或时区时先调用 current_time，不要猜测。\n" +
                 "当前虚拟空间 ID：$VIRTUAL_SPACE。\n" +
                 "判断界面统一先 ui_observe，优先使用节点 id、text、desc、bounds、clickable 和 " +
                 "scrollable 操作。只有节点为空或明显不完整，或 Canvas/游戏/Flutter/Unity、视频、" +
@@ -704,7 +145,7 @@ class LlmAgentRuntime(
                 "也不要把它当成用户的话。\n" +
                 "操作后用 ui_observe 确认；节点无法表达视觉状态时用 " +
                 "ui_observe(include_screenshot=true)，支持视觉的模型会自动收到同一次返回中的截图。",
-            "Current local time: $now.\n" +
+            "Call current_time for the current date, time or timezone; never guess it.\n" +
                 "Current virtual space ID: $VIRTUAL_SPACE.\n" +
                 "Inspect UI through the single ui_observe tool using node ids, text, descriptions, " +
                 "bounds, clickable and scrollable state. Only when nodes are empty or materially " +
@@ -839,62 +280,10 @@ class LlmAgentRuntime(
         )
     }
 
-    /**
-     * UI-facing tool text. The model still receives the full result; the
-     * conversation keeps a compact version so tool cards stay readable and
-     * JSON summaries remain parseable.
-     */
-    private fun toolDisplayText(name: String, result: ToolResult): String {
-        if (name == "ui_observe" && result.ok) {
-            val compact = runCatching {
-                val json = JSONObject(result.text)
-                JSONObject()
-                    .put("package", json.optString("package"))
-                    .put("activity", json.optString("activity"))
-                    .put("nodes_count", json.optJSONArray("nodes")?.length() ?: 0)
-                    .put("needs_user", json.optBoolean("needs_user"))
-                    .put("user_reason", json.optString("user_reason"))
-                    .toString()
-            }.getOrNull()
-            if (compact != null) return compact
-        }
-        return result.text.take(4_000)
-    }
-
-    private fun resultForModel(result: ToolResult): String {
-        if (result.text.isBlank()) {
-            return if (result.ok) "(ok)" else "ERROR ${result.errorCode.orEmpty()}"
-        }
-        val value = if (result.ok) {
-            result.text
-        } else {
-            "ERROR ${result.errorCode.orEmpty()}: ${result.text}"
-        }
-        return value.take(MAX_TOOL_TEXT)
-    }
-
-    /**
-     * Steering text is merged into the last user turn so Anthropic keeps its
-     * alternating roles and tool_use/tool_result pairs stay adjacent. OpenAI
-     * adapters emit the tool results first and then this text as one user
-     * message.
-     */
-    private fun appendSteeringText(messages: MutableList<ChatMessage>, text: String) {
-        val note = AppLanguage.tr("用户补充：$text", "User follow-up: $text")
-        val last = messages.lastOrNull()
-        if (last?.role == ChatRole.USER) {
-            messages[messages.lastIndex] = last.copy(
-                blocks = last.blocks + AgentChatBlock.Text("\n$note")
-            )
-        } else {
-            messages.add(
-                ChatMessage(ChatRole.USER, listOf(AgentChatBlock.Text(note)))
-            )
-        }
-    }
+    // Prompt construction remains host-specific; runtime, tools and context
+    // compaction are delegated to the Agent SDK.
 
     companion object {
         private const val VIRTUAL_SPACE = "virtual-1"
-        private const val MAX_TOOL_TEXT = 12_000
     }
 }

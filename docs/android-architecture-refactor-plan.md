@@ -1096,7 +1096,7 @@ Snapshot/Release 在本机建议依次执行，并为 Kotlin daemon 提供 4 GB�
 
 ### 最终验证
 
-- `:app:testDebugUnitTest`：322 个用例通过，其中 `agent/sdk` 84 个；
+- `:app:testDebugUnitTest`：327 个用例通过，其中 `agent/sdk` 88 个；
 - `:plugin-api:test`：53 个用例通过；
 - `:app:assembleDebug`：成功；
 - `:app:assembleSnapshot`：成功；
@@ -1104,6 +1104,6 @@ Snapshot/Release 在本机建议依次执行，并为 Kotlin daemon 提供 4 GB�
 - `:plugin-api:assembleDebug`：成功；
 - `:testapp:assembleDebug`：成功；
 - `:testapp:assembleSecure`：成功；
-- `:app:lintDebug`：仍为既有失败基线，193 errors、353 warnings、2 hints；
+- `:app:lintDebug`：仍为既有失败基线，193 errors、352 warnings、2 hints；
   与重构前相比 errors 持平，warnings 减少 1；
 - 未通过新增全局 lint baseline 掩盖问题，也未执行设备级冒烟。

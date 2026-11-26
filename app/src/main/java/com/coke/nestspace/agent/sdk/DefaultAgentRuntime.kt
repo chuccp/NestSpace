@@ -1,6 +1,7 @@
 package com.coke.nestspace.agent.sdk
 
 import com.coke.nestspace.agent.sdk.hook.AgentRunHook
+import com.coke.nestspace.agent.sdk.hook.AgentModelHookDecision
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +36,7 @@ class DefaultAgentRuntime(
         AgentCapabilityCatalog(emptyList()),
     private val toolExecutor: AgentToolExecutor = AgentToolExecutor(),
     private val runHooks: List<AgentRunHook> = emptyList(),
+    private val incomingMessages: AgentMessageSource? = null,
     private val runtimeScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default)
 ) : AgentRuntime {
@@ -109,6 +111,7 @@ class DefaultAgentRuntime(
                 chatService = chatService,
                 toolExecutor = toolExecutor,
                 runHooks = runHooks,
+                incomingMessages = incomingMessages,
                 config = config,
                 recorder = recorder
             ).execute()
@@ -184,6 +187,7 @@ private class AgentRunSession(
     private val chatService: AgentChatService,
     private val toolExecutor: AgentToolExecutor,
     private val runHooks: List<AgentRunHook>,
+    private val incomingMessages: AgentMessageSource?,
     private val config: AgentRuntimeConfig,
     private val recorder: AgentEventRecorder
 ) {
@@ -218,6 +222,13 @@ private class AgentRunSession(
             completeModelTurn()
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (stopped: AgentModelHookStop) {
+            return fail(
+                code = stopped.failure.code,
+                message = stopped.failure.message,
+                cause = stopped.failure.cause,
+                kind = stopped.failure.kind
+            )
         } catch (error: AgentRunHookException) {
             return fail(
                 code = "RUN_HOOK_ERROR",
@@ -262,6 +273,7 @@ private class AgentRunSession(
     }
 
     private suspend fun completeModelTurn(): AgentChatResponse {
+        acceptIncomingMessages()
         val streamedText = StringBuilder()
         val modelMessages = messages.toMutableList()
         config.contextBudgetTokens?.let { budget ->
@@ -278,10 +290,24 @@ private class AgentRunSession(
             messages = modelMessages,
             tools = chatTools
         )
-        input = runHooks.fold(input) { current, hook ->
-            runHook("beforeModel") { hook.beforeModel(current) }
+        var suppliedResponse: AgentChatResponse? = null
+        for (hook in runHooks) {
+            when (
+                val decision = runHook("beforeModel") {
+                    hook.beforeModelDecision(input)
+                }
+            ) {
+                is AgentModelHookDecision.Proceed -> input = decision.request
+                is AgentModelHookDecision.Respond -> {
+                    suppliedResponse = decision.response
+                    break
+                }
+                is AgentModelHookDecision.Stop -> {
+                    throw AgentModelHookStop(decision.failure)
+                }
+            }
         }
-        var output = chatService.streamChat(
+        var output = suppliedResponse ?: chatService.streamChat(
             request = input,
             onTextDelta = { text ->
                 if (text.isNotEmpty()) {
@@ -297,6 +323,21 @@ private class AgentRunSession(
             recorder.emit(AgentEvent.TextDelta(request.runId, output.text))
         }
         return output
+    }
+
+    private suspend fun acceptIncomingMessages() {
+        incomingMessages?.take().orEmpty().forEach { message ->
+            val last = messages.lastOrNull()
+            if (message.role == AgentChatRole.USER &&
+                last?.role == AgentChatRole.USER
+            ) {
+                messages[messages.lastIndex] = last.copy(
+                    blocks = last.blocks + message.blocks
+                )
+            } else {
+                messages += message
+            }
+        }
     }
 
     private suspend fun executeTools(
@@ -554,6 +595,10 @@ private class AgentRunHookException(
     message: String,
     cause: Throwable
 ) : RuntimeException(message, cause)
+
+private class AgentModelHookStop(
+    val failure: AgentFailure
+) : RuntimeException(failure.message, failure.cause)
 
 private fun failureResult(
     request: AgentRunRequest,

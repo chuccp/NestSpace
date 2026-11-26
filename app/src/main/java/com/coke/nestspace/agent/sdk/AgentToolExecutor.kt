@@ -86,11 +86,19 @@ class AgentToolExecutor(
                 )
             }
             when (decision) {
-                is AgentToolHookDecision.Block -> return AgentToolResult(
-                    success = false,
-                    output = decision.message,
-                    errorCode = decision.code
-                )
+                is AgentToolHookDecision.Block -> {
+                    val blocked = AgentToolResult(
+                        success = false,
+                        output = decision.message,
+                        errorCode = decision.code
+                    )
+                    return applyAfterHooks(
+                        tool,
+                        context,
+                        executionCall,
+                        blocked
+                    )
+                }
                 is AgentToolHookDecision.Proceed -> executionCall = decision.call
             }
         }

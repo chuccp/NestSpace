@@ -4,6 +4,9 @@ import com.coke.nestspace.agent.sdk.hook.AgentConfirmationHook
 import com.coke.nestspace.agent.sdk.hook.AgentRunHook
 import com.coke.nestspace.agent.sdk.hook.AgentToolExecutionHook
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /**
  * Minimal assembly facade for one runnable Agent.
@@ -263,7 +266,17 @@ class RunnableAgent internal constructor(
         ),
         history: List<AgentChatMessage> = emptyList(),
         events: AgentEventSink = AgentEventSink {}
-    ): AgentRunResult = start(input, context, history, events).await()
+    ): AgentRunResult {
+        val handle = start(input, context, history, events)
+        return try {
+            handle.await()
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable) {
+                handle.cancelAndJoin(cancelled.message ?: "cancelled")
+            }
+            throw cancelled
+        }
+    }
 
     fun session(
         context: AgentRunContext = AgentRunContext(

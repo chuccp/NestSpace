@@ -100,6 +100,7 @@ agent/sdk/
 | `AgentRunHandle` | 运行 ID、等待、取消、超时和事件订阅 |
 | `AgentEvent` | 文本、工具、完成、失败和取消事件 |
 | `AgentEventRecord` | 带单调序号的稳定事件记录 |
+| `AgentMessageSource` | 运行中追加消息，并合并连续 User 角色 |
 | `AgentRunResult` | 输出、完整消息、事件和结构化失败 |
 | `AgentSession` | 多轮历史加载、串行执行与结果持久化 |
 
@@ -454,6 +455,15 @@ App 实现。当前确认适配器是 `AppAgentConfirmationHook`。
 参数改写、阻断和结果转换；确认 Hook 专门负责需要用户决定的前置检查。
 Hook 属于 Agent 运行时功能，不是 Capability；Capability 只提供工具和指令。
 
+`AgentRunHook.beforeModelDecision` 可以三选一：
+
+- `Proceed`：继续调用真实 Provider；
+- `Respond`：由宿主直接提供答案，跳过 Provider；
+- `Stop`：以结构化 `AgentFailure` 结束运行，例如插件策略阻止或配置缺失。
+
+`AgentMessageSource` 负责把运行期间到达的用户补充消息注入下一次模型调用。
+SDK 会把连续 User 消息合并，避免 Anthropic 等协议出现不合法的角色序列。
+
 `AgentToolExecutor` 统一处理：
 
 - 工具确认；
@@ -496,13 +506,22 @@ App 通过适配器连接 SDK：
 
 - `agent/definitions/NestSpaceAgents.kt`：业务 Agent 定义；
 - `agent/llm/*`：Provider 实现和配置映射；
+- `agent/runtime/NestSpaceSdkAgent.kt`：Android 工具、插件 Hook 与 SDK Runtime 桥接；
 - `agent/runtime/NestSpaceAgentTaskController.kt`：Worker 启动与控制；
-- `agent/tools/AgentCapabilityAdapters.kt`：`AgentTool` → App `ToolSpec`；
+- `agent/tools/AgentCapabilityAdapters.kt`：`AgentTool` ↔ App 业务工具桥接；
 - `agent/memory/MemoryStore.kt`、`SkillStore.kt`：Android 持久化；
 - `agent/knowledge/KnowledgeStore.kt`：Android Asset 加载和业务工具映射。
 
-现有的 `LlmAgentRuntime` 继续承载插件 Hook、截图、人工确认和宿主摘要等业务逻辑，
-但 Chat 协议、上下文压缩、Token 统计、Agent 定义和工具策略已经使用 SDK。
+主 Agent、Worker 和独立读屏 Agent 都通过同一个
+`LlmAgentRuntime → NestSpaceSdkAgent → DefaultAgentRuntime` 路径运行。实际模型循环、
+Session、自动上下文压缩、ToolExecutor、Tool 并发、事件、取消、超时和错误分类均由
+SDK 负责；App 只提供 Android 工具处理器、容器操作、插件、人机确认、知识包、持久化
+和 UI 展示。
+
+插件的前置模型 Hook 通过 `beforeModelDecision` 映射为继续、直接回答或阻断；
+插件 Tool Hook 映射为 SDK `AgentToolExecutionHook`。所有模型可见工具都先转换为
+`AgentTool`，再由 `AgentToolExecutor` 执行。`current_time` 也通过 SDK 通用工具注册，
+模型不再依赖进程启动时写入 Prompt 的静态时间。
 
 ## 15. 与 `go-agent-sdk` 的关系
 
@@ -553,7 +572,7 @@ App 通过适配器连接 SDK：
 
 ## 17. 验证
 
-SDK 包当前包含 84 个单元测试，覆盖：
+SDK 包当前包含 88 个单元测试，覆盖：
 
 - Agent/工具/能力目录；
 - 多轮工具调用；
@@ -583,7 +602,7 @@ SDK 包当前包含 84 个单元测试，覆盖：
 - Provider 路由与 Provider 级视觉能力；
 - 配置 JSON 往返、版本校验和 Builder 应用。
 
-当前 App 测试总数：322。
+当前 App 测试总数：327。
 
 验证命令：
 
@@ -596,6 +615,6 @@ SDK 包当前包含 84 个单元测试，覆盖：
 ./gradlew :testapp:assembleDebug :testapp:assembleSecure
 ```
 
-`./gradlew :app:lintDebug` 仍停在项目既有失败基线：193 errors、353 warnings、
+`./gradlew :app:lintDebug` 仍停在项目既有失败基线：193 errors、352 warnings、
 2 hints；本轮 SDK 文件没有被 lint 报告。没有通过新增全局 ignore 或 baseline
 掩盖问题。

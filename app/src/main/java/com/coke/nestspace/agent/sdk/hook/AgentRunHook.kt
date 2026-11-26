@@ -6,6 +6,20 @@ import com.coke.nestspace.agent.sdk.AgentFailure
 import com.coke.nestspace.agent.sdk.AgentRunRequest
 import com.coke.nestspace.agent.sdk.AgentRunResult
 
+sealed interface AgentModelHookDecision {
+    data class Proceed(
+        val request: AgentChatInput
+    ) : AgentModelHookDecision
+
+    data class Respond(
+        val response: AgentChatResponse
+    ) : AgentModelHookDecision
+
+    data class Stop(
+        val failure: AgentFailure
+    ) : AgentModelHookDecision
+}
+
 /**
  * Runtime lifecycle and model request hooks.
  *
@@ -16,6 +30,12 @@ interface AgentRunHook {
     suspend fun beforeRun(request: AgentRunRequest) = Unit
 
     suspend fun beforeModel(request: AgentChatInput): AgentChatInput = request
+
+    suspend fun beforeModelDecision(
+        request: AgentChatInput
+    ): AgentModelHookDecision = AgentModelHookDecision.Proceed(
+        beforeModel(request)
+    )
 
     suspend fun afterModel(
         request: AgentChatInput,

@@ -31,6 +31,7 @@ import com.coke.nestspace.agent.sdk.memory.MemoryCapability
 import com.coke.nestspace.agent.sdk.skill.SkillCapability
 import com.coke.nestspace.agent.sdk.task.AgentTaskCapability
 import com.coke.nestspace.agent.sdk.tools.AgentToolSchema
+import com.coke.nestspace.agent.sdk.tools.CurrentTimeTool
 import com.coke.nestspace.agent.sdk.pollAgentState
 import com.coke.nestspace.data.AppSettingsEvents
 import com.coke.nestspace.plugins.host.AgentPluginSupport
@@ -328,16 +329,19 @@ class ToolRegistry(
         ctx: ToolContext
     ): ToolResult {
         if (!result.ok) return result
-        val entry = runCatching { knowledge.forTool(name, args, result.text) }.getOrNull()
+        val entry = runCatching {
+            knowledge.attachForTool(name, args, result.text)
+        }.getOrNull()
             ?: return result
         if (!ctx.seenKnowledge.add(entry.key)) return result
         return result.copy(
-            text = entry.withGuide(result.text, sourceLabel = "NestSpace guide")
+            text = entry.text
         )
     }
 
     private fun buildTools(): List<ToolSpec> =
-        spaceToolSpecs() +
+        listOf(agentToolSpec(CurrentTimeTool().tool)) +
+            spaceToolSpecs() +
             uiToolSpecs() +
             screenReaderToolSpecs() +
             hostToolSpecs() +

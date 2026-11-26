@@ -208,4 +208,43 @@ class AgentToolExecutorTest {
         assertFalse(result.success)
         assertEquals("TOOL_HOOK_ERROR", result.errorCode)
     }
+
+    @Test
+    fun afterHookObservesBlockedExecution() = runBlocking {
+        var observedCode: String? = null
+        val hook = object : AgentToolExecutionHook {
+            override suspend fun beforeExecute(
+                tool: AgentToolDescriptor,
+                context: AgentRunContext,
+                call: AgentToolCall
+            ): AgentToolHookDecision =
+                AgentToolHookDecision.Block(
+                    code = "BLOCKED",
+                    message = "blocked"
+                )
+
+            override suspend fun afterExecute(
+                tool: AgentToolDescriptor,
+                context: AgentRunContext,
+                call: AgentToolCall,
+                result: AgentToolResult
+            ): AgentToolResult {
+                observedCode = result.errorCode
+                return result
+            }
+        }
+        val tool = AgentTool(
+            descriptor = AgentToolDescriptor("sample", "Sample", "{}"),
+            handler = AgentToolHandler { _, _ -> AgentToolResult(true) }
+        )
+
+        val result = AgentToolExecutor(listOf(hook)).execute(
+            tool,
+            context,
+            AgentToolCall("1", "sample", "{}")
+        )
+
+        assertEquals("BLOCKED", result.errorCode)
+        assertEquals("BLOCKED", observedCode)
+    }
 }

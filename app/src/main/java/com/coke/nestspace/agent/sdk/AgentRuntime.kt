@@ -95,6 +95,14 @@ fun interface AgentEventSink {
     fun emit(event: AgentEvent)
 }
 
+/**
+ * Supplies messages that arrived while a run is active. The runtime merges
+ * consecutive user messages so provider role alternation stays valid.
+ */
+fun interface AgentMessageSource {
+    suspend fun take(): List<AgentChatMessage>
+}
+
 data class AgentRunResult(
     val output: String,
     val messages: List<AgentChatMessage>,

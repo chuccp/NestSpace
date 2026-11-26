@@ -1,6 +1,7 @@
 package com.coke.nestspace.agent.sdk
 
 import com.coke.nestspace.agent.sdk.hook.AgentRunHook
+import com.coke.nestspace.agent.sdk.hook.AgentModelHookDecision
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -309,6 +310,97 @@ class AgentRuntimeFeaturesTest {
         assertEquals(AgentFailureKind.CONFIGURATION, result.failure?.kind)
         assertTrue(result.failure?.message.orEmpty().contains("beforeModel"))
         assertTrue(chatService.requests.isEmpty())
+    }
+
+    @Test
+    fun modelHookCanAnswerWithoutCallingProvider() = runBlocking {
+        val chatService = QueueChatService()
+        val hook = object : AgentRunHook {
+            override suspend fun beforeModelDecision(
+                request: AgentChatInput
+            ): AgentModelHookDecision = AgentModelHookDecision.Respond(
+                AgentChatResponse(
+                    blocks = listOf(AgentChatBlock.Text("local answer"))
+                )
+            )
+        }
+        val runtime = DefaultAgentRuntime(
+            catalog = AgentCatalog(listOf(definition())),
+            toolCatalog = AgentToolCatalog(emptyList()),
+            chatService = chatService,
+            runHooks = listOf(hook)
+        )
+
+        val result = runtime.run(
+            AgentRunRequest(AgentKey("agent"), "question", context)
+        )
+
+        assertTrue(result.isSuccess)
+        assertEquals("local answer", result.output)
+        assertTrue(chatService.requests.isEmpty())
+    }
+
+    @Test
+    fun modelHookCanStopRunWithStructuredFailure() = runBlocking {
+        val failure = AgentFailure(
+            code = "POLICY_BLOCKED",
+            message = "blocked locally",
+            kind = AgentFailureKind.CONFIGURATION
+        )
+        val runtime = DefaultAgentRuntime(
+            catalog = AgentCatalog(listOf(definition())),
+            toolCatalog = AgentToolCatalog(emptyList()),
+            chatService = QueueChatService(),
+            runHooks = listOf(object : AgentRunHook {
+                override suspend fun beforeModelDecision(
+                    request: AgentChatInput
+                ): AgentModelHookDecision =
+                    AgentModelHookDecision.Stop(failure)
+            })
+        )
+
+        val result = runtime.run(
+            AgentRunRequest(AgentKey("agent"), "question", context)
+        )
+
+        assertEquals(failure, result.failure)
+    }
+
+    @Test
+    fun incomingMessagesMergeIntoTheNextModelTurn() = runBlocking {
+        val chatService = QueueChatService(textResponse("done"))
+        var delivered = false
+        val runtime = DefaultAgentRuntime(
+            catalog = AgentCatalog(listOf(definition())),
+            toolCatalog = AgentToolCatalog(emptyList()),
+            chatService = chatService,
+            incomingMessages = AgentMessageSource {
+                if (delivered) {
+                    emptyList()
+                } else {
+                    delivered = true
+                    listOf(
+                        AgentChatMessage(
+                            AgentChatRole.USER,
+                            listOf(AgentChatBlock.Text("follow-up"))
+                        )
+                    )
+                }
+            }
+        )
+
+        runtime.run(
+            AgentRunRequest(AgentKey("agent"), "initial", context)
+        )
+
+        val messages = chatService.requests.single().messages
+        assertEquals(1, messages.size)
+        assertEquals(
+            listOf("initial", "follow-up"),
+            messages.single().blocks
+                .filterIsInstance<AgentChatBlock.Text>()
+                .map(AgentChatBlock.Text::text)
+        )
     }
 
     @Test
