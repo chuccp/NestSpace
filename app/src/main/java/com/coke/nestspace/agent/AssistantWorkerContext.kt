@@ -1,7 +1,6 @@
 package com.coke.nestspace.agent
 
-import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.task.OperationTaskRegistry
+import com.coke.nestspace.core.i18n.AppLanguage
 
 /**
  * Builds the worker-status block injected at the start of each local user turn.

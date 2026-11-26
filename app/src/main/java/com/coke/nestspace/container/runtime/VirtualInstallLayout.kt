@@ -1,7 +1,7 @@
 package com.coke.nestspace.container.runtime
 
-import android.os.Build
 import com.coke.nestspace.container.ContainerLaunchSpec
+import android.os.Build
 import java.io.File
 import java.security.MessageDigest
 

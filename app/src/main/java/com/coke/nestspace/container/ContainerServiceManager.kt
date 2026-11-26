@@ -1,5 +1,6 @@
 package com.coke.nestspace.container
 
+import com.coke.nestspace.core.reflection.ReflectionDefaults
 import android.app.Service
 import android.content.ComponentName
 import android.content.Intent
@@ -387,18 +388,7 @@ class ContainerServiceManager(
         )
     }
 
-    private fun defaultValue(type: Class<*>): Any? = when (type) {
-        java.lang.Void.TYPE -> null
-        java.lang.Boolean.TYPE -> false
-        java.lang.Byte.TYPE -> 0.toByte()
-        java.lang.Short.TYPE -> 0.toShort()
-        java.lang.Integer.TYPE -> 0
-        java.lang.Long.TYPE -> 0L
-        java.lang.Float.TYPE -> 0f
-        java.lang.Double.TYPE -> 0.0
-        java.lang.Character.TYPE -> '\u0000'
-        else -> null
-    }
+    private fun defaultValue(type: Class<*>): Any? = ReflectionDefaults.primitive(type)
 
     private fun attachBaseContext(service: Service) {
         var cls: Class<*>? = service.javaClass

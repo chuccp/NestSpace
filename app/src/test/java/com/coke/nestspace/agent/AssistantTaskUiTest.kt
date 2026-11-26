@@ -1,6 +1,6 @@
 package com.coke.nestspace.agent
 
-import com.coke.nestspace.task.OperationTaskRegistry
+import com.coke.nestspace.agent.task.OperationTaskRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

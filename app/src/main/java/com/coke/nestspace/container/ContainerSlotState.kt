@@ -365,10 +365,6 @@ internal class ContainerSlotState(
         states.getOrNull(slot)
     }
 
-    internal fun generationOf(slot: Int): Long? = synchronized(monitor) {
-        generations.getOrNull(slot)
-    }
-
     private fun firstEvictionCandidate(
         key: String,
         limit: Int,

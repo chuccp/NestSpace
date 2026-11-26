@@ -20,7 +20,7 @@ import com.coke.nestspace.container.intent.ContainerIntentResolver
 import com.coke.nestspace.container.intent.ManifestIntentFilters
 import com.coke.nestspace.container.loader.ApkDescriptor
 import com.coke.nestspace.container.loader.ApkInspector
-import com.coke.nestspace.engine.SpaceStore
+import com.coke.nestspace.container.engine.SpaceStore
 import java.io.File
 import java.util.concurrent.CompletableFuture
 

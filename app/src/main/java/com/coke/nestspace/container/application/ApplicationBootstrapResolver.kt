@@ -1,11 +1,10 @@
 package com.coke.nestspace.container.application
 
 import android.app.Application
-import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
 import com.coke.nestspace.container.loader.ApkClassIndex
-import com.coke.nestspace.runtime.RuntimeApplicationSpec
+import com.coke.nestspace.container.api.RuntimeApplicationSpec
 import java.lang.reflect.Constructor
 import java.lang.reflect.Modifier
 

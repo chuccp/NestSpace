@@ -1,5 +1,6 @@
 package com.coke.nestspace.agent
 
+import com.coke.nestspace.container.ContainerProcessPool
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -11,10 +12,9 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.coke.nestspace.MainActivity
 import com.coke.nestspace.R
-import com.coke.nestspace.browser.BrowserActivity
-import com.coke.nestspace.browser.BrowserSession
-import com.coke.nestspace.container.ContainerProcessPool
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.features.browser.BrowserActivity
+import com.coke.nestspace.features.browser.BrowserSession
+import com.coke.nestspace.core.i18n.AppLanguage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

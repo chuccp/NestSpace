@@ -1,6 +1,6 @@
 package com.coke.nestspace.container
 
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
 import com.coke.nestspace.container.loader.ApkInspector
 import com.coke.nestspace.container.loader.ApkMetadataCache
 
@@ -8,7 +8,8 @@ import com.coke.nestspace.container.loader.ApkMetadataCache
 import android.content.Context
 import com.coke.nestspace.container.identity.ContainerIdentity
 import com.coke.nestspace.container.loader.NativeLibs
-import com.coke.nestspace.engine.SpaceStore
+import com.coke.nestspace.core.files.safePathSegment
+import com.coke.nestspace.container.engine.SpaceStore
 import java.io.File
 
 /**
@@ -97,8 +98,8 @@ internal object ContainerSpecFactory {
                 "target=${activity.targetActivity}"
         )
 
-        val dataDir = File(File(root, "data"), sanitize(packageName))
-            .resolve(sanitize(instanceId))
+        val dataDir = File(File(root, "data"), safePathSegment(packageName))
+            .resolve(safePathSegment(instanceId))
         dataDir.mkdirs()
         // The kernel process always runs under the host app id. Keep every
         // app-facing UID view on that same value; package ownership is exposed
@@ -164,8 +165,5 @@ internal object ContainerSpecFactory {
             packageGids = emptyList()
         )
     }
-
-    private fun sanitize(value: String): String =
-        value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 
 }

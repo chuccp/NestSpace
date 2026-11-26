@@ -106,14 +106,14 @@ MCP 调用可以通过 `display_mode` 选择：
 - `ui_*`：观察 View 树、点击、输入、等待、截图和返回；
 - `browser_*`：打开标签、读取、点击、下载、上传和转人工；
 - `task_wait`：等待内部任务生命周期变化、终态或超时；
-- `poll_tool`：只用于 UI 文本或外部服务等没有内部事件源的观察；
 - `spawn_agent`：创建异步 Worker 任务并返回 `task_id`；
 - `schedule_task`：定时任务；
 - 宿主控制开启后的 `host_*`；
 - 用户配置的外部 `mcp_*` 工具。
 
-内部异步任务使用 `task_wait`；等待超时不是成功，也不取消任务。等待 UI 文本时仍可用
-`poll_tool` 观察 `ui_observe`。
+内部异步任务使用 `task_wait`；等待超时不是成功，也不取消任务。轮询不是模型工具，而是
+ToolExecutor 的内部管线：只读状态工具可配置检查次数和间隔，未完成时返回 `pending`，
+由执行管线自动等待；达到上限返回 `POLL_TIMEOUT`。
 `ui_wait_for` 仅保留为旧调用兼容入口。
 所有界面观察统一使用 `ui_observe`：节点中的 id、文本、描述、边界和
 clickable/scrollable 状态比截图更稳定。只有节点为空或明显不完整，或 Canvas、游戏、
@@ -228,6 +228,12 @@ Flutter、Unity、视频、图片、颜色和遮挡等视觉状态无法由节�
   `agent_task_pause`、`agent_task_resume`、`agent_task_cancel` 控制；
 - 运行中用户补充使用 `agent_task_supplement` 写入任务收件箱；
 - Worker 结果按不可信数据处理。
+
+## 顶层并行的读屏 Agent
+
+读屏 Agent 与主 Agent 平级，不是主 Agent 的子 Agent，也不由主 Agent 发起或控制。
+读屏入口通过独立任务身份直接启动它；主 Agent 的对话循环和读屏 Agent 的执行循环可以并行运行。
+两者共享宿主任务登记、模型配置、权限和资源调度，但互不持有对方的运行状态。
 
 AI 助手 Header 下方只露出当前正在处理的一条助手任务，同时显示任务总数和「查看全部」；
 Header 列表图标角标只显示待执行数量。完整任务中心仍显示用户和 MCP 创建的全部 Worker。

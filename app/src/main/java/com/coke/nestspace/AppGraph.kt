@@ -2,9 +2,9 @@ package com.coke.nestspace
 
 import android.content.Context
 import com.coke.nestspace.data.AppRepository
-import com.coke.nestspace.engine.ContainerEngine
-import com.coke.nestspace.engine.MiniContainerEngine
-import com.coke.nestspace.tools.ToolRegistry
+import com.coke.nestspace.container.engine.ContainerEngine
+import com.coke.nestspace.container.engine.MiniContainerEngine
+import com.coke.nestspace.agent.tools.ToolRegistry
 
 /**
  * Shared graph so the local agent (UI process) and the MCP server (foreground

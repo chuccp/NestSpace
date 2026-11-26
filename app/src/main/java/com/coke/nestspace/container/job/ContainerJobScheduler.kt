@@ -1,5 +1,7 @@
 package com.coke.nestspace.container.job
 
+import com.coke.nestspace.core.reflection.ReflectionDefaults
+import com.coke.nestspace.container.ContainerSession
 import android.app.job.JobInfo
 import android.app.job.JobParameters
 import android.app.job.JobScheduler
@@ -16,7 +18,6 @@ import android.os.Looper
 import android.os.Parcel
 import android.os.PersistableBundle
 import android.util.Log
-import com.coke.nestspace.container.ContainerSession
 import com.coke.nestspace.container.HiddenApiCompat
 import java.lang.reflect.Field
 
@@ -389,17 +390,7 @@ class ContainerJobScheduler(
         return null
     }
 
-    private fun defaultValue(type: Class<*>): Any? = when (type) {
-        java.lang.Boolean.TYPE -> false
-        java.lang.Byte.TYPE -> 0.toByte()
-        java.lang.Short.TYPE -> 0.toShort()
-        java.lang.Integer.TYPE -> 0
-        java.lang.Long.TYPE -> 0L
-        java.lang.Float.TYPE -> 0f
-        java.lang.Double.TYPE -> 0.0
-        java.lang.Character.TYPE -> '\u0000'
-        else -> null
-    }
+    private fun defaultValue(type: Class<*>): Any? = ReflectionDefaults.primitive(type)
 
     private companion object {
         const val TAG = "ContainerJobScheduler"

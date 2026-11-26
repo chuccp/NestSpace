@@ -1,5 +1,6 @@
 package com.coke.nestspace.container.shortcut
 
+import com.coke.nestspace.core.reflection.ReflectionDefaults
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ShortcutInfo
@@ -180,18 +181,7 @@ internal class ContainerShortcutManager(
         cls.getConstructor(List::class.java).newInstance(items)
     }.onFailure { Log.w(TAG, "cannot build ParceledListSlice", it) }.getOrNull()
 
-    private fun defaultValue(type: Class<*>): Any? = when {
-        type == java.lang.Void.TYPE -> null
-        type == java.lang.Boolean.TYPE -> false
-        type == java.lang.Integer.TYPE -> 0
-        type == java.lang.Long.TYPE -> 0L
-        type == java.lang.Float.TYPE -> 0f
-        type == java.lang.Double.TYPE -> 0.0
-        type == java.lang.String::class.java -> ""
-        type == List::class.java -> emptyList<Any>()
-        type == Intent::class.java -> Intent()
-        else -> null
-    }
+    private fun defaultValue(type: Class<*>): Any? = ReflectionDefaults.shortcut(type)
 
     private companion object {
         const val TAG = "ContainerShortcuts"

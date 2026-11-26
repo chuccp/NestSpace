@@ -7,6 +7,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
+import com.coke.nestspace.container.session.startExternalActivity
+import com.coke.nestspace.container.session.startTargetActivity
 
 /**
  * Instrumentation handed to target Activities through Activity.attach.

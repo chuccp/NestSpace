@@ -67,15 +67,15 @@ MCP 调用未指定时默认 `background`，调用方可按任务自行选择。
 | `ui_tap` | 按文本、资源 ID 或坐标点击 |
 | `ui_set_text` | 向输入框写入文本 |
 | `hand_to_user` | 暂停自动操作，先向用户确认，再把当前虚拟应用交给用户完成登录、验证码、支付或授权 |
-| `ui_wait_for` | 旧调用兼容的 UI 文本等待快捷方式；新流程使用 `poll_tool` + `ui_observe` |
+| `ui_wait_for` | 旧调用兼容的 UI 文本等待快捷方式 |
 | `ui_key` | 发送按键，目前支持 `back` |
 
 `ui_*` 支持用 `package` / `instance_id` 路由到指定容器实例；省略时操作最近启动的实例。目标 Activity 自建的 Dialog、底部弹窗等独立窗口也会合并进观察和截图。
 `ui_observe` 默认只返回节点；需要画面时可传 `include_screenshot=true`，结果会同时给出
 `node_count` 和 `screenshot_recommended`。
 
-`poll_tool` 用于 UI 文本或外部服务等没有内部事件源的观察。它按 `max_checks` 和
-`interval_ms` 调用受控的只读状态工具；达到次数上限返回 `POLL_TIMEOUT`，不会当作成功。
+轮询不由模型直接调用。只读状态工具可以在 SDK 执行管线中配置检查次数和间隔；
+工具返回 `pending` 时由 ToolExecutor 自动再次执行，达到次数上限返回 `POLL_TIMEOUT`。
 
 异步操作通过进程内任务中心统一暴露：
 

@@ -4,24 +4,29 @@ import com.coke.nestspace.data.AgentMessage
 import com.coke.nestspace.data.LlmConfig
 import com.coke.nestspace.data.ReasoningEffort
 import com.coke.nestspace.data.SystemPromptStore
-import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.llm.ChatBlock
-import com.coke.nestspace.llm.ChatMessage
-import com.coke.nestspace.llm.ChatRequest
-import com.coke.nestspace.llm.ChatResponse
-import com.coke.nestspace.llm.ChatRole
-import com.coke.nestspace.llm.ChatService
-import com.coke.nestspace.llm.ChatServices
-import com.coke.nestspace.llm.ChatTool
-import com.coke.nestspace.llm.ChatUsageSink
-import com.coke.nestspace.tools.Caller
-import com.coke.nestspace.tools.ContainerDisplayMode
-import com.coke.nestspace.tools.ToolContext
-import com.coke.nestspace.tools.ToolRegistry
-import com.coke.nestspace.tools.ToolResult
-import com.coke.nestspace.tools.ToolSpec
-import com.coke.nestspace.plugin.AgentPluginSupport
-import com.coke.nestspace.plugin.AgentModelHookOutcome
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.agent.sdk.AgentChatBlock
+import com.coke.nestspace.agent.sdk.AgentChatService
+import com.coke.nestspace.agent.sdk.ContextCompressor
+import com.coke.nestspace.agent.sdk.RunMetrics
+import com.coke.nestspace.agent.llm.ChatMessage
+import com.coke.nestspace.agent.llm.ChatRequest
+import com.coke.nestspace.agent.llm.ChatResponse
+import com.coke.nestspace.agent.llm.ChatRole
+import com.coke.nestspace.agent.llm.ChatServices
+import com.coke.nestspace.agent.llm.ChatTool
+import com.coke.nestspace.agent.llm.ChatUsageSink
+import com.coke.nestspace.agent.llm.toAgentReasoningEffort
+import com.coke.nestspace.agent.tools.Caller
+import com.coke.nestspace.agent.tools.ContainerDisplayMode
+import com.coke.nestspace.agent.tools.ToolContext
+import com.coke.nestspace.agent.tools.ToolRegistry
+import com.coke.nestspace.agent.tools.ToolResult
+import com.coke.nestspace.agent.tools.ToolSpec
+import com.coke.nestspace.agent.definitions.NestSpaceAgents
+import com.coke.nestspace.agent.sdk.AgentDefinition
+import com.coke.nestspace.plugins.host.AgentPluginSupport
+import com.coke.nestspace.plugins.host.AgentModelHookOutcome
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -34,17 +39,15 @@ import java.util.Locale
 /**
  * LLM-driven local agent.
  *
- * The loop is provider-neutral: it builds [ChatMessage]/[ChatBlock] values and
- * lets the configured [ChatService] translate them to Claude or OpenAI wire
+ * The loop is provider-neutral: it builds [ChatMessage]/[AgentChatBlock] values and
+ * lets the configured [AgentChatService] translate them to Claude or OpenAI wire
  * format. Tool execution still goes through the same ToolRegistry as the
  * rule-based agent and the remote MCP server.
  */
 class LlmAgentRuntime(
     private val registry: ToolRegistry,
-    private val allowSubAgents: Boolean = true,
+    internal val definition: AgentDefinition = NestSpaceAgents.main,
     private val allowContinuePrompt: Boolean = true,
-    private val allowedToolNames: Set<String>? = null,
-    private val disallowedToolNames: Set<String> = emptySet()
 ) {
 
     private val disabledToolNames = AgentToolSettings.disabledTools(registry.context)
@@ -56,11 +59,7 @@ class LlmAgentRuntime(
         availableToolSpecs,
         disabledToolNames
     )
-        .filterNot {
-            !allowSubAgents && it.name == "spawn_agent"
-        }
-        .filterNot { it.name in disallowedToolNames }
-        .filter { allowedToolNames == null || it.name in allowedToolNames }
+        .filter { definition.toolPolicy.permits(it.name) }
 
     private val chatTools: List<ChatTool> = toolSpecs.map {
         ChatTool(it.name, it.description, it.inputSchema)
@@ -129,7 +128,7 @@ class LlmAgentRuntime(
         )
         val messages = mutableListOf<ChatMessage>().apply {
             addAll(history)
-            add(ChatMessage(ChatRole.USER, listOf(ChatBlock.Text(command))))
+            add(ChatMessage(ChatRole.USER, listOf(AgentChatBlock.Text(command))))
         }
 
         fun drainSteering(): Boolean {
@@ -214,7 +213,7 @@ class LlmAgentRuntime(
                         tools = chatTools,
                         maxTokens = config.maxTokens,
                         temperature = config.temperature,
-                        reasoningEffort = config.reasoningEffort
+                        reasoningEffort = config.reasoningEffort.toAgentReasoningEffort()
                     )
                     var response = if (config.streamingEnabled) {
                         service.streamChat(chatRequest) { delta ->
@@ -287,8 +286,8 @@ class LlmAgentRuntime(
                     }
 
                     messages.add(ChatMessage(ChatRole.ASSISTANT, response.blocks))
-                    val resultBlocks = mutableListOf<ChatBlock>()
-                    val attachmentBlocks = mutableListOf<ChatBlock>()
+                    val resultBlocks = mutableListOf<AgentChatBlock>()
+                    val attachmentBlocks = mutableListOf<AgentChatBlock>()
                     for (use in toolUses) {
                         onToolCall?.invoke(use.name, use.input)
                         metrics?.recordToolCall()
@@ -347,15 +346,15 @@ class LlmAgentRuntime(
                                 )
                             )
                         )
-                        resultBlocks += ChatBlock.ToolResult(
+                        resultBlocks += AgentChatBlock.ToolResult(
                             toolUseId = use.id,
                             content = resultForModel(result),
                             isError = !result.ok
                         )
                         val screenshot = result.imageBase64
                         if (service.supportsVision && !screenshot.isNullOrBlank()) {
-                            attachmentBlocks += ChatBlock.Text("Screenshot from ${use.name}:")
-                            attachmentBlocks += ChatBlock.Image(screenshot, result.imageMimeType)
+                            attachmentBlocks += AgentChatBlock.Text("Screenshot from ${use.name}:")
+                            attachmentBlocks += AgentChatBlock.Image(screenshot, result.imageMimeType)
                         }
                     }
                     // Anthropic requires all tool_result blocks to precede
@@ -395,14 +394,14 @@ class LlmAgentRuntime(
                 messages.add(
                     ChatMessage(
                         ChatRole.ASSISTANT,
-                        listOf(ChatBlock.Text(replyText))
+                        listOf(AgentChatBlock.Text(replyText))
                     )
                 )
                 messages.add(
                     ChatMessage(
                         ChatRole.USER,
                         listOf(
-                            ChatBlock.Text(
+                            AgentChatBlock.Text(
                                 AppLanguage.tr(
                                     "用户同意继续操作。请从刚才停下的地方继续，" +
                                         "不要重复已经完成的步骤。",
@@ -444,7 +443,7 @@ class LlmAgentRuntime(
     }
 
     private suspend fun retryWithLargerBudget(
-        service: ChatService,
+        service: AgentChatService,
         config: LlmConfig,
         systemPrompt: String,
         messages: MutableList<ChatMessage>
@@ -467,7 +466,7 @@ class LlmAgentRuntime(
                     tools = chatTools,
                     maxTokens = retryTokens,
                     temperature = config.temperature,
-                    reasoningEffort = config.reasoningEffort,
+                    reasoningEffort = config.reasoningEffort.toAgentReasoningEffort(),
                     purpose = "retry"
                 )
             )
@@ -484,7 +483,7 @@ class LlmAgentRuntime(
      * of only a "round limit exceeded" error.
      */
     private suspend fun summarizeAfterLimit(
-        service: ChatService,
+        service: AgentChatService,
         config: LlmConfig,
         systemPrompt: String,
         messages: MutableList<ChatMessage>,
@@ -505,7 +504,7 @@ class LlmAgentRuntime(
     }
 
     private suspend fun summarizeEmptyResponse(
-        service: ChatService,
+        service: AgentChatService,
         config: LlmConfig,
         systemPrompt: String,
         messages: MutableList<ChatMessage>
@@ -522,14 +521,14 @@ class LlmAgentRuntime(
     }
 
     private suspend fun requestSummary(
-        service: ChatService,
+        service: AgentChatService,
         config: LlmConfig,
         systemPrompt: String,
         messages: MutableList<ChatMessage>,
         instruction: String
     ): String? {
         val summaryMessages = messages.toMutableList().apply {
-            add(ChatMessage(ChatRole.USER, listOf(ChatBlock.Text(instruction))))
+            add(ChatMessage(ChatRole.USER, listOf(AgentChatBlock.Text(instruction))))
         }
         // Summaries also go through reasoning models. maxTokens here is the
         // visible answer budget; the provider adds thinking room on top.
@@ -550,7 +549,7 @@ class LlmAgentRuntime(
                     tools = emptyList(),
                     maxTokens = summaryTokens,
                     temperature = config.temperature,
-                    reasoningEffort = config.reasoningEffort,
+                    reasoningEffort = config.reasoningEffort.toAgentReasoningEffort(),
                     purpose = "summary"
                 )
             )
@@ -612,7 +611,7 @@ class LlmAgentRuntime(
     }
 
     private suspend fun executeTool(
-        use: ChatBlock.ToolUse,
+        use: AgentChatBlock.ToolUse,
         ctx: ToolContext
     ): ToolResult {
         if (toolSpecs.none { it.name == use.name }) {
@@ -645,11 +644,9 @@ class LlmAgentRuntime(
                 "图片、颜色、遮挡等视觉状态无法由节点表达时，才给 ui_observe 传 " +
                 "include_screenshot=true。第一次观察不要传截图；如果结果 " +
                 "screenshot_recommended=true，再调用一次补图。" +
-                "用户要求读屏、解释当前页面或点击读屏工具时，优先调用 spawn_screen_reader " +
-                "创建独立读屏 Agent。读屏 Agent 使用 screen_read 获取紧凑页面区块、操作项和" +
-                "候选意图，也可以为耗时操作创建 Worker，但不能直接点击或输入。" +
-                "创建读屏 Agent 后结束当前回合。页面未变化时复用 snapshot_id；" +
-                "点击、导航、弹窗或滚动后旧快照失效。需要指出位置时调用 screen_highlight。" +
+                "读屏由独立读屏 Agent 负责；它和主 Agent 是并行的顶层 Agent，" +
+                "不由主 Agent 创建或控制。主 Agent 不调用 screen_read、screen_highlight " +
+                "或 screen_suggest，也不要把读屏请求转成普通 Worker。" +
                 "根据页面和最近对话推断意图；意图不明确或多个目标风险不同则先问用户。" +
                 "推断出的导航、点击、输入、提交等动作必须先让用户确认，再调用 ui_*。" +
                 "所有由 AI 发起的虚拟 App 打开、浏览、搜索、点击、关注、发布和下单都使用" +
@@ -668,7 +665,8 @@ class LlmAgentRuntime(
                 "也不要通过外部 Intent 打开网页。" +
                 "遇到下载、安装和其它内部异步任务，优先用 task_wait 等待状态变化或终态；" +
                 "工具最多等待各自配置的同步返回上限，完成则立即返回结果，未完成返回 task_id；" +
-                "拿到 task_id 后用 task_wait，timeout 只是最大等待时间。页面文字等没有内部事件源的观察才用 poll_tool。超时不是成功。browser_download " +
+                "拿到 task_id 后用 task_wait，timeout 只是最大等待时间。状态工具配置轮询策略时，" +
+                "执行管线会自动等待；超时不是成功。browser_download " +
                 "只负责启动并返回 download_id 和 task_id，随后用 task_wait 观察，" +
                 "直到 terminal=true；只有 state=succeeded 才算成功。是否因速度慢而取消由你根据速度、" +
                 "剩余时间和空闲时间判断并调用 task_cancel；启动替代下载时系统仍会强制停止旧连接。" +
@@ -714,13 +712,10 @@ class LlmAgentRuntime(
                 "be represented by nodes, pass include_screenshot=true on a later call. The first " +
                 "observation must not request screenshots; retry with them when " +
                 "screenshot_recommended=true. " +
-                "When the user asks to read or explain the current screen, or taps the " +
-                "read-screen tool, prefer spawn_screen_reader to create the independent screen " +
-                "reader agent. That agent uses screen_read to obtain compact blocks, actions and " +
-                "candidate intents, and may create a Worker for long-running actions, but cannot " +
-                "tap or type directly. End the current turn after creating it. Reuse snapshot_id while the screen " +
-                "is unchanged; invalidate it after taps, navigation, dialogs or scrolling. Use " +
-                "screen_highlight when pointing out a location. Infer intent from the page and " +
+                "Screen reading belongs to an independent screen-reader agent that runs as a " +
+                "peer of the main agent; the main agent neither creates nor controls it. The " +
+                "main agent must not call screen_read, screen_highlight or screen_suggest, and " +
+                "must not turn screen-reading requests into ordinary Workers. Infer intent and " +
                 "recent conversation; ask first when intent, target or risk is ambiguous. " +
                 "Before any inferred navigation, tap, input or submit action, ask the user to " +
                 "confirm and then use the existing ui_* tools. " +
@@ -745,7 +740,7 @@ class LlmAgentRuntime(
                 "startup, post-install work, visible app text and other asynchronous operations, use " +
                 "task_wait for internal tasks; a tool returns immediately when finished within its own " +
                 "maximum wait, otherwise it returns task_id and task_wait timeout is only a maximum. " +
-                "Use poll_tool only for sources without internal events. " +
+                "The tool pipeline automatically polls status tools when configured. " +
                 "Never treat a timeout as success. browser_download only starts the task and returns " +
                 "download_id and task_id; then wait with task_wait until terminal=true; " +
                 "only state=succeeded is success. Decide from speed, ETA and idle time whether to " +
@@ -889,11 +884,11 @@ class LlmAgentRuntime(
         val last = messages.lastOrNull()
         if (last?.role == ChatRole.USER) {
             messages[messages.lastIndex] = last.copy(
-                blocks = last.blocks + ChatBlock.Text("\n$note")
+                blocks = last.blocks + AgentChatBlock.Text("\n$note")
             )
         } else {
             messages.add(
-                ChatMessage(ChatRole.USER, listOf(ChatBlock.Text(note)))
+                ChatMessage(ChatRole.USER, listOf(AgentChatBlock.Text(note)))
             )
         }
     }

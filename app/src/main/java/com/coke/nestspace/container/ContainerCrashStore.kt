@@ -2,6 +2,7 @@ package com.coke.nestspace.container
 
 import android.content.Context
 import android.util.Log
+import com.coke.nestspace.core.files.safePathSegment
 import org.json.JSONObject
 import java.io.File
 
@@ -94,11 +95,8 @@ object ContainerCrashStore {
     private fun fileFor(context: Context, packageName: String, instanceId: String): File =
         File(
             File(context.filesDir, "vspace/crashes"),
-            "${sanitize(packageName)}_${sanitize(instanceId)}.json"
+            "${safePathSegment(packageName)}_${safePathSegment(instanceId)}.json"
         )
-
-    private fun sanitize(value: String): String =
-        value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 
     private const val DEDUPE_WINDOW_MS = 30_000L
 }

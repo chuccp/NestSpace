@@ -2,7 +2,7 @@ package com.coke.nestspace.agent
 
 import android.content.Context
 import com.coke.nestspace.data.LlmConfig
-import com.coke.nestspace.llm.ChatUsage
+import com.coke.nestspace.agent.llm.ChatUsage
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat

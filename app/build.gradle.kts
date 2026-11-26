@@ -66,25 +66,9 @@ if (requireReleaseSigning && !hasReleaseSigning) {
     )
 }
 
-fun devPluginProjectName(directoryName: String): String =
-    directoryName.lowercase()
-        .replace(Regex("[^a-z0-9_-]+"), "-")
-        .trim('-')
-
-val discoveredDevPluginProjects = buildList {
-    add(":dev-plugin-runtime-demo")
-    file("../dev-plugins").listFiles()
-        ?.filter { it.isDirectory }
-        ?.sortedBy { it.name }
-        ?.forEach { directory ->
-            val name = devPluginProjectName(directory.name)
-            if (name.isNotEmpty() &&
-                File(directory, "build.gradle.kts").isFile
-            ) {
-                add(":dev-plugin-$name")
-            }
-        }
-}
+val discoveredDevPluginProjects = rootProject.subprojects
+    .map { it.path }
+    .filter { it.startsWith(":dev-plugin-") }
 
 android {
     namespace = "com.coke.nestspace"

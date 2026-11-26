@@ -846,7 +846,6 @@ data class ControlLease(
 | `ui_key` | 按键（back/home/recents/enter） |
 | `ui_wait_for` | 旧版 UI 文本等待快捷方式 |
 | `ui_find` | 在最近 snapshot 中查找节点 |
-| `poll_tool` | 统一按次数和间隔轮询受控的只读状态工具 |
 
 **应用/系统**
 

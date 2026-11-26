@@ -2,6 +2,7 @@
 
 package com.coke.nestspace.container.location
 
+import com.coke.nestspace.core.reflection.ReflectionDefaults
 import android.Manifest
 import android.app.PendingIntent
 import android.content.Context
@@ -18,7 +19,7 @@ import android.util.Log
 import com.coke.nestspace.container.ContainerContext
 import com.coke.nestspace.container.HiddenApiCompat
 import com.coke.nestspace.container.identity.HostIdentity
-import com.coke.nestspace.location.MockLocationSettings
+import com.coke.nestspace.integrations.location.MockLocationSettings
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
@@ -479,17 +480,6 @@ internal object ContainerLocationManager {
             return values
         }
 
-        private fun defaultValue(type: Class<*>): Any? = when (type) {
-            Void.TYPE -> null
-            Boolean::class.javaPrimitiveType -> false
-            Byte::class.javaPrimitiveType -> 0.toByte()
-            Char::class.javaPrimitiveType -> '\u0000'
-            Short::class.javaPrimitiveType -> 0.toShort()
-            Int::class.javaPrimitiveType -> 0
-            Long::class.javaPrimitiveType -> 0L
-            Float::class.javaPrimitiveType -> 0f
-            Double::class.javaPrimitiveType -> 0.0
-            else -> null
-        }
+        private fun defaultValue(type: Class<*>): Any? = ReflectionDefaults.primitive(type)
     }
 }

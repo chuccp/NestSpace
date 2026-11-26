@@ -1,7 +1,7 @@
 package com.coke.nestspace.agent
 
-import com.coke.nestspace.task.OperationTaskRegistry
-import com.coke.nestspace.tools.ContainerDisplayMode
+import com.coke.nestspace.agent.task.OperationTaskRegistry
+import com.coke.nestspace.agent.tools.ContainerDisplayMode
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue

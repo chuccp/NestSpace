@@ -1,10 +1,10 @@
 package com.coke.nestspace.agent
 
 import android.content.Context
-import com.coke.nestspace.mcp.McpClientManager
-import com.coke.nestspace.plugin.PluginCenterStore
-import com.coke.nestspace.tools.ToolRegistry
-import com.coke.nestspace.tools.ToolSpec
+import com.coke.nestspace.integrations.mcp.McpClientManager
+import com.coke.nestspace.plugins.host.PluginCenterStore
+import com.coke.nestspace.agent.tools.ToolRegistry
+import com.coke.nestspace.agent.tools.ToolSpec
 
 enum class AgentToolSource {
     BUILT_IN,

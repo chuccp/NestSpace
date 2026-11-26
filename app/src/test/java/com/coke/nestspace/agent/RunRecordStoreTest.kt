@@ -1,5 +1,6 @@
 package com.coke.nestspace.agent
 
+import com.coke.nestspace.agent.sdk.RunMetricsSnapshot
 import com.coke.nestspace.data.AgentMessage
 import org.junit.After
 import org.junit.Assert.assertEquals

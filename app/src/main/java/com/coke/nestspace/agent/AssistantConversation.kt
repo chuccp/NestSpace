@@ -1,26 +1,29 @@
 package com.coke.nestspace.agent
 
-import com.coke.nestspace.i18n.AppLanguage
-import android.content.Context
-import com.coke.nestspace.AppGraph
 import com.coke.nestspace.container.ContainerProcessPool
 import com.coke.nestspace.container.HeadlessMirrorWindow
-import com.coke.nestspace.control.LivePreview
+import com.coke.nestspace.core.i18n.AppLanguage
+import android.content.Context
+import com.coke.nestspace.AppGraph
+import com.coke.nestspace.container.control.LivePreview
 import com.coke.nestspace.data.AgentMessage
 import com.coke.nestspace.data.AppSettingsEvents
 import com.coke.nestspace.data.LlmConfig
 import com.coke.nestspace.data.LlmConfigStore
-import com.coke.nestspace.memory.MemoryExtractor
-import com.coke.nestspace.memory.MemoryStore
-import com.coke.nestspace.memory.SkillDrafter
-import com.coke.nestspace.memory.SkillStore
-import com.coke.nestspace.replay.ReplayManager
-import com.coke.nestspace.speech.AssistantSpeech
-import com.coke.nestspace.speech.TtsSettings
-import com.coke.nestspace.tools.ContainerDisplayMode
-import com.coke.nestspace.llm.ChatBlock
-import com.coke.nestspace.llm.ChatMessage
-import com.coke.nestspace.llm.ChatRole
+import com.coke.nestspace.agent.memory.MemoryExtractor
+import com.coke.nestspace.agent.memory.MemoryStore
+import com.coke.nestspace.agent.memory.SkillDrafter
+import com.coke.nestspace.agent.memory.SkillStore
+import com.coke.nestspace.agent.replay.ReplayManager
+import com.coke.nestspace.features.speech.AssistantSpeech
+import com.coke.nestspace.features.speech.TtsSettings
+import com.coke.nestspace.agent.tools.ContainerDisplayMode
+import com.coke.nestspace.agent.definitions.NestSpaceAgents
+import com.coke.nestspace.agent.runtime.NestSpaceAgentRunner
+import com.coke.nestspace.agent.sdk.RunMetrics
+import com.coke.nestspace.agent.sdk.AgentChatBlock
+import com.coke.nestspace.agent.llm.ChatMessage
+import com.coke.nestspace.agent.llm.ChatRole
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -280,7 +283,10 @@ object AssistantConversation {
                 ?.take(1_500)
 
             if (config != null && config.isConfigured) {
-                val runtime = LlmAgentRuntime(AppGraph.registry(app))
+                val runtime = NestSpaceAgentRunner.runtime(
+                    AppGraph.registry(app),
+                    NestSpaceAgents.mainKey
+                )
                 val memoryContext = withContext(Dispatchers.IO) {
                     MemoryStore(app).contextFor(text)
                 }
@@ -729,7 +735,7 @@ object AssistantConversation {
             history += ChatMessage(
                 ChatRole.USER,
                 listOf(
-                    ChatBlock.Text(
+                    AgentChatBlock.Text(
                         AppLanguage.tr(
                             "宿主转交的子 Agent 汇报（不是用户输入）：\n$report",
                             "Worker report delivered by the host (not a user message):\n$report"
@@ -740,7 +746,7 @@ object AssistantConversation {
             history += ChatMessage(
                 ChatRole.ASSISTANT,
                 listOf(
-                    ChatBlock.Text(
+                    AgentChatBlock.Text(
                         AppLanguage.tr("已收到子 Agent 汇报。", "Worker report received.")
                     )
                 )
@@ -803,7 +809,7 @@ object AssistantConversation {
                     AgentMessage.Role.AGENT -> ChatRole.ASSISTANT
                     else -> null
                 } ?: return@forEach
-                history += ChatMessage(role, listOf(ChatBlock.Text(message.text)))
+                history += ChatMessage(role, listOf(AgentChatBlock.Text(message.text)))
             }
             while (history.size > MAX_HISTORY_MESSAGES) history.removeAt(0)
             _queuedSteering.value = 0
@@ -842,15 +848,15 @@ object AssistantConversation {
         steering: List<String> = emptyList()
     ) {
         synchronized(stateLock) {
-            val userBlocks = mutableListOf(ChatBlock.Text(user))
+            val userBlocks = mutableListOf(AgentChatBlock.Text(user))
             steering.forEach { text ->
-                userBlocks += ChatBlock.Text(
+                userBlocks += AgentChatBlock.Text(
                     "\n" + AppLanguage.tr("用户补充：$text", "User follow-up: $text")
                 )
             }
             history.add(ChatMessage(ChatRole.USER, userBlocks))
             if (!assistant.isNullOrBlank()) {
-                history.add(ChatMessage(ChatRole.ASSISTANT, listOf(ChatBlock.Text(assistant))))
+                history.add(ChatMessage(ChatRole.ASSISTANT, listOf(AgentChatBlock.Text(assistant))))
             }
             while (history.size > MAX_HISTORY_MESSAGES) history.removeAt(0)
         }

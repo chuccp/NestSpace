@@ -1,0 +1,632 @@
+package com.coke.nestspace.agent.tools
+
+import com.coke.nestspace.container.ContainerCrashStore
+import com.coke.nestspace.container.ContainerProcessPool
+import com.coke.nestspace.container.HeadlessMirrorWindow
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.agent.ToolConfirmationCategory
+import com.coke.nestspace.container.vpm.ContainerPermissionStore
+import com.coke.nestspace.container.control.ContainerUiClient
+import com.coke.nestspace.container.control.ContainerUiKeepAlive
+import com.coke.nestspace.container.control.LivePreview
+import com.coke.nestspace.container.engine.EngineResult
+import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.ArrayDeque
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+
+internal fun ToolRegistry.spaceToolSpecs(): List<ToolSpec> = listOf(
+        ToolSpec(
+            name = "space_list",
+            description = "List spaces. Stage B exposes the system space and virtual space 1.",
+            inputSchema = schema()
+        ) { _, _ ->
+            val arr = JSONArray()
+            arr.put(
+                JSONObject()
+                    .put("id", "system")
+                    .put("name", AppLanguage.tr("系统空间", "System space"))
+                    .put("type", "system")
+                    .put("status", AppLanguage.tr("可用", "Available"))
+            )
+            arr.put(
+                JSONObject()
+                    .put("id", "virtual-1")
+                    .put("name", AppLanguage.tr("虚拟空间 1", "Virtual space 1"))
+                    .put("type", "virtual")
+                    .put(
+                        "status",
+                        AppLanguage.tr(
+                            "Stage C-D：安装器 + 多开 + 进程隔离 / Job / 通知 / VPMS",
+                            "Stage C-D: installer + multiple instances + process " +
+                                "isolation / jobs / notifications / VPMS"
+                        )
+                    )
+            )
+            ToolResult(true, JSONObject().put("spaces", arr).toString())
+        },
+        ToolSpec(
+            name = "space_list_apps",
+            description = "List launchable apps in virtual-1 by default. Use space_id=system for installed system apps.",
+            inputSchema = schema(
+                "space_id" to "string"
+            )
+        ) { args, ctx ->
+            val spaceId = args.optString("space_id", ctx.spaceId)
+            if (spaceId != "system") {
+                when (val result = engine.listApps(spaceId)) {
+                    is EngineResult.Error -> return@ToolSpec ToolResult(
+                        false, "${result.code}: ${result.message}", errorCode = result.code
+                    )
+                    is EngineResult.Ok -> return@ToolSpec ToolResult(
+                        true, appsToJson(result.value).toString()
+                    )
+                }
+            }
+            ToolResult(true, appsToJson(apps.listLaunchableApps()).toString())
+        },
+        ToolSpec(
+            name = "space_list_installed",
+            description = "List apps installed in a virtual space, including instances, signature and native-lib status.",
+            inputSchema = schema("space_id" to "string")
+        ) { args, _ ->
+            val spaceId = args.optString("space_id", "virtual-1")
+            when (val result = engine.listInstalled(spaceId)) {
+                is EngineResult.Error -> ToolResult(
+                    false, "${result.code}: ${result.message}", errorCode = result.code
+                )
+                is EngineResult.Ok -> {
+                    val arr = JSONArray()
+                    result.value.forEach { arr.put(virtualAppToJson(it)) }
+                    ToolResult(
+                        true,
+                        JSONObject().put("space_id", spaceId).put("apps", arr).toString()
+                    )
+                }
+            }
+        },
+        ToolSpec(
+            name = "space_running",
+            description = "List running virtual apps and their slot processes. Check this (or " +
+                "call ui_observe directly) before space_launch. Agent and MCP work continues " +
+                "in headless mirror mode even when the user wants an in-app action. Use " +
+                "hand_to_user only when the user must take over directly.",
+            inputSchema = schema()
+        ) { _, _ ->
+            val arr = JSONArray()
+            ContainerProcessPool.runningSlots(context).forEach { slot ->
+                arr.put(
+                    JSONObject()
+                        .put("slot", slot.slot)
+                        .put("package", slot.packageName)
+                        .put("instance_id", slot.instanceId)
+                        .put("process", slot.processName)
+                        .put("main", slot.processName == slot.packageName)
+                        .put("active", slot.active)
+                        .put("memory_kb", slot.memoryKb)
+                )
+            }
+            ToolResult(true, JSONObject().put("running", arr).toString())
+        },
+        ToolSpec(
+            name = "space_launch",
+            description = "Launch an app by package name in virtual-1 by default (pass space_id=system " +
+                "for a system app). instance_id is optional; omit it to use the most recently " +
+                "launched instance. Agent and MCP launches always use the assistant's headless " +
+                "square mirror, including searches, taps and other in-app actions. Omit " +
+                "headless or pass true. If the user needs to operate the app directly, launch " +
+                "headless and then call hand_to_user. A headless=false argument from Agent or " +
+                "MCP is ignored unless display_mode=visible. display_mode controls background " +
+                "(off-screen headless), mirror (small headless window), or visible (normal app).",
+            inputSchema = schema(
+                "space_id" to "string",
+                "package" to "string",
+                "instance_id" to "string",
+                "headless" to "boolean",
+                "display_mode" to "string",
+                "activity" to "string"
+            ),
+            mutating = true,
+            maxWaitMs = 2_000L
+        ) { args, ctx ->
+            val spaceId = args.optString("space_id", ctx.spaceId)
+            val pkg = args.optString("package")
+            if (pkg.isBlank()) return@ToolSpec ToolResult(
+                false, "package is required", errorCode = "INVALID_ARGUMENT"
+            )
+            if (spaceId != "system") {
+                val instanceId = args.optString("instance_id").takeIf { it.isNotBlank() }
+                if (LaunchCrashGuard.isBlocked(pkg, instanceId)) {
+                    return@ToolSpec ToolResult(
+                        false,
+                        AppLanguage.tr(
+                            "$pkg 连续启动失败，已停止自动重试。请稍后再试或先清理该应用数据。",
+                            "$pkg crashed repeatedly; automatic relaunch has been stopped."
+                        ),
+                        errorCode = "APP_CRASH_LOOP"
+                    )
+                }
+                val requestedActivity = args.optString("activity").takeIf { it.isNotBlank() }
+                // AUTO keeps the assistant/user policy. MCP can force any of
+                // the three presentation modes through display_mode.
+                val requestedVisible = args.has("headless") &&
+                    !args.optBoolean("headless", true)
+                val explicitVisible = when (ctx.displayMode) {
+                    ContainerDisplayMode.VISIBLE -> true
+                    ContainerDisplayMode.BACKGROUND,
+                    ContainerDisplayMode.MIRROR -> false
+                    ContainerDisplayMode.AUTO ->
+                        requestedVisible && ctx.caller == Caller.USER
+                }
+                val headless = !explicitVisible
+                val offscreen =
+                    ctx.displayMode == ContainerDisplayMode.BACKGROUND
+                // Headless reads use the UI service directly; no mirror or
+                // screenshot card needs to be shown on the assistant page.
+                LivePreview.setSuppressed(headless)
+                val running = ContainerProcessPool.findRunningSlot(pkg, instanceId)
+                if (running != null && requestedActivity == null) {
+                    if (explicitVisible) {
+                        val mirrored = ContainerUiClient.isMirrorMode(context, running.slot)
+                            ?: (HeadlessMirrorWindow.activeSlot() == running.slot)
+                        if (mirrored) {
+                            // A mirror host renders into the VirtualDisplay and
+                            // is not touchable. It cannot be promoted to a
+                            // normal window, so restart it full-screen.
+                            ContainerProcessPool.closeSlot(context, running.slot)
+                            HeadlessMirrorWindow.hide()
+                        } else {
+                            val shown = ContainerProcessPool.bringToFront(
+                                context,
+                                running.slot,
+                                pkg,
+                                running.instanceId
+                            )
+                            if (shown) {
+                                return@ToolSpec ToolResult(
+                                    true,
+                                    JSONObject()
+                                        .put("launched", true)
+                                        .put("already_running", true)
+                                        .put("package", pkg)
+                                        .put("instance_id", running.instanceId)
+                                        .put("slot", running.slot)
+                                        .put("headless", false)
+                                        .toString()
+                                )
+                            }
+                        }
+                    } else {
+                        val mirrored = ContainerUiClient.isMirrorMode(context, running.slot)
+                            ?: (HeadlessMirrorWindow.activeSlot() == running.slot)
+                        if (!mirrored) {
+                            // A visible app cannot be reused as a headless task:
+                            // it would stay in the foreground or enter PiP.
+                            // Restart that slot inside the assistant mirror.
+                            android.util.Log.d(
+                                "SpaceToolSpecs",
+                                "demoting visible $pkg slot=${running.slot} to headless"
+                            )
+                            ContainerProcessPool.closeSlot(context, running.slot)
+                            HeadlessMirrorWindow.hide()
+                        } else {
+                        if (!awaitContainerReady(running.slot)) {
+                            return@ToolSpec launchBlockedResult()
+                        }
+                        ContainerUiKeepAlive.bind(context, running.slot)
+                        ensureMirrorPreview(args, showPanel = !offscreen)
+                        capturePreview(running.slot, pkg)
+                        return@ToolSpec ToolResult(
+                            true,
+                            JSONObject()
+                                .put("launched", true)
+                                .put("already_running", true)
+                                .put("package", pkg)
+                                .put("instance_id", running.instanceId)
+                                .put("slot", running.slot)
+                                .put("headless", true)
+                                .put("hint", "The app is already running; use ui_* directly.")
+                                .toString()
+                        )
+                        }
+                    }
+                }
+                val crashMarker = ContainerCrashStore.peek(
+                    context,
+                    pkg,
+                    instanceId ?: "instance-1"
+                )
+                if (crashMarker?.reason?.contains("WebView", ignoreCase = true) == true &&
+                    ContainerProcessPool.findRunningSlot(pkg, instanceId) == null
+                ) {
+                    clearStaleWebViewLocks(context, pkg, instanceId)
+                }
+                when (val result = engine.launch(
+                    spaceId,
+                    pkg,
+                    instanceId,
+                    headless,
+                    offscreen,
+                    requestedActivity
+                )) {
+                    is EngineResult.Error -> return@ToolSpec ToolResult(
+                        false, "${result.code}: ${result.message}", errorCode = result.code
+                    )
+                    is EngineResult.Ok -> {
+                        val launched = result.value
+                        val slot = launched.slot
+                            ?: ContainerProcessPool.slotFor(pkg, launched.instanceId)
+                        if (launched.restartedAfterCrash &&
+                            LaunchCrashGuard.recordCrash(pkg, instanceId) >= 2
+                        ) {
+                            slot?.let { ContainerProcessPool.closeSlot(context, it) }
+                            HeadlessMirrorWindow.hide()
+                            return@ToolSpec ToolResult(
+                                false,
+                                AppLanguage.tr(
+                                    "$pkg 连续崩溃两次，已停止自动重开。",
+                                    "$pkg crashed twice; automatic relaunch has been stopped."
+                                ),
+                                errorCode = "APP_CRASH_LOOP"
+                            )
+                        }
+                        if (!launched.restartedAfterCrash) {
+                            LaunchCrashGuard.clear(pkg, instanceId)
+                        }
+                        if (!awaitContainerReady(slot)) {
+                            return@ToolSpec launchBlockedResult()
+                        }
+                        if (headless) slot?.let { ContainerUiKeepAlive.bind(context, it) }
+                        capturePreview(slot, pkg)
+                        return@ToolSpec ToolResult(
+                            true,
+                            JSONObject()
+                                .put("launched", true)
+                                .put("already_running", false)
+                                .put("package", pkg)
+                                .put("instance_id", launched.instanceId)
+                                .put("activity", launched.activity)
+                                .put(
+                                    "target_process",
+                                    launched.targetProcess ?: pkg
+                                )
+                                .put("slot", launched.slot ?: JSONObject.NULL)
+                                .put("data_dir", launched.dataDir)
+                                .put("headless", headless)
+                                .put("restarted_after_crash", launched.restartedAfterCrash)
+                                .put(
+                                    "crash_reason",
+                                    launched.crashReason ?: JSONObject.NULL
+                                )
+                                .toString()
+                        )
+                    }
+                }
+            }
+            if (isHostBrowserPackage(pkg)) {
+                return@ToolSpec ToolResult(
+                    false,
+                    "Use browser_open for web pages; launching the system browser is disabled.",
+                    errorCode = "USE_BUILT_IN_BROWSER"
+                )
+            }
+            if (!apps.launch(pkg)) {
+                return@ToolSpec ToolResult(false, "Cannot launch $pkg", errorCode = "LAUNCH_FAILED")
+            }
+            ToolResult(true, JSONObject().put("launched", true).put("package", pkg).toString())
+        },
+        ToolSpec(
+            name = "space_multi_open",
+            description = "Create a new instance in a virtual space and launch it. Each instance has an isolated data directory. " +
+                "Agent and MCP calls always run in the headless square mirror; use " +
+                "hand_to_user when the user must operate it directly.",
+            inputSchema = schema(
+                "space_id" to "string",
+                "package" to "string",
+                "headless" to "boolean",
+                "display_mode" to "string"
+            ),
+            mutating = true,
+            maxWaitMs = 2_000L
+        ) { args, ctx ->
+            val spaceId = args.optString("space_id", "virtual-1")
+            val pkg = args.optString("package")
+            if (pkg.isBlank()) return@ToolSpec ToolResult(
+                false, "package is required", errorCode = "INVALID_ARGUMENT"
+            )
+            val headless = when (ctx.displayMode) {
+                ContainerDisplayMode.VISIBLE -> false
+                ContainerDisplayMode.BACKGROUND,
+                ContainerDisplayMode.MIRROR -> true
+                ContainerDisplayMode.AUTO -> if (ctx.caller == Caller.USER) {
+                    args.optBoolean("headless", true)
+                } else {
+                    true
+                }
+            }
+            val offscreen =
+                ctx.displayMode == ContainerDisplayMode.BACKGROUND
+            LivePreview.setSuppressed(headless)
+            when (val result = engine.multiOpen(
+                spaceId,
+                pkg,
+                headless,
+                backgroundOnly = offscreen
+            )) {
+                is EngineResult.Error -> ToolResult(
+                    false, "${result.code}: ${result.message}", errorCode = result.code
+                )
+                is EngineResult.Ok -> {
+                    val opened = result.value
+                    val slot = ContainerProcessPool.slotFor(pkg, opened.instanceId)
+                    if (!awaitContainerReady(slot)) {
+                        return@ToolSpec launchBlockedResult()
+                    }
+                    if (headless) slot?.let { ContainerUiKeepAlive.bind(context, it) }
+                    capturePreview(slot, pkg)
+                    ToolResult(
+                        true,
+                        JSONObject()
+                            .put("multi_opened", true)
+                            .put("package", pkg)
+                            .put("instance_id", opened.instanceId)
+                            .put("data_dir", opened.dataDir)
+                            .put("headless", headless)
+                            .put("restarted_after_crash", opened.restartedAfterCrash)
+                            .put(
+                                "crash_reason",
+                                opened.crashReason ?: JSONObject.NULL
+                            )
+                            .toString()
+                    )
+                }
+            }
+        },
+        ToolSpec(
+            name = "space_install_apk",
+            description = "Install a base APK plus optional split APKs into a virtual space. The URI can be a file path or content URI readable by NestSpace. Signature changes are rejected.",
+            inputSchema = schema(
+                "space_id" to "string",
+                "apk_uri" to "string"
+            ).apply {
+                getJSONObject("properties").put(
+                    "split_uris",
+                    JSONObject()
+                        .put("type", "array")
+                        .put("items", JSONObject().put("type", "string"))
+                )
+            },
+            mutating = true,
+            maxWaitMs = 5_000L
+        ) { args, ctx ->
+            val spaceId = args.optString("space_id", "virtual-1")
+            val base = args.optString("apk_uri")
+            if (base.isBlank()) return@ToolSpec ToolResult(
+                false, "apk_uri is required", errorCode = "INVALID_ARGUMENT"
+            )
+            val uris = mutableListOf(base)
+            val splitUris = args.optJSONArray("split_uris")
+            if (splitUris != null) {
+                for (i in 0 until splitUris.length()) {
+                    splitUris.optString(i).takeIf { it.isNotBlank() }?.let(uris::add)
+                }
+            }
+            val alreadyInstalled = engine.matchesInstalledPayload(spaceId, uris)
+            val sameIdentity = alreadyInstalled ||
+                engine.matchesInstalledIdentity(spaceId, uris)
+            if (sameIdentity) {
+                android.util.Log.d(
+                    "SpaceInstall",
+                    "skip install confirmation: same app and signing certificate"
+                )
+            }
+            if (!sameIdentity) {
+                val denied = requireConfirmation(
+                    ctx,
+                    "install APK",
+                    AppLanguage.tr(
+                        "安装 APK 到虚拟空间？\n$base",
+                        "Install this APK into the virtual space?\n$base"
+                    ),
+                    ToolConfirmationCategory.INSTALL
+                )
+                if (denied != null) return@ToolSpec denied
+            }
+            when (val result = engine.install(spaceId, uris)) {
+                is EngineResult.Error -> ToolResult(
+                    false, "${result.code}: ${result.message}", errorCode = result.code
+                )
+                is EngineResult.Ok -> ToolResult(
+                    true,
+                    JSONObject()
+                        .put("installed", true)
+                        .put("already_installed", alreadyInstalled)
+                        .put("package", result.value.packageName)
+                        .put("label", result.value.label)
+                        .put("version_name", result.value.versionName ?: JSONObject.NULL)
+                        .put("version_code", result.value.versionCode)
+                        .put("native_libs", result.value.hasNativeLibs)
+                        .put("signature_sha256", result.value.signatureSha256)
+                        .put("instances", JSONArray().apply {
+                            result.value.instances.forEach { put(it.id) }
+                        })
+                        .toString()
+                )
+            }
+        },
+        ToolSpec(
+            name = "space_uninstall",
+            description = "Uninstall a virtual app and delete its APKs, instances and data directories.",
+            inputSchema = schema("space_id" to "string", "package" to "string"),
+            mutating = true,
+            maxWaitMs = 1_500L
+        ) { args, ctx ->
+            val pkg = args.optString("package")
+            if (pkg.isBlank()) return@ToolSpec ToolResult(
+                false, "package is required", errorCode = "INVALID_ARGUMENT"
+            )
+            val denied = requireConfirmation(
+                ctx,
+                "uninstall $pkg",
+                AppLanguage.tr(
+                    "卸载 $pkg？这会删除它的 APK、实例和数据目录。",
+                    "Uninstall $pkg? This deletes its APKs, instances, and data."
+                ),
+                ToolConfirmationCategory.INSTALL
+            )
+            if (denied != null) return@ToolSpec denied
+            when (val result = engine.uninstall(args.optString("space_id", "virtual-1"), pkg)) {
+                is EngineResult.Error -> ToolResult(
+                    false, "${result.code}: ${result.message}", errorCode = result.code
+                )
+                is EngineResult.Ok -> ToolResult(
+                    true,
+                    JSONObject().put("uninstalled", true).put("package", pkg).toString()
+                )
+            }
+        },
+        ToolSpec(
+            name = "space_stop",
+            description = "Stop showing the current virtual app (closes the container UI if it matches).",
+            inputSchema = schema("space_id" to "string", "package" to "string"),
+            mutating = true
+        ) { args, _ ->
+            when (val result = engine.stop(args.optString("space_id", "virtual-1"), args.optString("package"))) {
+                is EngineResult.Error -> ToolResult(
+                    false, "${result.code}: ${result.message}", errorCode = result.code
+                )
+                is EngineResult.Ok -> {
+                    LivePreview.setSuppressed(false)
+                    HeadlessMirrorWindow.hide()
+                    ToolResult(true, "stopped")
+                }
+            }
+        },
+        ToolSpec(
+            name = "space_permissions",
+            description = "List, grant or revoke virtual runtime permissions for a package installed " +
+                "in a space. The grant is app-facing: checkSelfPermission and cross-virtual-app " +
+                "permission queries in the container see it immediately (within 1s).",
+            inputSchema = schema(
+                "space_id" to "string",
+                "package" to "string",
+                "instance_id" to "string",
+                "permission" to "string",
+                "action" to "string"
+            ),
+            mutating = true
+        ) { args, ctx ->
+            val pkg = args.optString("package")
+            if (pkg.isBlank()) return@ToolSpec ToolResult(
+                false, "package is required", errorCode = "INVALID_ARGUMENT"
+            )
+            val action = args.optString("action", "list").lowercase()
+            val instanceId = args.optString("instance_id", "instance-1")
+                .ifBlank { "instance-1" }
+            val permission = args.optString("permission")
+            when (action) {
+                "grant", "revoke" -> {
+                    if (permission.isBlank()) return@ToolSpec ToolResult(
+                        false, "permission is required for $action",
+                        errorCode = "INVALID_ARGUMENT"
+                    )
+                    val denied = requireConfirmation(
+                        ctx,
+                        "$action $permission",
+                        AppLanguage.tr(
+                            "为 $pkg ${if (action == "grant") "授予" else "撤销"}权限 $permission？",
+                            "${if (action == "grant") "Grant" else "Revoke"} $permission for $pkg?"
+                        ),
+                        ToolConfirmationCategory.PERMISSION
+                    )
+                    if (denied != null) return@ToolSpec denied
+                    val state = if (action == "grant") {
+                        ContainerPermissionStore.grant(context, pkg, permission, instanceId)
+                    } else {
+                        ContainerPermissionStore.revoke(context, pkg, permission, instanceId)
+                    }
+                    ToolResult(
+                        true,
+                        JSONObject()
+                            .put("package", pkg)
+                            .put("instance_id", instanceId)
+                            .put("action", action)
+                            .put("permission", permission)
+                            .put("granted", JSONArray(state.granted.toList()))
+                            .put("denied", JSONArray(state.denied.toList()))
+                            .toString()
+                    )
+                }
+                else -> {
+                    val state = ContainerPermissionStore.load(context, pkg, instanceId)
+                    ToolResult(
+                        true,
+                        JSONObject()
+                            .put("package", pkg)
+                            .put("instance_id", instanceId)
+                            .put("granted", JSONArray(state.granted.toList()))
+                            .put("denied", JSONArray(state.denied.toList()))
+                            .toString()
+                    )
+                }
+            }
+        },
+    )
+
+private object LaunchCrashGuard {
+    private const val WINDOW_MS = 2 * 60_000L
+    private val crashes = ConcurrentHashMap<String, ArrayDeque<Long>>()
+
+    fun recordCrash(packageName: String, instanceId: String?): Int {
+        val now = System.currentTimeMillis()
+        val queue = crashes.getOrPut(key(packageName, instanceId)) { ArrayDeque() }
+        synchronized(queue) {
+            while (queue.isNotEmpty() && now - queue.first > WINDOW_MS) {
+                queue.removeFirst()
+            }
+            queue.addLast(now)
+            return queue.size
+        }
+    }
+
+    fun isBlocked(packageName: String, instanceId: String?): Boolean {
+        val queue = crashes[key(packageName, instanceId)] ?: return false
+        val now = System.currentTimeMillis()
+        synchronized(queue) {
+            while (queue.isNotEmpty() && now - queue.first > WINDOW_MS) {
+                queue.removeFirst()
+            }
+            val blocked = queue.size >= 2
+            if (queue.isEmpty()) {
+                crashes.remove(key(packageName, instanceId), queue)
+            }
+            return blocked
+        }
+    }
+
+    fun clear(packageName: String, instanceId: String?) {
+        crashes.remove(key(packageName, instanceId))
+    }
+
+    private fun key(packageName: String, instanceId: String?): String =
+        packageName + "\u0000" + instanceId.orEmpty()
+}
+
+private fun clearStaleWebViewLocks(
+    context: android.content.Context,
+    packageName: String,
+    instanceId: String?
+) {
+    val root = File(
+        context.filesDir,
+        "vspace/data/$packageName/${instanceId ?: "instance-1"}"
+    )
+    if (!root.isDirectory) return
+    root.walkTopDown()
+        .filter { it.isFile && it.name == "webview_data.lock" }
+        .forEach { lock ->
+            runCatching { lock.delete() }
+        }
+}

@@ -1,6 +1,6 @@
 package com.coke.nestspace.container
 
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
 
 /**
  * Process-wide registry for live ContainerSessions.

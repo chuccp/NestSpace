@@ -16,7 +16,7 @@ public final class PluginToolViewContext {
     private final boolean successful;
     private final String errorCode;
 
-    PluginToolViewContext(
+    public PluginToolViewContext(
         Context context,
         String toolName,
         String argumentsJson,

@@ -11,7 +11,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.coke.nestspace.MainActivity
 import com.coke.nestspace.R
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
 
 /**
  * Finishes records left behind by a process that died while an assistant run

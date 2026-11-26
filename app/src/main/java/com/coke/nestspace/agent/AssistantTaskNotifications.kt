@@ -12,8 +12,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.coke.nestspace.MainActivity
 import com.coke.nestspace.R
-import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.task.OperationTaskRegistry
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.agent.task.OperationTaskRegistry
 
 internal object AssistantTaskNotifications {
     private const val CHANNEL_ID = "assistant_task_results"

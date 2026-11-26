@@ -1,7 +1,5 @@
 package com.coke.nestspace.container.runtime
 
-import android.app.Application
-import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import com.coke.nestspace.container.loader.ApkClassIndex

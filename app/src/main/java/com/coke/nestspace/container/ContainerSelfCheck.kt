@@ -6,11 +6,11 @@ import android.os.Build
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.coke.nestspace.AppGraph
-import com.coke.nestspace.control.ContainerUiClient
+import com.coke.nestspace.container.control.ContainerUiClient
 import com.coke.nestspace.data.VirtualApp
-import com.coke.nestspace.engine.EngineResult
-import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.service.McpForegroundService
+import com.coke.nestspace.container.engine.EngineResult
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.integrations.service.McpForegroundService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable

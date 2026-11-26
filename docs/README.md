@@ -29,6 +29,7 @@
 | [桌面与外观](desktop.md) | 桌面图标、文件夹、排序、壁纸、运行管理 |
 | [设置详解](settings.md) | 空间设置里的每个入口和选项 |
 | [AI 助手](assistant.md) | 模型配置、流式对话、语音助手、自动记忆/技能起草、定时任务 |
+| [Agent SDK](agent-sdk.md) | Agent 内核、Session、统一 Chat、能力包、Hook、Worker 委派与完成边界 |
 | [内置浏览器](browser.md) | 标签页、无头模式、下载进度与删除、上传、代理、转人工 |
 | [MCP 控制服务](mcp.md) | 电脑连接、Token、局域网、CLI、外部 MCP |
 | [常见问题](troubleshooting.md) | 安装失败、黑屏、后台被回收、连接失败等 |
@@ -38,6 +39,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [架构与限制](architecture.md) | 容器实现、进程模型和已知边界 |
+| [Android 架构重构与精简方案](android-architecture-refactor-plan.md) | 单模块包边界、已完成的精简、搬迁记录、验证基线和剩余高风险项 |
 | [单 APK 兼容运行时设计](single-apk-android-compatibility-runtime.md) | 免 Root 条件下的统一环境、Native Facade 和分阶段改造方案 |
 | [加固运行与原生 Android 复原研究](https://github.com/chuccp/NestSpace/blob/main/docs/hardened-runtime-recovery.md) | 运行期 DEX 恢复结论、加固启动链和剩余原生环境差异 |
 | [加固运行时复原总结](https://github.com/chuccp/NestSpace/blob/main/docs/hardened-runtime-summary.md) | 当前暂停点、根因证据、代码检查点、禁止重复实验和下一次接续步骤 |

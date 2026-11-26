@@ -1,6 +1,6 @@
 package com.coke.nestspace.container.loader
 
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo

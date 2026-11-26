@@ -2,6 +2,7 @@ package com.coke.nestspace.container.vpm
 
 import android.content.Context
 import android.util.Log
+import com.coke.nestspace.core.files.safePathSegment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -157,9 +158,9 @@ object ContainerPermissionStore {
     /** Removes permission state for every instance of a package. */
     fun clearPackage(context: Context, packageName: String) {
         val folder = File(context.filesDir, "vspace/perms")
-        val prefix = "${sanitize(packageName)}@"
+        val prefix = "${safePathSegment(packageName)}@"
         folder.listFiles()?.forEach { file ->
-            if (file.name == "${sanitize(packageName)}.json" ||
+            if (file.name == "${safePathSegment(packageName)}.json" ||
                 file.name.startsWith(prefix)
             ) {
                 runCatching { file.delete() }
@@ -174,14 +175,14 @@ object ContainerPermissionStore {
     ): File {
         val folder = File(context.filesDir, "vspace/perms")
         if (instanceId == DEFAULT_INSTANCE_ID) {
-            val legacy = File(folder, "${sanitize(packageName)}.json")
+            val legacy = File(folder, "${safePathSegment(packageName)}.json")
             if (legacy.isFile) return legacy
         }
         return File(folder, "${scopeName(packageName, instanceId)}.json")
     }
 
     private fun scopeName(packageName: String, instanceId: String): String =
-        "${sanitize(packageName)}@${sanitize(instanceId)}"
+        "${safePathSegment(packageName)}@${safePathSegment(instanceId)}"
 
     private fun JSONArray?.toStringSet(): Set<String> {
         if (this == null) return emptySet()
@@ -192,6 +193,4 @@ object ContainerPermissionStore {
         return result
     }
 
-    private fun sanitize(value: String): String =
-        value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 }

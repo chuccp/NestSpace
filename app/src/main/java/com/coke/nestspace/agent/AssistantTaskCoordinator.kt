@@ -1,19 +1,26 @@
 package com.coke.nestspace.agent
 
-import android.content.Context
+import android.annotation.SuppressLint
 import com.coke.nestspace.container.HeadlessMirrorWindow
+import android.content.Context
 import com.coke.nestspace.data.AgentMessage
 import com.coke.nestspace.data.LlmConfig
 import com.coke.nestspace.data.LlmConfigStore
-import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.memory.MemoryStore
-import com.coke.nestspace.memory.SkillStore
-import com.coke.nestspace.service.AssistantTaskForegroundService
-import com.coke.nestspace.speech.AssistantSpeech
-import com.coke.nestspace.speech.TtsSettings
-import com.coke.nestspace.task.OperationTaskRegistry
-import com.coke.nestspace.tools.ContainerDisplayMode
-import com.coke.nestspace.tools.ToolRegistry
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.agent.memory.MemoryStore
+import com.coke.nestspace.agent.memory.SkillStore
+import com.coke.nestspace.integrations.service.AssistantTaskForegroundService
+import com.coke.nestspace.features.speech.AssistantSpeech
+import com.coke.nestspace.features.speech.TtsSettings
+import com.coke.nestspace.agent.task.OperationTaskRegistry
+import com.coke.nestspace.agent.tools.ContainerDisplayMode
+import com.coke.nestspace.agent.tools.ToolRegistry
+import com.coke.nestspace.agent.definitions.NestSpaceAgents
+import com.coke.nestspace.agent.runtime.NestSpaceAgentRunner
+import com.coke.nestspace.agent.sdk.AgentKey
+import com.coke.nestspace.agent.sdk.AgentLane
+import com.coke.nestspace.agent.sdk.AgentLaneScheduler
+import com.coke.nestspace.agent.sdk.AgentRunContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -29,31 +36,16 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Process-wide queue for assistant worker tasks.
+ * Process-wide scheduler for independent assistant-worker and screen-reader agents.
  *
  * The OperationTaskRegistry remains the durable lifecycle authority. This
- * coordinator owns the process-local worker jobs, FIFO order, pause requests
- * and instruction inbox.
+ * coordinator owns the process-local jobs, FIFO order per agent lane, pause
+ * requests and instruction inbox. A screen-reader task can run concurrently
+ * with one assistant Worker because they are peer agents.
  */
 object AssistantTaskCoordinator {
 
     internal const val TASK_KIND = "assistant_worker"
-    enum class AgentMode {
-        ASSISTANT,
-        SCREEN_READER
-    }
-    private val taskTools = setOf(
-        "spawn_agent",
-        "spawn_screen_reader",
-        "agent_task_list",
-        "agent_task_status",
-        "agent_task_supplement",
-        "agent_task_pause",
-        "agent_task_resume",
-        "agent_task_cancel",
-        "agent_task_cancel_queued"
-    )
-
     data class TaskView(
         val id: String,
         val goal: String,
@@ -89,7 +81,8 @@ object AssistantTaskCoordinator {
         val displayMode: ContainerDisplayMode,
         val config: LlmConfig,
         val source: String,
-        val agentMode: AgentMode,
+        val agentKey: AgentKey,
+        val lane: AgentLane,
         var job: Job? = null,
         var pauseRequested: Boolean = false,
         var cancelRequested: Boolean = false,
@@ -102,9 +95,8 @@ object AssistantTaskCoordinator {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Any()
-    private val queue = ArrayDeque<String>()
+    private val scheduler = AgentLaneScheduler()
     private val records = ConcurrentHashMap<String, WorkerTask>()
-    private var activeId: String? = null
     @Volatile
     private var runtimeContext: Context? = null
     @Volatile
@@ -120,7 +112,7 @@ object AssistantTaskCoordinator {
         requestId: String? = null,
         source: String = "assistant",
         displayTitle: String? = null,
-        agentMode: AgentMode = AgentMode.ASSISTANT
+        agentKey: AgentKey = NestSpaceAgents.workerKey
     ): EnqueueResult {
         val cleanGoal = goal.trim()
         if (cleanGoal.isEmpty()) {
@@ -182,20 +174,25 @@ object AssistantTaskCoordinator {
             displayMode = displayMode,
             config = config.copy(maxToolRounds = workerSteps),
             source = source,
-            agentMode = agentMode
+            agentKey = agentKey,
+            lane = NestSpaceAgents.require(agentKey).lane
         )
         records[task.id] = task
         OperationTaskRegistry.setCancelCallback(task.id) {
             requestCancellation(task.id)
         }
         synchronized(lock) {
-            queue.addLast(task.id)
             OperationTaskRegistry.transition(
                 task.id,
                 OperationTaskRegistry.State.QUEUED,
-                AppLanguage.tr("等待前一个任务完成", "Waiting for the previous task")
+                if (task.agentKey == NestSpaceAgents.screenReaderKey) {
+                    AppLanguage.tr("读屏 Agent 准备启动", "Preparing the screen-reader agent")
+                } else {
+                    AppLanguage.tr("等待前一个任务完成", "Waiting for the previous task")
+                }
             )
-            startNextLocked(app, registry)
+            scheduler.enqueue(task.lane, task.id)
+            startNextLocked(app, registry, task.lane)
         }
         return EnqueueResult.Queued(
             view(task.id) ?: return EnqueueResult.Error(
@@ -265,7 +262,7 @@ object AssistantTaskCoordinator {
             ) {
                 return view(taskId)
             }
-            if (activeId != taskId || task.job == null) return view(taskId)
+            if (!isActiveLocked(task) || task.job == null) return view(taskId)
             task.pauseRequested = true
             OperationTaskRegistry.progress(
                 taskId,
@@ -287,7 +284,9 @@ object AssistantTaskCoordinator {
         if (ownerId != null && task.ownerId != ownerKey(ownerId)) return null
         synchronized(lock) {
             val snapshot = OperationTaskRegistry.status(taskId) ?: return null
-            if (snapshot.state != OperationTaskRegistry.State.PAUSED || activeId != taskId) {
+            if (snapshot.state != OperationTaskRegistry.State.PAUSED ||
+                !isActiveLocked(task)
+            ) {
                 return view(taskId)
             }
             task.pauseRequested = false
@@ -311,7 +310,9 @@ object AssistantTaskCoordinator {
     }
 
     fun cancelQueued(ownerId: String? = null, reason: String = "queued tasks cancelled"): Int {
-        val ids = synchronized(lock) { queue.toList() }
+        val ids = synchronized(lock) {
+            scheduler.queuedIds()
+        }
         return ids.count { id ->
             val snapshot = OperationTaskRegistry.status(id) ?: return@count false
             val scoped = ownerId == null || snapshot.ownerId == ownerKey(ownerId)
@@ -319,11 +320,13 @@ object AssistantTaskCoordinator {
         }
     }
 
-    private fun startNextLocked(context: Context, registry: ToolRegistry) {
-        if (activeId != null) return
+    private fun startNextLocked(
+        context: Context,
+        registry: ToolRegistry,
+        lane: AgentLane
+    ) {
         while (true) {
-            if (queue.isEmpty()) return
-            val nextId = queue.removeFirst()
+            val nextId = scheduler.takeNext(lane) ?: return
             val task = records[nextId] ?: continue
             val snapshot = OperationTaskRegistry.status(nextId)
             if (snapshot == null ||
@@ -331,15 +334,19 @@ object AssistantTaskCoordinator {
                 snapshot.state == OperationTaskRegistry.State.CANCELLING
             ) {
                 records.remove(nextId)
+                scheduler.clearActive(lane, nextId)
                 continue
             }
-            activeId = nextId
             task.pauseRequested = false
             task.cancelRequested = false
             OperationTaskRegistry.transition(
                 nextId,
                 OperationTaskRegistry.State.RUNNING,
-                AppLanguage.tr("任务开始执行", "Task started")
+                if (task.agentKey == NestSpaceAgents.screenReaderKey) {
+                    AppLanguage.tr("读屏 Agent 开始执行", "Screen-reader agent started")
+                } else {
+                    AppLanguage.tr("任务开始执行", "Task started")
+                }
             )
             launchLocked(context, registry, task)
             return
@@ -393,27 +400,18 @@ object AssistantTaskCoordinator {
                 synchronized(lock) {
                     val current = terminalSnapshot ?: OperationTaskRegistry.status(task.id)
                     if (current?.state == OperationTaskRegistry.State.PAUSED) {
-                        activeId = task.id
-                    } else if (current?.state == OperationTaskRegistry.State.CANCELLING ||
-                        current?.state == OperationTaskRegistry.State.CANCELLED ||
-                        current?.terminal == true
-                    ) {
-                        if (current.state == OperationTaskRegistry.State.CANCELLING) {
+                        markActiveLocked(task)
+                    } else {
+                        if (current?.state == OperationTaskRegistry.State.CANCELLING) {
                             OperationTaskRegistry.markCancelled(
                                 task.id,
                                 task.cancelReason.ifBlank { "cancelled" }
                             )
                         }
-                        if (activeId == task.id) activeId = null
-                        startNextLocked(context, registry)
-                    } else if (!succeeded) {
-                        if (activeId == task.id) activeId = null
-                        startNextLocked(context, registry)
-                    } else {
-                        if (activeId == task.id) activeId = null
-                        startNextLocked(context, registry)
+                        clearActiveLocked(task)
+                        startNextLocked(context, registry, task.lane)
                     }
-                    closeMirror = activeId == null && queue.isEmpty()
+                    closeMirror = scheduler.isEmpty()
                 }
                 (terminalSnapshot ?: OperationTaskRegistry.status(task.id))?.let {
                     publishWorkerResult(task, it)
@@ -431,6 +429,17 @@ object AssistantTaskCoordinator {
         }
         task.job = job
         job.start()
+    }
+
+    private fun isActiveLocked(task: WorkerTask): Boolean =
+        scheduler.isActive(task.id)
+
+    private fun markActiveLocked(task: WorkerTask) {
+        scheduler.markActive(task.lane, task.id)
+    }
+
+    private fun clearActiveLocked(task: WorkerTask) {
+        scheduler.clearActive(task.lane, task.id)
     }
 
     private fun speakResult(context: Context, result: String?) {
@@ -475,76 +484,30 @@ object AssistantTaskCoordinator {
         )
     }
 
+    @SuppressLint("StaticFieldLeak")
     private suspend fun runWorker(
         context: Context,
         registry: ToolRegistry,
         task: WorkerTask
     ): String {
         val app = context.applicationContext
-        val runtime = LlmAgentRuntime(
-            registry = registry,
-            allowSubAgents = task.agentMode == AgentMode.SCREEN_READER,
-            allowContinuePrompt = true,
-            allowedToolNames = if (task.agentMode == AgentMode.SCREEN_READER) {
-                setOf(
-                    "screen_read",
-                    "screen_highlight",
-                    "screen_suggest",
-                    "spawn_agent"
-                )
-            } else {
-                null
-            },
-            disallowedToolNames = if (
-                task.agentMode == AgentMode.SCREEN_READER
-            ) {
-                setOf("spawn_screen_reader")
-            } else {
-                taskTools
-            }
-        )
+        val definition = NestSpaceAgents.require(task.agentKey)
+        val runtime = NestSpaceAgentRunner.runtime(registry, task.agentKey)
         val memoryContext = withContext(Dispatchers.IO) {
             runCatching { MemoryStore(app).contextFor(task.goal) }.getOrNull()
         }
         val skillIndex = withContext(Dispatchers.IO) {
             runCatching { SkillStore(app).enabledIndex() }.getOrNull()
         }
-        val command = if (task.agentMode == AgentMode.SCREEN_READER) {
-            buildString {
-                append(
-                    AppLanguage.tr(
-                        "你是独立的读屏 Agent。读取当前容器页面并解释屏幕，" +
-                            "不要直接点击、输入或导航。先调用 screen_read。" +
-                            "根据页面和用户要求推断意图；意图不明确时给出 2 到 4 个选项询问。" +
-                            "需要定位时调用 screen_highlight。若用户明确要求执行耗时操作，" +
-                            "可以调用 spawn_agent 创建 Worker，并说明已交给后台 Worker。" +
-                            "分析完成后调用 screen_suggest 注册一个推荐动作和最多三个替代动作；" +
-                            "类型只能使用 explain、extract、compare、navigate、translate、" +
-                            "search、operate、open_app；" +
-                            "按钮文字可以具体到当前页面，但不能超出这些已实现能力。" +
-                            "必须根据页面内容判断下一步：有任务列表时推荐提取待办；" +
-                            "有多个选项时推荐比较；有问题时推荐回答或搜索；有外文时推荐翻译；" +
-                            "不要总是推荐“解释当前页面”。" +
-                            "\n\n用户请求：\n",
-                        "You are the independent screen-reader agent. Read and explain the " +
-                            "current container screen, but do not directly tap, type or navigate. " +
-                            "Call screen_read first. Infer intent from the screen and request; " +
-                            "offer two to four choices when ambiguous. Use screen_highlight when " +
-                            "locating content. If the user explicitly asks for a long-running page " +
-                            "operation, create a Worker with spawn_agent and report that it was " +
-                            "delegated. After the analysis, call screen_suggest with one " +
-                            "recommended action and up to three alternatives. Types must be " +
-                            "one of explain, extract, compare, navigate, translate, search, " +
-                            "operate or open_app. Infer the next useful action from page content: " +
-                            "recommend extracting a task list, comparing options, answering or " +
-                            "searching a question, or translating foreign text instead of always " +
-                            "recommending a generic explanation. Labels may " +
-                            "be specific to this screen but must stay within those implemented " +
-                            "capabilities.\n\nUser request:\n"
-                    )
+        val command = if (task.agentKey == NestSpaceAgents.screenReaderKey) {
+            definition.instructions.instructions(
+                AgentRunContext(
+                    sessionId = "assistant-task-${task.id}",
+                    userId = task.ownerId,
+                    parentTaskId = task.id,
+                    displayMode = task.displayMode.name
                 )
-                append(task.goal)
-            }
+            ) + task.goal
         } else if (task.runCount <= 1 && task.lastProgress.isBlank()) {
             task.goal
         } else {
@@ -615,8 +578,7 @@ object AssistantTaskCoordinator {
         val task = records[taskId]
         if (task == null) {
             synchronized(lock) {
-                queue.remove(taskId)
-                if (activeId == taskId) activeId = null
+                scheduler.remove(taskId)
             }
             OperationTaskRegistry.markCancelled(taskId, "cancelled")
             runtimeContext?.let { app ->
@@ -631,7 +593,8 @@ object AssistantTaskCoordinator {
         task.pauseRequested = false
         task.cancelRequested = true
         synchronized(lock) {
-            if (queue.remove(taskId)) {
+            val removedQueued = scheduler.removeQueued(taskId)
+            if (removedQueued) {
                 OperationTaskRegistry.markCancelled(
                     taskId,
                     task.cancelReason.ifBlank { "cancelled before execution" }
@@ -642,12 +605,10 @@ object AssistantTaskCoordinator {
                     }
                 }
                 records.remove(taskId)
-                if (activeId == null) {
-                    val context = runtimeContext
-                    val registry = runtimeRegistry
-                    if (context != null && registry != null) {
-                        startNextLocked(context, registry)
-                    }
+                val context = runtimeContext
+                val registry = runtimeRegistry
+                if (context != null && registry != null) {
+                    startNextLocked(context, registry, task.lane)
                 }
                 return
             }
@@ -664,11 +625,11 @@ object AssistantTaskCoordinator {
                         AssistantTaskNotifications.notifyTerminal(app, it)
                     }
                 }
-                if (activeId == taskId) activeId = null
+                clearActiveLocked(task)
                 val context = runtimeContext
                 val registry = runtimeRegistry
                 if (context != null && registry != null) {
-                    startNextLocked(context, registry)
+                    startNextLocked(context, registry, task.lane)
                 }
             }
         }
@@ -705,7 +666,7 @@ object AssistantTaskCoordinator {
     }
 
     private fun queueIndex(taskId: String): Int = synchronized(lock) {
-        if (activeId == taskId) 0 else queue.indexOf(taskId).let { if (it >= 0) it + 1 else -1 }
+        scheduler.queuePosition(taskId)
     }
 
     private fun ownerKey(ownerId: String): String =

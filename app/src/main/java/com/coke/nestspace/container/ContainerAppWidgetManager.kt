@@ -1,5 +1,6 @@
 package com.coke.nestspace.container
 
+import com.coke.nestspace.core.reflection.ReflectionDefaults
 import android.content.Context
 import android.util.Log
 import java.lang.reflect.Proxy
@@ -55,24 +56,5 @@ object ContainerAppWidgetManager {
         return manager
     }
 
-    private fun defaultValue(type: Class<*>): Any? = when (type) {
-        Void.TYPE -> null
-        java.lang.Boolean.TYPE -> false
-        java.lang.Byte.TYPE -> 0.toByte()
-        java.lang.Character.TYPE -> '\u0000'
-        java.lang.Short.TYPE -> 0.toShort()
-        Integer.TYPE -> 0
-        java.lang.Long.TYPE -> 0L
-        java.lang.Float.TYPE -> 0f
-        java.lang.Double.TYPE -> 0.0
-        else -> when {
-            type.isArray -> java.lang.reflect.Array.newInstance(type.componentType, 0)
-            type == java.util.List::class.java -> emptyList<Any>()
-            type == java.util.Set::class.java -> emptySet<Any>()
-            type == java.util.Map::class.java -> emptyMap<Any, Any>()
-            type == CharSequence::class.java -> ""
-            type == String::class.java -> ""
-            else -> null
-        }
-    }
+    private fun defaultValue(type: Class<*>): Any? = ReflectionDefaults.collection(type)
 }

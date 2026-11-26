@@ -1,5 +1,6 @@
 package com.coke.nestspace.container.runtime
 
+import com.coke.nestspace.container.ContainerSession
 import android.os.SystemClock
 
 enum class AndroidStartupPhase {

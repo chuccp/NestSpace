@@ -1,6 +1,6 @@
 package com.coke.nestspace.data
 
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
 
 enum class LlmProtocol {
     ANTHROPIC,

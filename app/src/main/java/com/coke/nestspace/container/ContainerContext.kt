@@ -1,13 +1,11 @@
 package com.coke.nestspace.container
 
+import android.annotation.SuppressLint
 import com.coke.nestspace.container.identity.HostIdentity
-import com.coke.nestspace.container.location.ContainerLocationManager
 import com.coke.nestspace.container.runtime.VirtualEnvironment
 import com.coke.nestspace.container.runtime.VirtualStorageLayout
-import com.coke.nestspace.container.shortcut.ContainerShortcutManager
 import com.coke.nestspace.container.vpm.ContainerPermissions
 import com.coke.nestspace.container.vpm.VirtualPackageRegistry
-
 
 import android.app.Application
 import android.app.job.JobScheduler
@@ -25,20 +23,14 @@ import android.content.pm.PackageManager
 import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.content.res.Resources
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
-import android.os.LocaleList
 import android.os.UserHandle
 import java.io.File
-import java.lang.reflect.InvocationTargetException
-import java.lang.reflect.Proxy
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.concurrent.Executor
 import com.coke.nestspace.container.gms.GmsBridge
-import com.coke.nestspace.runtime.RuntimeHostHooks
-import com.coke.nestspace.runtime.webUrlFromViewIntent
 
 /**
  * Stage B context virtualization.
@@ -53,17 +45,17 @@ import com.coke.nestspace.runtime.webUrlFromViewIntent
  */
 class ContainerContext(
     base: Context,
-    private val targetPackage: String,
+    internal val targetPackage: String,
     val instanceId: String,
-    private val dataRoot: File,
-    private val targetClassLoader: ClassLoader,
-    private val targetResources: Resources,
-    private val targetAppInfo: ApplicationInfo,
-    private val targetRequestedPermissions: Array<String>?,
-    private val baseApkPath: String,
-    private val resourceApkPath: String = baseApkPath,
-    private val splitApkPaths: List<String>,
-    private val deviceProtected: Boolean = false
+    internal val dataRoot: File,
+    internal val targetClassLoader: ClassLoader,
+    internal val targetResources: Resources,
+    internal val targetAppInfo: ApplicationInfo,
+    internal val targetRequestedPermissions: Array<String>?,
+    internal val baseApkPath: String,
+    internal val resourceApkPath: String = baseApkPath,
+    internal val splitApkPaths: List<String>,
+    internal val deviceProtected: Boolean = false
 ) : ContextWrapper(base) {
 
     var targetApplication: Application? = null
@@ -78,7 +70,7 @@ class ContainerContext(
      * WindowManager with no window token and fail with BadTokenException.
      */
     var hostWindowManager: android.view.WindowManager? = null
-    private var windowManagerProxy: android.view.WindowManager? = null
+    internal var windowManagerProxy: android.view.WindowManager? = null
     var serviceBridge: ContainerServiceBridge? = null
     var targetContentResolver: ContentResolver? = null
     var targetPackageManager: PackageManager? = null
@@ -94,7 +86,7 @@ class ContainerContext(
      * resolve components through it so those wrappers stay in effect.
      */
     @Suppress("unused")
-    private var mPackageInfo: Any? = null
+    internal var mPackageInfo: Any? = null
 
     /** Virtual grant model for this target package (shared by PM/context). */
     val permissions: ContainerPermissions = ContainerPermissions(
@@ -104,8 +96,6 @@ class ContainerContext(
         hostPackage = HostIdentity.packageName,
         targetRequestedPermissions = targetRequestedPermissions
     )
-
-    private val instanceKey = "${sanitize(targetPackage)}_${sanitize(instanceId)}"
 
     private val declaredPermissions: Set<String> by lazy {
         targetRequestedPermissions?.toSet() ?: emptySet()
@@ -118,7 +108,7 @@ class ContainerContext(
      * dialogs) would get Resources.NotFoundException. Clone the host inflater
      * onto this context so it uses the target Resources.
      */
-    private val targetLayoutInflater: android.view.LayoutInflater by lazy {
+    internal val targetLayoutInflater: android.view.LayoutInflater by lazy {
         android.view.LayoutInflater.from(base).cloneInContext(this)
     }
 
@@ -127,258 +117,133 @@ class ContainerContext(
      * cannot see packages installed only inside the container. Sandbox it so
      * target widget bookkeeping stays local instead of raising SecurityException.
      */
-    private val targetAppWidgetManager: Any? by lazy {
+    internal val targetAppWidgetManager: Any? by lazy {
         ContainerAppWidgetManager.create(this)
     }
 
-    private var locationManager: android.location.LocationManager? = null
-    private var locationManagerReady = false
-    private val sharedPreferences = mutableMapOf<String, SharedPreferences>()
+    internal var locationManager: android.location.LocationManager? = null
+    internal var locationManagerReady = false
+    internal val sharedPreferences = mutableMapOf<String, SharedPreferences>()
 
-    private val activeDataRoot: File
+    internal val activeDataRoot: File
         get() = if (deviceProtected) {
             VirtualStorageLayout.deviceProtectedRoot(dataRoot)
         } else {
             dataRoot
         }
 
-    private val visibleDataRoot: File
+    internal val visibleDataRoot: File
         get() = File(
             if (deviceProtected) "/data/user_de/0" else "/data/user/0",
             targetPackage
         )
 
-    @Synchronized
-    private fun virtualLocationManager(): android.location.LocationManager? {
-        if (locationManagerReady) return locationManager
-        locationManagerReady = true
-        locationManager = ContainerLocationManager.create(this)
-        return locationManager
+    internal fun superGetSystemService(name: String): Any? =
+        super.getSystemService(name)
+
+    internal fun superGetFilesDir(): File =
+        super.getFilesDir()
+
+    internal fun superGetSharedPreferences(
+        name: String,
+        mode: Int
+    ): SharedPreferences = super.getSharedPreferences(name, mode)
+
+    internal fun superRegisterReceiver(
+        receiver: BroadcastReceiver?,
+        filter: IntentFilter?
+    ): Intent? = super.registerReceiver(receiver, filter)
+
+    @SuppressLint("NewApi")
+    internal fun superRegisterReceiver(
+        receiver: BroadcastReceiver?,
+        filter: IntentFilter?,
+        flags: Int
+    ): Intent? = super.registerReceiver(receiver, filter, flags)
+
+    @SuppressLint("NewApi")
+    internal fun superRegisterReceiver(
+        receiver: BroadcastReceiver?,
+        filter: IntentFilter?,
+        broadcastPermission: String?,
+        scheduler: Handler?
+    ): Intent? = super.registerReceiver(
+        receiver,
+        filter,
+        broadcastPermission,
+        scheduler
+    )
+
+    internal fun superRegisterReceiver(
+        receiver: BroadcastReceiver?,
+        filter: IntentFilter?,
+        broadcastPermission: String?,
+        scheduler: Handler?,
+        flags: Int
+    ): Intent? = super.registerReceiver(
+        receiver,
+        filter,
+        broadcastPermission,
+        scheduler,
+        flags
+    )
+
+    internal fun superUnregisterReceiver(receiver: BroadcastReceiver) {
+        super.unregisterReceiver(receiver)
     }
+
+    internal fun superSendBroadcast(intent: Intent) {
+        super.sendBroadcast(intent)
+    }
+
+    internal fun superSendBroadcast(
+        intent: Intent,
+        receiverPermission: String?
+    ) {
+        super.sendBroadcast(intent, receiverPermission)
+    }
+
+    @SuppressLint("NewApi")
+    internal fun superSendBroadcast(
+        intent: Intent,
+        receiverPermission: String?,
+        options: Bundle?
+    ) {
+        super.sendBroadcast(intent, receiverPermission, options)
+    }
+
+    internal fun superSendBroadcastAsUser(
+        intent: Intent,
+        user: UserHandle
+    ) {
+        super.sendBroadcastAsUser(intent, user)
+    }
+
+    internal fun superSendBroadcastAsUser(
+        intent: Intent,
+        user: UserHandle,
+        receiverPermission: String?
+    ) {
+        super.sendBroadcastAsUser(intent, user, receiverPermission)
+    }
+
+    @Synchronized
 
     /**
      * Target windows (notably Toast) carry the target package in
      * WindowManager.LayoutParams. The system accepts only the host package for
      * this UID, so rewrite the package before the real WindowManager sees it.
      */
-    private fun targetWindowManager(): android.view.WindowManager? {
-        val delegate = hostWindowManager
-            ?: (super.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager)
-            ?: return null
-        return windowManagerProxy ?: Proxy.newProxyInstance(
-            android.view.WindowManager::class.java.classLoader,
-            arrayOf(android.view.WindowManager::class.java)
-        ) { _, method, args ->
-            val targetView = args?.firstOrNull() as? android.view.View
-            val toastWindow = args?.filterIsInstance<
-                android.view.WindowManager.LayoutParams
-                >()?.firstOrNull()?.type ==
-                android.view.WindowManager.LayoutParams.TYPE_TOAST
-            if (targetView != null &&
-                toastWindow &&
-                method.name == "addView"
-            ) {
-                val text = targetViewText(targetView)
-                if (isSecurityDecisionToast(text)) {
-                    android.util.Log.w(
-                        "ContainerSecurityDecision",
-                        "target toast package=" + targetPackage +
-                            " text=" + text +
-                            "\n" +
-                            android.util.Log.getStackTraceString(Throwable())
-                    )
-                }
-            }
-            args?.forEach { value ->
-                if (value is android.view.WindowManager.LayoutParams) {
-                    if (value.packageName == null || value.packageName == targetPackage) {
-                        value.packageName = HostIdentity.packageName
-                    }
-                }
-            }
-            try {
-                method.invoke(delegate, *(args ?: emptyArray()))
-            } catch (t: InvocationTargetException) {
-                throw t.targetException
-            }
-        } as android.view.WindowManager
-    }
 
-    private fun targetViewText(root: android.view.View): String {
-        val values = mutableListOf<String>()
-        fun collect(view: android.view.View) {
-            if (view is android.widget.TextView) {
-                view.text?.toString()?.takeIf(String::isNotBlank)?.let {
-                    values += it
-                }
-            }
-            if (view is android.view.ViewGroup) {
-                for (index in 0 until view.childCount) {
-                    collect(view.getChildAt(index))
-                }
-            }
-        }
-        collect(root)
-        return values.joinToString(" | ")
-    }
+    override fun getSystemService(name: String): Any? =
+        getContainerSystemService(name)
 
-    private fun isSecurityDecisionToast(text: String): Boolean {
-        if (text.isBlank()) return false
-        val normalized = text.lowercase(java.util.Locale.ROOT)
-        return (normalized.contains("unofficial") ||
-            normalized.contains("non-official")) &&
-            normalized.contains("package") ||
-            text.contains("非官方安装包")
-    }
+    internal var autofillManager: Any? = null
+    internal var shortcutManager: Any? = null
 
-    override fun getSystemService(name: String): Any? = when (name) {
-        Context.LAYOUT_INFLATER_SERVICE -> targetLayoutInflater
-        Context.WINDOW_SERVICE ->
-            // Activity.attach requires the framework's concrete
-            // WindowManagerImpl. Toast is the only caller that needs the
-            // package-rewriting proxy. Selecting by caller instead of package
-            // keeps this behavior consistent for every virtual application.
-            if (calledFromToast()) {
-                targetWindowManager() ?: super.getSystemService(name)
-            } else {
-                hostWindowManager ?: super.getSystemService(name)
-            }
-        Context.APPWIDGET_SERVICE -> targetAppWidgetManager ?: super.getSystemService(name)
-        Context.JOB_SCHEDULER_SERVICE -> jobScheduler ?: super.getSystemService(name)
-        // The real location service only knows the host package. Targets get a
-        // local LocationManager that reports simulated coordinates (when the
-        // setting is on) or delegates to the host-identity service.
-        Context.LOCATION_SERVICE ->
-            virtualLocationManager() ?: super.getSystemService(name)
-        // Android only knows packages installed for the real user. A virtual
-        // package therefore gets "Unknown package" from LocaleManager, which
-        // some applications treat as a startup failure. Give targets a
-        // package-local no-op LocaleManager instead.
-        "locale" -> virtualLocaleManager() ?: super.getSystemService(name)
-        Context.AUTOFILL_SERVICE ->
-            virtualAutofillManager() ?: super.getSystemService(name)
-        Context.SHORTCUT_SERVICE ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
-                virtualShortcutManager() ?: super.getSystemService(name)
-            } else {
-                super.getSystemService(name)
-            }
-        else -> super.getSystemService(name)
-    }
+    internal var localeManager: Any? = null
 
-    private var autofillManager: Any? = null
-    private var shortcutManager: Any? = null
-
-    @Synchronized
-    private fun virtualShortcutManager(): Any? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) return null
-        shortcutManager?.let { return it }
-        return runCatching {
-            HiddenApiCompat.ensure()
-            val storeRoot = File(super.getFilesDir(), "vspace/shortcuts")
-            val service = ContainerShortcutManager(
-                context = this,
-                packageName = targetPackage,
-                instanceId = instanceId,
-                storeRoot = storeRoot
-            ).service()
-            val iface = Class.forName("android.content.pm.IShortcutService")
-            val managerClass = Class.forName("android.content.pm.ShortcutManager")
-            val constructor = managerClass
-                .getConstructor(Context::class.java, iface)
-                .apply { isAccessible = true }
-            constructor.newInstance(this, service).also { shortcutManager = it }
-        }.onFailure {
-            android.util.Log.w("ContainerContext", "ShortcutManager proxy failed", it)
-        }.getOrNull()
-    }
-
-    /**
-     * Views obtain AutofillManager from their context and Compose requires it
-     * to be non-null. The manager created for the host application, however,
-     * resolves its autofill client through ActivityThread and ends up
-     * reporting the virtual package to the system autofill service, which
-     * blocks the main thread for 5s per attempt because the virtual package is
-     * not known to the autofill service, and ANRs while typing into a login
-     * form.
-     *
-     * Build a manager backed by the host ContextImpl rather than the host
-     * Application: ContextImpl.getAutofillClient() is null, so the framework
-     * treats autofill as unavailable for this context without a null manager
-     * (which Compose cannot handle) and without leaving the main thread.
-     */
-    private fun virtualAutofillManager(): Any? {
-        autofillManager?.let { return it }
-        return runCatching {
-            val app = HostIdentity.application ?: return null
-            // Do not call applicationContext here: this method is reached from
-            // ContainerContext.getSystemService(), and a container-derived
-            // application context can route back into this same method.
-            val hostImpl = app.createDeviceProtectedStorageContext()
-            val hostManager = hostImpl.getSystemService(Context.AUTOFILL_SERVICE)
-                as? android.view.autofill.AutofillManager
-                ?: error("host AutofillManager missing")
-            val serviceField = android.view.autofill.AutofillManager::class.java
-                .getDeclaredField("mService")
-                .apply { isAccessible = true }
-            val service = serviceField.get(hostManager)
-                ?: error("host AutofillManager has no service")
-            // The application's own ContextImpl has an AutofillClient and the
-            // service call then carries the virtual package. A fresh derived
-            // ContextImpl starts with no client; clear it explicitly to be
-            // safe, so AutofillManager treats autofill as unavailable.
-            runCatching {
-                hostImpl.javaClass
-                    .getDeclaredField("mAutofillClient")
-                    .apply { isAccessible = true }
-                    .set(hostImpl, null)
-            }.onFailure {
-                android.util.Log.w("ContainerContext", "clear autofill client failed", it)
-            }
-            val constructor = android.view.autofill.AutofillManager::class.java
-                .declaredConstructors
-                .firstOrNull {
-                    it.parameterTypes.size == 2 &&
-                        it.parameterTypes[0] == Context::class.java
-                }
-                ?: error("AutofillManager(Context, service) constructor missing")
-            constructor.isAccessible = true
-            (constructor.newInstance(hostImpl, service) as? android.view.autofill.AutofillManager)
-                ?.also { autofillManager = it }
-        }.onFailure {
-            android.util.Log.w("ContainerContext", "virtual autofill manager failed", it)
-        }.getOrNull()
-    }
-
-    private var localeManager: Any? = null
-
-    private fun virtualLocaleManager(): Any? {
-        if (Build.VERSION.SDK_INT < 33) return null
-        localeManager?.let { return it }
-        return runCatching {
-            val serviceClass = Class.forName("android.app.ILocaleManager")
-            val service = Proxy.newProxyInstance(
-                serviceClass.classLoader,
-                arrayOf(serviceClass)
-            ) { _, method, _ ->
-                when (method.name) {
-                    "getApplicationLocales" -> LocaleList.getEmptyLocaleList()
-                    "getSystemLocales" -> LocaleList.getDefault()
-                    "getOverrideLocaleConfig" -> null
-                    "setApplicationLocales" -> null
-                    else -> defaultServiceValue(method.returnType)
-                }
-            }
-            val managerClass = Class.forName("android.app.LocaleManager")
-            val constructor = managerClass.getDeclaredConstructor(
-                Context::class.java,
-                serviceClass
-            ).apply { isAccessible = true }
-            constructor.newInstance(this, service).also { localeManager = it }
-        }.getOrNull()
-    }
-
-    private fun defaultServiceValue(type: Class<*>): Any? = when (type) {
+    internal fun defaultServiceValue(type: Class<*>): Any? = when (type) {
         Void.TYPE -> null
         Boolean::class.javaPrimitiveType -> false
         Byte::class.javaPrimitiveType -> 0.toByte()
@@ -394,7 +259,7 @@ class ContainerContext(
     // Context.getSystemService(Class) is final, but it dispatches through the
     // name-based getSystemService(String), so the override above is enough.
 
-    private fun targetDeclares(permission: String): Boolean = permission in declaredPermissions
+    internal fun targetDeclares(permission: String): Boolean = permission in declaredPermissions
 
     override fun checkSelfPermission(permission: String): Int =
         permissions.checkSelfPermission(permission)
@@ -435,25 +300,6 @@ class ContainerContext(
         else -> 2
     }
 
-    private fun dir(name: String): File {
-        ensureBackingDirectory(File(activeDataRoot, name))
-        return File(visibleDataRoot, name)
-    }
-
-    private fun ensureBackingDirectory(directory: File) {
-        if (!directory.isDirectory) directory.mkdirs()
-        val mode = when (directory.name) {
-            "cache", "code_cache" -> 0x5f9
-            "files", "no_backup", "databases", "shared_prefs", "obb" -> 0x1f9
-            else -> null
-        }
-        if (mode != null) {
-            runCatching {
-                android.system.Os.chmod(directory.absolutePath, mode)
-            }
-        }
-    }
-
     override fun getPackageName(): String =
         if (calledFromToast()) HostIdentity.packageName else targetPackage
 
@@ -463,17 +309,6 @@ class ContainerContext(
      * has to report its virtual package everywhere else, so only the
      * Toast constructor sees the host package.
      */
-    private fun calledFromToast(): Boolean {
-        val frames = Throwable().stackTrace
-        val limit = minOf(frames.size, 12)
-        for (i in 0 until limit) {
-            val name = frames[i].className
-            if (name == "android.widget.Toast" || name.startsWith("android.widget.Toast$")) {
-                return true
-            }
-        }
-        return false
-    }
 
     /**
      * Attribution (AppOps, IME, connectivity, notification, storage) is
@@ -487,24 +322,6 @@ class ContainerContext(
         else -> targetPackage
     }
 
-    private fun calledFromFrameworkAttribution(): Boolean {
-        val frames = Throwable().stackTrace
-        for (index in 1 until frames.size) {
-            val name = frames[index].className
-            if (name == ContextWrapper::class.java.name ||
-                name == ContainerContext::class.java.name) {
-                continue
-            }
-            if (name == "android.app.ActivityThread" &&
-                frames[index].methodName == "currentOpPackageName") {
-                return activityThreadOpPackageUsesHost(frames, index)
-            }
-            return name.startsWith("android.") ||
-                name.startsWith("com.android.")
-        }
-        return true
-    }
-
     /**
      * ActivityThread.currentOpPackageName() reads the application context, so
      * an app calling it would otherwise hit the framework-attribution branch
@@ -512,25 +329,6 @@ class ContainerContext(
      * while preserving the target package when the target app or JNI called
      * the static helper directly.
      */
-    private fun activityThreadOpPackageUsesHost(
-        frames: Array<StackTraceElement>,
-        activityThreadFrame: Int
-    ): Boolean {
-        for (index in activityThreadFrame + 1 until frames.size) {
-            val name = frames[index].className
-            if (name == ContextWrapper::class.java.name ||
-                name == ContainerContext::class.java.name ||
-                name == "android.app.ActivityThread") {
-                continue
-            }
-            return name.startsWith("android.") ||
-                name.startsWith("com.android.")
-        }
-        // A JNI caller has no Java frame beyond ActivityThread. Direct installs
-        // normally hit hidden-API denial here; when the container exposes the
-        // method, its value should still describe the target process.
-        return false
-    }
 
     override fun getDataDir(): File {
         ensureBackingDirectory(activeDataRoot)
@@ -568,44 +366,10 @@ class ContainerContext(
 
     override fun fileList(): Array<String> = getFilesDir().list() ?: emptyArray()
 
-    override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences {
-        val prefName = name ?: "default"
-        val directory = File(activeDataRoot, "shared_prefs")
-        ensureBackingDirectory(directory)
-        val key = "$deviceProtected:$prefName"
-        synchronized(sharedPreferences) {
-            sharedPreferences[key]?.let { return it }
-            val file = File(directory, "$prefName.xml")
-            val backup = File(directory, "$prefName.bak")
-            val local = runCatching {
-                val type = Class.forName("android.app.SharedPreferencesImpl")
-                val constructor = type.constructors.firstOrNull { candidate ->
-                    candidate.parameterTypes.contentEquals(
-                        arrayOf(File::class.java, File::class.java, Int::class.javaPrimitiveType)
-                    )
-                }
-                val instance = constructor?.newInstance(file, backup, mode)
-                    ?: type.getDeclaredConstructor(
-                        File::class.java,
-                        Int::class.javaPrimitiveType
-                    ).apply { isAccessible = true }.newInstance(file, mode)
-                instance as SharedPreferences
-            }.getOrElse {
-                android.util.Log.w(
-                    "ContainerContext",
-                    "instance SharedPreferences fallback name=$prefName",
-                    it
-                )
-                val storagePrefix = if (deviceProtected) "ns_device_" else "ns_"
-                return super.getSharedPreferences(
-                    prefKey(targetPackage, instanceId, prefName, storagePrefix),
-                    mode
-                )
-            }
-            sharedPreferences[key] = local
-            return local
-        }
-    }
+    override fun getSharedPreferences(
+        name: String?,
+        mode: Int
+    ): SharedPreferences = getContainerSharedPreferences(name, mode)
 
     override fun getExternalFilesDir(type: String?): File? {
         val suffix = if (type.isNullOrBlank()) {
@@ -619,27 +383,6 @@ class ContainerContext(
     override fun getExternalCacheDir(): File? {
         return externalDirectory("cache")
     }
-
-    private fun externalStorageDir(): File =
-        android.os.Environment.getExternalStorageDirectory()
-
-    private fun externalDirectory(suffix: String): File? {
-        val actual = File(
-            VirtualStorageLayout.externalInstanceRoot(targetPackage, instanceId),
-            suffix
-        )
-        if (!ensureWritableDirectory(actual)) return null
-        return File(
-            File(externalStorageDir(), "Android/data/$targetPackage"),
-            suffix
-        )
-    }
-
-    private fun ensureWritableDirectory(directory: File): Boolean = runCatching {
-        if (!directory.isDirectory && !directory.mkdirs()) return@runCatching false
-        val probe = File.createTempFile(".nestspace-write-", ".probe", directory)
-        probe.delete()
-    }.getOrDefault(false)
 
     override fun getObbDir(): File {
         val actual = File(
@@ -758,80 +501,6 @@ class ContainerContext(
     override fun createAttributionContext(attributionTag: String?): Context =
         wrapDerived(super.createAttributionContext(attributionTag))
 
-    private fun wrapDerived(
-        newBase: Context,
-        deviceProtected: Boolean = this.deviceProtected
-    ): ContainerContext {
-        val adjusted = createDerivedResources(
-            newBase.resources.displayMetrics,
-            newBase.resources.configuration
-        )
-        val wrapped = ContainerContext(
-            base = newBase,
-            targetPackage = targetPackage,
-            instanceId = instanceId,
-            dataRoot = dataRoot,
-            targetClassLoader = targetClassLoader,
-            targetResources = adjusted,
-            targetAppInfo = targetAppInfo,
-            targetRequestedPermissions = targetRequestedPermissions,
-            baseApkPath = baseApkPath,
-            resourceApkPath = resourceApkPath,
-            splitApkPaths = splitApkPaths,
-            deviceProtected = deviceProtected
-        )
-        wrapped.targetApplication = targetApplication
-        wrapped.targetTheme = adjusted.newTheme()
-        wrapped.navigator = navigator
-        wrapped.serviceBridge = serviceBridge
-        wrapped.targetContentResolver = targetContentResolver
-        wrapped.targetPackageManager = targetPackageManager
-        wrapped.broadcastManager = broadcastManager
-        wrapped.jobScheduler = jobScheduler
-        wrapped.virtualRegistry = virtualRegistry
-        wrapped.mPackageInfo = mPackageInfo
-        return wrapped
-    }
-
-    private fun createDerivedResources(
-        metrics: android.util.DisplayMetrics,
-        configuration: Configuration
-    ): Resources {
-        val assetManager = AssetManager::class.java
-            .getDeclaredConstructor()
-            .newInstance()
-        val addAssetPath = AssetManager::class.java
-            .getMethod("addAssetPath", String::class.java)
-        (listOf(resourceApkPath) + splitApkPaths).forEach { path ->
-            check(addAssetPath.invoke(assetManager, path) as Int != 0) {
-                "AssetManager.addAssetPath failed: $path"
-            }
-        }
-        return bindTargetClassLoader(
-            Resources(assetManager, metrics, configuration),
-            targetClassLoader
-        )
-    }
-
-    private fun bindTargetClassLoader(
-        base: Resources,
-        classLoader: ClassLoader
-    ): Resources {
-        runCatching {
-            Resources::class.java
-                .getDeclaredField("mClassLoader")
-                .apply { isAccessible = true }
-                .set(base, classLoader)
-        }.onFailure {
-            android.util.Log.w(
-                "ContainerContext",
-                "derived Resources classloader binding failed",
-                it
-            )
-        }
-        return base
-    }
-
     override fun startActivity(intent: Intent) {
         if (navigator?.startTargetActivity(intent, -1) == true) return
         if (openWebIntentInside(intent)) return
@@ -852,14 +521,6 @@ class ContainerContext(
             Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             options
         )
-    }
-
-    private fun openWebIntentInside(intent: Intent): Boolean {
-        val url = webUrlFromViewIntent(intent) ?: return false
-        return runCatching {
-            RuntimeHostHooks.openBrowser?.invoke(this, url)
-            true
-        }.getOrDefault(false)
     }
 
     override fun startService(service: Intent): ComponentName? {
@@ -962,153 +623,66 @@ class ContainerContext(
     override fun getPackageManager(): PackageManager =
         targetPackageManager ?: super.getPackageManager()
 
-    override fun registerReceiver(
-        receiver: BroadcastReceiver?,
-        filter: IntentFilter?
-    ): Intent? {
-        val manager = broadcastManager
-        val early = earlyReceiverRegistry
-        return if (manager != null) {
-            manager.register(receiver, filter, null, null, 0)
-        } else if (early != null && receiver != null) {
-            early.register(receiver, filter, null, null, 0)
-            runCatching { super.registerReceiver(null, filter) }.getOrNull()
-        } else {
-            super.registerReceiver(receiver, filter)
-        }
-    }
+override fun registerReceiver(
+    receiver: BroadcastReceiver?,
+    filter: IntentFilter?
+): Intent? = registerContainerReceiver(receiver, filter)
 
-    override fun registerReceiver(
-        receiver: BroadcastReceiver?,
-        filter: IntentFilter?,
-        flags: Int
-    ): Intent? {
-        val manager = broadcastManager
-        val early = earlyReceiverRegistry
-        return if (manager != null) {
-            manager.register(receiver, filter, null, null, flags)
-        } else if (early != null && receiver != null) {
-            early.register(receiver, filter, null, null, flags)
-            runCatching { super.registerReceiver(null, filter) }.getOrNull()
-        } else {
-            super.registerReceiver(receiver, filter, flags)
-        }
-    }
+override fun registerReceiver(
+    receiver: BroadcastReceiver?,
+    filter: IntentFilter?,
+    flags: Int
+): Intent? = registerContainerReceiver(receiver, filter, flags)
 
-    override fun registerReceiver(
-        receiver: BroadcastReceiver?,
-        filter: IntentFilter?,
-        broadcastPermission: String?,
-        scheduler: Handler?
-    ): Intent? {
-        val manager = broadcastManager
-        val early = earlyReceiverRegistry
-        return if (manager != null) {
-            manager.register(receiver, filter, broadcastPermission, scheduler, 0)
-        } else if (early != null && receiver != null) {
-            early.register(receiver, filter, broadcastPermission, scheduler, 0)
-            runCatching { super.registerReceiver(null, filter) }.getOrNull()
-        } else {
-            super.registerReceiver(receiver, filter, broadcastPermission, scheduler)
-        }
-    }
+override fun registerReceiver(
+    receiver: BroadcastReceiver?,
+    filter: IntentFilter?,
+    broadcastPermission: String?,
+    scheduler: Handler?
+): Intent? = registerContainerReceiver(
+    receiver,
+    filter,
+    broadcastPermission,
+    scheduler
+)
 
-    override fun registerReceiver(
-        receiver: BroadcastReceiver?,
-        filter: IntentFilter?,
-        broadcastPermission: String?,
-        scheduler: Handler?,
-        flags: Int
-    ): Intent? {
-        val manager = broadcastManager
-        val early = earlyReceiverRegistry
-        return if (manager != null) {
-            manager.register(receiver, filter, broadcastPermission, scheduler, flags)
-        } else if (early != null && receiver != null) {
-            early.register(receiver, filter, broadcastPermission, scheduler, flags)
-            runCatching { super.registerReceiver(null, filter) }.getOrNull()
-        } else {
-            super.registerReceiver(receiver, filter, broadcastPermission, scheduler, flags)
-        }
-    }
+override fun registerReceiver(
+    receiver: BroadcastReceiver?,
+    filter: IntentFilter?,
+    broadcastPermission: String?,
+    scheduler: Handler?,
+    flags: Int
+): Intent? = registerContainerReceiver(
+    receiver,
+    filter,
+    broadcastPermission,
+    scheduler,
+    flags
+)
 
-    override fun unregisterReceiver(receiver: BroadcastReceiver) {
-        if (broadcastManager?.unregister(receiver) == true) return
-        if (earlyReceiverRegistry?.unregister(receiver) == true) return
-        super.unregisterReceiver(receiver)
-    }
+override fun unregisterReceiver(receiver: BroadcastReceiver) =
+    unregisterContainerReceiver(receiver)
 
-    override fun sendBroadcast(intent: Intent) {
-        if (sendLocal(intent, null, false, null, null, 0, null, null, false)) return
-        super.sendBroadcast(forwardToHost(intent))
-    }
+override fun sendBroadcast(intent: Intent) =
+    sendContainerBroadcast(intent)
 
-    override fun sendBroadcast(intent: Intent, receiverPermission: String?) {
-        if (sendLocal(
-                intent,
-                receiverPermission,
-                false,
-                null,
-                null,
-                0,
-                null,
-                null,
-                false
-            )
-        ) {
-            return
-        }
-        super.sendBroadcast(forwardToHost(intent), receiverPermission)
-    }
+override fun sendBroadcast(intent: Intent, receiverPermission: String?) =
+    sendContainerBroadcast(intent, receiverPermission)
 
-    override fun sendBroadcast(
-        intent: Intent,
-        receiverPermission: String?,
-        options: Bundle?
-    ) {
-        if (sendLocal(
-                intent,
-                receiverPermission,
-                false,
-                null,
-                null,
-                0,
-                null,
-                null,
-                false
-            )
-        ) {
-            return
-        }
-        super.sendBroadcast(forwardToHost(intent), receiverPermission, options)
-    }
+override fun sendBroadcast(
+    intent: Intent,
+    receiverPermission: String?,
+    options: Bundle?
+) = sendContainerBroadcast(intent, receiverPermission, options)
 
-    override fun sendBroadcastAsUser(intent: Intent, user: UserHandle) {
-        if (sendLocal(intent, null, false, null, null, 0, null, null, false)) return
-        super.sendBroadcastAsUser(forwardToHost(intent), user)
-    }
+override fun sendBroadcastAsUser(intent: Intent, user: UserHandle) =
+    sendContainerBroadcastAsUser(intent, user)
 
-    override fun sendBroadcastAsUser(
-        intent: Intent,
-        user: UserHandle,
-        receiverPermission: String?
-    ) {
-        if (sendLocal(
-                intent,
-                receiverPermission,
-                false,
-                null,
-                null,
-                0,
-                null,
-                null,
-                false
-            )
-        ) {
-            return
-        }
-        super.sendBroadcastAsUser(forwardToHost(intent), user, receiverPermission)
-    }
+override fun sendBroadcastAsUser(
+    intent: Intent,
+    user: UserHandle,
+    receiverPermission: String?
+) = sendContainerBroadcastAsUser(intent, user, receiverPermission)
 
     override fun sendOrderedBroadcast(intent: Intent, receiverPermission: String?) {
         if (sendLocal(
@@ -1366,10 +940,10 @@ class ContainerContext(
      * handing it to the host. The host-side bridge drops marked intents so a
      * broadcast cannot be delivered to target Receivers twice.
      */
-    private fun forwardToHost(intent: Intent): Intent =
+    internal fun forwardToHost(intent: Intent): Intent =
         Intent(intent).putExtra(ContainerBroadcastManager.EXTRA_BRIDGE_ORIGIN, targetPackage)
 
-    private fun sendLocal(
+    internal fun sendLocal(
         intent: Intent,
         receiverPermission: String?,
         ordered: Boolean,
@@ -1391,64 +965,28 @@ class ContainerContext(
         sticky
     ) == true
 
-    companion object {
-        /**
-         * Uninstall removes the whole package, so clear preferences of every
-         * instance (including stale ones from an earlier installation).
-         */
-        fun clearPackagePrefs(base: Context, packageName: String) {
-            clearPrefs(base, "ns_${packageName}_")
-        }
+companion object {
+    fun clearPackagePrefs(base: Context, packageName: String) =
+        ContainerContextStorage.clearPackagePrefs(base, packageName)
 
-        /** Clear preferences owned by one instance only. */
-        fun clearInstancePrefs(base: Context, packageName: String, instanceId: String) {
-            clearPrefs(base, "ns_${packageName}_${instanceId}_")
-        }
+    fun clearInstancePrefs(
+        base: Context,
+        packageName: String,
+        instanceId: String
+    ) = ContainerContextStorage.clearInstancePrefs(
+        base,
+        packageName,
+        instanceId
+    )
 
-        private fun clearPrefs(base: Context, prefix: String) {
-            val prefsDir = File(base.dataDir, "shared_prefs")
-            prefsDir.listFiles()?.forEach { file ->
-                val prefName = file.name.removeSuffix(".xml")
-                if (prefName.startsWith(prefix)) {
-                    runCatching {
-                        base.getSharedPreferences(prefName, Context.MODE_PRIVATE)
-                            .edit()
-                            .clear()
-                            .commit()
-                    }
-                    file.delete()
-                }
-            }
-        }
-
-        private fun prefKey(
-            packageName: String,
-            instanceId: String,
-            name: String,
-            prefix: String = "ns_"
-        ): String = "$prefix${packageName}_${instanceId}_$name"
-
-        fun externalRootFor(base: Context, packageName: String, instanceId: String): File? {
-            val frameworkRoot = HostIdentity.externalFilesDir
-                ?: runCatching { base.getExternalFilesDir(null) }.getOrNull()
-            val explicitRoot = File(
-                android.os.Environment.getExternalStorageDirectory(),
-                "Android/data/${HostIdentity.packageName}/files"
-            )
-            val hostRoot = sequenceOf(frameworkRoot, explicitRoot)
-                .filterNotNull()
-                .distinctBy { it.absolutePath }
-                .firstOrNull { it.isDirectory || it.mkdirs() }
-                ?: return null
-            val result = File(
-                File(hostRoot, "vspace"),
-                "${sanitize(packageName)}_${sanitize(instanceId)}"
-            )
-            if (!result.isDirectory && !result.mkdirs()) return null
-            return result
-        }
-
-        private fun sanitize(value: String): String =
-            value.replace(Regex("[^A-Za-z0-9._-]"), "_")
-    }
+    fun externalRootFor(
+        base: Context,
+        packageName: String,
+        instanceId: String
+    ): File? = ContainerContextStorage.externalRootFor(
+        base,
+        packageName,
+        instanceId
+    )
+}
 }

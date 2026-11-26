@@ -1,7 +1,7 @@
 package com.coke.nestspace.agent
 
-import com.coke.nestspace.tools.ToolResult
-import com.coke.nestspace.tools.ToolSpec
+import com.coke.nestspace.agent.tools.ToolResult
+import com.coke.nestspace.agent.tools.ToolSpec
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

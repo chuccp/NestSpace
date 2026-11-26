@@ -1,5 +1,6 @@
 package com.coke.nestspace.container.shortcut
 
+import com.coke.nestspace.core.files.safePathSegment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -74,7 +75,7 @@ internal object DynamicShortcutStore {
 
     fun clearPackage(root: File, packageName: String) {
         synchronized(LOCK) {
-            val prefix = "${sanitize(packageName)}_"
+            val prefix = "${safePathSegment(packageName)}_"
             root.listFiles()
                 ?.filter { it.name.startsWith(prefix) && it.isFile }
                 ?.forEach { it.delete() }
@@ -88,8 +89,5 @@ internal object DynamicShortcutStore {
     }
 
     private fun file(root: File, packageName: String, instanceId: String): File =
-        File(root, "${sanitize(packageName)}_${sanitize(instanceId)}.json")
-
-    private fun sanitize(value: String): String =
-        value.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        File(root, "${safePathSegment(packageName)}_${safePathSegment(instanceId)}.json")
 }

@@ -3,7 +3,7 @@ package com.coke.nestspace.container
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
-import com.coke.nestspace.control.ContainerUiController
+import com.coke.nestspace.container.control.ContainerUiController
 import kotlinx.coroutines.runBlocking
 
 /**

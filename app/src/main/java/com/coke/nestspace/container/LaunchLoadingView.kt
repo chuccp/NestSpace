@@ -15,7 +15,7 @@ import android.graphics.Shader
 import android.os.SystemClock
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
 import com.coke.nestspace.R
 import kotlin.math.PI
 import kotlin.math.cos

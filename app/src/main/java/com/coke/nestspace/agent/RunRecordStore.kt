@@ -2,7 +2,8 @@ package com.coke.nestspace.agent
 
 import android.content.Context
 import com.coke.nestspace.data.AgentMessage
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.agent.sdk.RunMetricsSnapshot
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID

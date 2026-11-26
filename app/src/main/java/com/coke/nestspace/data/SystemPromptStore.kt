@@ -1,7 +1,7 @@
 package com.coke.nestspace.data
 
 import android.content.Context
-import com.coke.nestspace.i18n.AppLanguage
+import com.coke.nestspace.core.i18n.AppLanguage
 
 /**
  * One system prompt shared by every model config. The app ships a built-in
@@ -68,7 +68,8 @@ class SystemPromptStore(context: Context) {
                 "网页任务一律使用内置浏览器（browser_*），不要用系统浏览器或其他外部 App 打开链接。\n" +
                 "遇到下载、安装和其它内部异步任务，优先用 task_wait 等待状态变化或终态；" +
                 "工具最多等待各自配置的同步返回上限，完成则立即返回结果，未完成返回 task_id；" +
-                "拿到 task_id 后用 task_wait，timeout 只是最大等待时间。页面文字等没有内部事件源的观察才用 poll_tool。超时不是成功。browser_download " +
+                "拿到 task_id 后用 task_wait，timeout 只是最大等待时间。状态工具配置轮询策略时，" +
+                "执行管线会自动等待；超时不是成功。browser_download " +
                 "只负责启动并返回 download_id 和 task_id，随后用 task_wait 观察，" +
                 "直到 terminal=true；只有 state=succeeded 才算成功。是否因速度慢而取消由你根据速度、" +
                 "剩余时间和空闲时间判断并调用 task_cancel；启动替代下载时系统仍会强制停止旧连接。" +
@@ -122,8 +123,8 @@ class SystemPromptStore(context: Context) {
                 "For downloads, installs and other internal asynchronous operations, prefer task_wait " +
                 "to wait for a lifecycle change or terminal state. A tool returns immediately when it " +
                 "finishes within its own maximum synchronous wait; otherwise it returns task_id. task_wait timeout " +
-                "is only a maximum. Use poll_tool only for visible text " +
-                "or other sources without internal events. Never treat a timeout as success. " +
+                "is only a maximum. The tool pipeline automatically polls status tools when " +
+                "configured. Never treat a timeout as success. " +
                 "browser_download only starts the task and returns download_id and task_id; then use task_wait " +
                 "until terminal=true; only state=succeeded is success. Decide from speed, ETA and " +
                 "idle time whether to cancel a slow task with task_cancel; starting a replacement " +

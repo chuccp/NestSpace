@@ -1,22 +1,22 @@
 package com.coke.nestspace
 
+import com.coke.nestspace.container.ContainerProcessPool
+import com.coke.nestspace.container.ContainerSessions
 import android.app.Application
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import com.coke.nestspace.agent.UserGateManager
-import com.coke.nestspace.assistant.FloatingDotOverlay
-import com.coke.nestspace.browser.BrowserActivity
-import com.coke.nestspace.browser.routeWebIntentInside
-import com.coke.nestspace.container.ContainerProcessPool
-import com.coke.nestspace.container.ContainerSessions
+import com.coke.nestspace.features.assistant.FloatingDotOverlay
+import com.coke.nestspace.features.browser.BrowserActivity
+import com.coke.nestspace.features.browser.routeWebIntentInside
 import com.coke.nestspace.container.identity.HostIdentity
-import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.proxy.AppProxyManager
-import com.coke.nestspace.runtime.RuntimeHostIdentity
-import com.coke.nestspace.runtime.RuntimeHostHooks
-import com.coke.nestspace.task.OperationTaskRegistry
-import com.coke.nestspace.ui.DesktopNavigation
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.integrations.proxy.AppProxyManager
+import com.coke.nestspace.container.api.RuntimeHostIdentity
+import com.coke.nestspace.container.api.RuntimeHostHooks
+import com.coke.nestspace.agent.task.OperationTaskRegistry
+import com.coke.nestspace.features.navigation.DesktopNavigation
 import java.io.File
 
 /**
@@ -50,7 +50,7 @@ class NestSpaceApp : Application() {
                 android.util.Log.w("NestSpaceApp", "app proxy initialization failed", it)
             }
         runCatching {
-            com.coke.nestspace.plugin.PluginSourceLoader
+            com.coke.nestspace.plugins.host.PluginSourceLoader
                 .restoreBundled(this)
         }.onFailure {
             android.util.Log.w(
@@ -60,7 +60,7 @@ class NestSpaceApp : Application() {
             )
         }
         runCatching {
-            com.coke.nestspace.plugin.PluginPackageInstaller
+            com.coke.nestspace.plugins.host.PluginPackageInstaller
                 .get(this)
                 .restoreInstalled()
         }.onFailure {
@@ -79,7 +79,7 @@ class NestSpaceApp : Application() {
             )
         }
         runCatching {
-            com.coke.nestspace.plugin.PluginPackageInstaller
+            com.coke.nestspace.plugins.host.PluginPackageInstaller
                 .get(this)
                 .importIncomingPackages()
         }.onFailure {
@@ -94,7 +94,7 @@ class NestSpaceApp : Application() {
         ContainerProcessPool.resetLaunchedFlagsAfterHostRestart(this)
         UserGateManager.init(this)
         OperationTaskRegistry.initialize(this)
-        com.coke.nestspace.plugin.AgentPluginSupport.installBuiltins(this)
+        com.coke.nestspace.plugins.host.AgentPluginSupport.installBuiltins(this)
         NestSpaceDeferredStartup.schedule(this, processStartedAt)
     }
 

@@ -1,5 +1,6 @@
 package com.coke.nestspace
 
+import com.coke.nestspace.container.HeadlessMirrorWindow
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -9,13 +10,12 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
-import com.coke.nestspace.container.HeadlessMirrorWindow
-import com.coke.nestspace.control.ContainerUiClient
-import com.coke.nestspace.service.BackgroundOverlay
-import com.coke.nestspace.service.McpForegroundService
-import com.coke.nestspace.ui.VirtualApp
-import com.coke.nestspace.ui.DesktopNavigation
-import com.coke.nestspace.ui.theme.VirtualTheme
+import com.coke.nestspace.container.control.ContainerUiClient
+import com.coke.nestspace.integrations.service.BackgroundOverlay
+import com.coke.nestspace.integrations.service.McpForegroundService
+import com.coke.nestspace.features.navigation.VirtualApp
+import com.coke.nestspace.features.navigation.DesktopNavigation
+import com.coke.nestspace.design.theme.VirtualTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         HeadlessMirrorWindow.onHostResumed(this)
         BackgroundOverlay.ensure(this)
-        com.coke.nestspace.assistant.FloatingDotOverlay.onHostActivityResumed(this)
+        com.coke.nestspace.features.assistant.FloatingDotOverlay.onHostActivityResumed(this)
         // Application.onCreate happens before the process is foreground on
         // Android 16+, where starting a foreground service is rejected. Retry
         // while the UI is visible; ensureStarted respects an explicit Stop.

@@ -2,25 +2,19 @@ package com.coke.nestspace.container.identity
 
 import com.coke.nestspace.container.ContainerLaunchSpec
 import com.coke.nestspace.container.identity.ContainerIdentity
-import com.coke.nestspace.browser.webUrlFromViewIntent
-import com.coke.nestspace.container.notify.ContainerNotificationBridge
+import com.coke.nestspace.features.browser.webUrlFromViewIntent
 import com.coke.nestspace.container.vpm.ContainerPermissions
 import com.coke.nestspace.container.vpm.VirtualPackageRegistry
-import com.coke.nestspace.runtime.RuntimeHostHooks
+import com.coke.nestspace.container.api.RuntimeHostHooks
 
 
-import android.Manifest
-import android.app.PendingIntent
-import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
-import android.content.pm.VersionedPackage
 import android.content.res.Resources
-import android.os.Build
 import android.os.Process
 import android.os.IBinder
 import android.os.Parcel
@@ -52,7 +46,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 object SystemServiceIdentity {
 
-    private const val TAG = "SystemServiceIdentity"
+    internal const val TAG = "SystemServiceIdentity"
 
     private data class MemberKey(
         val owner: Class<*>,
@@ -78,17 +72,17 @@ object SystemServiceIdentity {
     private val assignableFieldCache = ConcurrentHashMap<AssignableFieldKey, Any>()
     private val declaredFieldsCache = ConcurrentHashMap<Class<*>, Array<Field>>()
 
-    @Volatile private var targetPackage: String = ""
-    @Volatile private var targetInstance: String = ""
-    @Volatile private var targetSpace: String = ""
-    @Volatile private var hostPackage: String = ""
-    @Volatile private var targetPackageInfo: PackageInfo? = null
-    @Volatile private var targetAppInfo: ApplicationInfo? = null
-    @Volatile private var targetUid: Int = -1
-    @Volatile private var targetResources: Resources? = null
-    @Volatile private var registry: VirtualPackageRegistry? = null
-    @Volatile private var virtualPermissions: ContainerPermissions? = null
-    @Volatile private var hostContext: Context? = null
+    @Volatile internal var targetPackage: String = ""
+    @Volatile internal var targetInstance: String = ""
+    @Volatile internal var targetSpace: String = ""
+    @Volatile internal var hostPackage: String = ""
+    @Volatile internal var targetPackageInfo: PackageInfo? = null
+    @Volatile internal var targetAppInfo: ApplicationInfo? = null
+    @Volatile internal var targetUid: Int = -1
+    @Volatile internal var targetResources: Resources? = null
+    @Volatile internal var registry: VirtualPackageRegistry? = null
+    @Volatile internal var virtualPermissions: ContainerPermissions? = null
+    @Volatile internal var hostContext: Context? = null
     @Volatile private var aiInfoCaptureActive = false
     private data class RootExitHook(
         val interceptFinish: Boolean,
@@ -98,10 +92,10 @@ object SystemServiceIdentity {
     private val rootExitHook = AtomicReference<RootExitHook?>(null)
 
     @Volatile private var ipmProxy: Any? = null
-    @Volatile private var legacyPackageManager: PackageManager? = null
-    private val packageManagerDelegation = ThreadLocal.withInitial { false }
+    @Volatile internal var legacyPackageManager: PackageManager? = null
+    internal val packageManagerDelegation = ThreadLocal.withInitial { false }
     /** Virtual component/app enabled states; never forwarded to the host PMS. */
-    private val componentStates = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    internal val componentStates = java.util.concurrent.ConcurrentHashMap<String, Int>()
     private var amsInstalled = false
     private var ipmInstalled = false
     private var notificationInstalled = false
@@ -194,7 +188,9 @@ object SystemServiceIdentity {
                 installServiceProxy(
                     ownerName = "android.app.NotificationManager",
                     interfaceName = "android.app.INotificationManager",
-                    handler = ::NotificationRewriteHandler,
+                    handler = { delegate ->
+                        NotificationRewriteHandler(delegate, this)
+                    },
                     label = "NotificationManager"
                 )
             }.onFailure { Log.w(TAG, "NotificationManager proxy failed", it) }
@@ -282,16 +278,16 @@ object SystemServiceIdentity {
         legacyPackageManager = packageManager
     }
 
-    private fun findClass(name: String): Class<*>? {
+    internal fun findClass(name: String): Class<*>? {
         classCache[name]?.let { return it as? Class<*> }
         val found = runCatching { Class.forName(name) }.getOrElse { reflectionMiss }
         return (classCache.putIfAbsent(name, found) ?: found) as? Class<*>
     }
 
-    private fun loadClass(name: String): Class<*> =
+    internal fun loadClass(name: String): Class<*> =
         findClass(name) ?: throw ClassNotFoundException(name)
 
-    private fun method(
+    internal fun method(
         owner: Class<*>,
         name: String,
         vararg parameterTypes: Class<*>
@@ -313,7 +309,7 @@ object SystemServiceIdentity {
         owner.getDeclaredMethod(name, *parameterTypes)
     }
 
-    private fun constructor(
+    internal fun constructor(
         owner: Class<*>,
         vararg parameterTypes: Class<*>
     ): Constructor<*>? = findMember(
@@ -340,7 +336,7 @@ object SystemServiceIdentity {
         return (cache.putIfAbsent(key, found) ?: found) as? T
     }
 
-    private fun declaredField(owner: Class<*>, name: String): Field? {
+    internal fun declaredField(owner: Class<*>, name: String): Field? {
         val key = FieldKey(owner, name)
         fieldCache[key]?.let { return it as? Field }
         val found = runCatching {
@@ -486,7 +482,7 @@ object SystemServiceIdentity {
                     Proxy.newProxyInstance(
                         iface.classLoader,
                         arrayOf(iface),
-                        IdentityRewriteHandler(delegate)
+                        IdentityRewriteHandler(delegate, this)
                     )
                 )
                 patched++
@@ -514,7 +510,7 @@ object SystemServiceIdentity {
                 Proxy.newProxyInstance(
                     iface.classLoader,
                     arrayOf(iface),
-                    AppOpsRewriteHandler(staticDelegate)
+                    AppOpsRewriteHandler(staticDelegate, this)
                 )
             )
             staticPatched = true
@@ -534,7 +530,7 @@ object SystemServiceIdentity {
                     Proxy.newProxyInstance(
                         iface.classLoader,
                         arrayOf(iface),
-                    AppOpsRewriteHandler(delegate)
+                    AppOpsRewriteHandler(delegate, this)
                     )
                 )
                 instances++
@@ -567,7 +563,7 @@ object SystemServiceIdentity {
                     Proxy.newProxyInstance(
                         iface.classLoader,
                         arrayOf(iface),
-                        IdentityRewriteHandler(delegate)
+                        IdentityRewriteHandler(delegate, this)
                     )
                 )
                 patched++
@@ -597,7 +593,7 @@ object SystemServiceIdentity {
         val proxy = Proxy.newProxyInstance(
             iface.classLoader,
             arrayOf(iface),
-            BluetoothPermissionHandler(delegate)
+            BluetoothPermissionHandler(delegate, this)
         )
         instanceField.set(adapter, proxy)
         declaredField(adapterClass, "sService")?.set(null, proxy)
@@ -620,7 +616,7 @@ object SystemServiceIdentity {
                     Proxy.newProxyInstance(
                         iface.classLoader,
                         arrayOf(iface),
-                        IdentityRewriteHandler(delegate)
+                        IdentityRewriteHandler(delegate, this)
                     )
                 )
                 cachePatched = true
@@ -699,7 +695,7 @@ object SystemServiceIdentity {
         val proxy = Proxy.newProxyInstance(
             iface.classLoader,
             arrayOf(iface),
-            PackageQueryHandler(delegate)
+            PackageQueryHandler(delegate, this)
         )
         ipmProxy = proxy
         installPackageManagerBinder(proxy)
@@ -776,7 +772,7 @@ object SystemServiceIdentity {
         }
     }
 
-    private fun systemContext(): Context? = runCatching {
+    internal fun systemContext(): Context? = runCatching {
         val threadClass = loadClass("android.app.ActivityThread")
         val thread = method(threadClass, "currentActivityThread")
             ?.invoke(null)
@@ -784,339 +780,13 @@ object SystemServiceIdentity {
         method(threadClass, "getSystemContext")?.invoke(thread) as? Context
     }.getOrNull()
 
-    private fun invokeDelegate(delegate: Any, method: Method, args: Array<Any?>?): Any? =
+    internal fun invokeDelegate(delegate: Any, method: Method, args: Array<Any?>?): Any? =
         try {
             method.invoke(delegate, *(args ?: emptyArray()))
         } catch (t: InvocationTargetException) {
             throw t.targetException
         }
 
-    /**
-     * NotificationManager calls are virtualized end-to-end: package arguments
-     * become the host package (UID validation), tags/channel ids get a virtual
-     * namespace, target icons are re-rendered, and target PendingIntents are
-     * routed through a host launch trampoline. See ContainerNotificationBridge.
-     */
-    private class NotificationRewriteHandler(private val delegate: Any) : InvocationHandler {
-        override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
-            if (method.name.startsWith("areNotificationsEnabled")) {
-                val permission = virtualPermissions?.checkSelfPermission(
-                    Manifest.permission.POST_NOTIFICATIONS
-                )
-                // NotificationManagerService enforces same-package identity
-                // from Binder attribution. The target package is virtual, so
-                // forwarding this package-less query from the host UID throws
-                // SecurityException and aborts the rest of Activity.onResume().
-                // Answer from the container's Android permission state instead.
-                return permission == null ||
-                    permission == PackageManager.PERMISSION_GRANTED
-            }
-            if (isNotificationReadMethod(method.name)) {
-                val env = notificationEnv()
-                    ?: return invokeDelegate(delegate, method, args)
-                val callArgs = ContainerNotificationBridge.rewriteCall(
-                    method.name,
-                    args,
-                    env
-                )
-                val result = invokeDelegate(delegate, method, callArgs)
-                return ContainerNotificationBridge.rewriteResult(
-                    method.name,
-                    result,
-                    env
-                )
-            }
-            val env = notificationEnv()
-                ?: return invokeDelegate(delegate, method, args)
-            val callArgs = ContainerNotificationBridge.rewriteCall(method.name, args, env)
-            val result = invokeDelegate(delegate, method, callArgs)
-            return ContainerNotificationBridge.rewriteResult(method.name, result, env)
-        }
-    }
-
-    private fun isNotificationReadMethod(name: String): Boolean =
-        name.startsWith("areNotificationsEnabled") ||
-            name.startsWith("getImportance") ||
-            name == "getNotificationChannel" ||
-            name == "getNotificationChannels" ||
-            name == "getNotificationChannelsForPackage" ||
-            name == "getEnabledNotificationListeners"
-
-    /**
-     * AppOps validates the explicit package/UID pair against the real Binder
-     * caller UID before dispatching. Both values therefore have to use host
-     * attribution; leaving the virtual UID in place causes system_server to
-     * reject the request even when the package name was rewritten.
-     */
-    private class AppOpsRewriteHandler(private val delegate: Any) : InvocationHandler {
-        private val fallback = IdentityRewriteHandler(delegate)
-
-        override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
-            if (method.declaringClass == Any::class.java) {
-                return fallback.invoke(proxy, method, args)
-            }
-            val target = targetPackage
-            val host = hostPackage
-            val targetUid = targetUid
-            val hostUid = ContainerIdentity.hostUid()
-            val callArgs = args?.map { value ->
-                when {
-                    value is Int && value == targetUid -> hostUid
-                    value is String && value == target ->
-                        if (host.isNotEmpty()) host else value
-                    else -> value
-                }
-            }?.toTypedArray()
-            return fallback.invokeRewritten(proxy, method, callArgs)
-        }
-    }
-
-    private class BluetoothPermissionHandler(
-        private val delegate: Any
-    ) : InvocationHandler {
-        override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
-            if (method.declaringClass == Any::class.java) {
-                return when (method.name) {
-                    "equals" -> proxy === args?.firstOrNull()
-                    "hashCode" -> System.identityHashCode(proxy)
-                    "toString" -> "ContainerBluetooth(${delegate.javaClass.name})"
-                    else -> null
-                }
-            }
-            return try {
-                invokeDelegate(delegate, method, args)
-            } catch (security: SecurityException) {
-                Log.w(
-                    TAG,
-                    "Bluetooth ${method.name} denied; returning unavailable state",
-                    security
-                )
-                unavailableValue(method.returnType)
-            }
-        }
-
-        private fun unavailableValue(type: Class<*>): Any? = when (type) {
-            Boolean::class.javaPrimitiveType -> false
-            Byte::class.javaPrimitiveType -> 0.toByte()
-            Short::class.javaPrimitiveType -> 0.toShort()
-            Int::class.javaPrimitiveType -> 0
-            Long::class.javaPrimitiveType -> 0L
-            Float::class.javaPrimitiveType -> 0f
-            Double::class.javaPrimitiveType -> 0.0
-            Char::class.javaPrimitiveType -> '\u0000'
-            else -> null
-        }
-    }
-
-    /**
-     * Generic system-service package attribution rewrite. Target package
-     * arguments become the host package accepted by system_server; results
-     * are mapped back so target code continues to see its own identity.
-     */
-    private class IdentityRewriteHandler(private val delegate: Any) : InvocationHandler {
-        override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
-            if (method.declaringClass == Any::class.java) {
-                return invokeObjectMethod(proxy, method, args)
-            }
-            val rewrittenArgs = args?.map { value ->
-                if (method.name == "getPackageGids") {
-                    value
-                } else {
-                    rewriteArgument(value)
-                }
-            }?.toTypedArray()
-            return invokeRewritten(proxy, method, rewrittenArgs)
-        }
-
-        fun invokeRewritten(
-            proxy: Any,
-            method: Method,
-            args: Array<Any?>?
-        ): Any? {
-            if (method.declaringClass == Any::class.java) {
-                return invokeObjectMethod(proxy, method, args)
-            }
-            val result = invokeDelegate(delegate, method, args)
-            return rewriteResult(result)
-        }
-
-        private fun invokeObjectMethod(
-            proxy: Any,
-            method: Method,
-            args: Array<Any?>?
-        ): Any? = when (method.name) {
-            "equals" -> proxy === args?.firstOrNull()
-            "hashCode" -> System.identityHashCode(proxy)
-            "toString" -> "ContainerService(${delegate.javaClass.name})"
-            else -> null
-        }
-
-        private fun rewriteArgument(value: Any?): Any? {
-            val target = targetPackage
-            val host = hostPackage
-            if (target.isEmpty() || target == host) return value
-            return when (value) {
-                is String -> if (value == target) host else value
-                is Array<*> -> SystemServiceArrayRewrite.rewrite(
-                    value,
-                    ::rewriteArgument
-                )
-                is Collection<*> -> value.map(::rewriteArgument)
-                else -> rewriteInputEditorInfo(value)
-                    ?: rewriteAttributionSource(value, target, host)
-                    ?: value
-            }
-        }
-
-        private fun rewriteInputEditorInfo(value: Any?): Any? {
-            val editorInfoClass =
-                findClass("android.view.inputmethod.EditorInfo") ?: return null
-            if (!editorInfoClass.isInstance(value)) return null
-            val packageField = declaredField(editorInfoClass, "packageName")
-                ?: return null
-            if (packageField.get(value) != targetPackage) return value
-            return runCatching {
-                val parcel = Parcel.obtain()
-                try {
-                    (value as android.os.Parcelable).writeToParcel(parcel, 0)
-                    parcel.setDataPosition(0)
-                    val creator = editorInfoClass.getField("CREATOR")
-                        .get(null) as android.os.Parcelable.Creator<*>
-                    val copy = creator.createFromParcel(parcel)
-                    packageField.set(copy, hostPackage)
-                    copy
-                } finally {
-                    parcel.recycle()
-                }
-            }.getOrNull()
-        }
-
-        private fun rewriteResult(value: Any?): Any? {
-            val target = targetPackage
-            val host = hostPackage
-            if (target.isEmpty() || target == host) return value
-            return when (value) {
-                is String -> if (value == host) target else value
-                is Array<*> -> SystemServiceArrayRewrite.rewrite(
-                    value,
-                    ::rewriteResult
-                )
-                is Iterable<*> -> value.map(::rewriteResult)
-                else -> rewritePackageOps(value)
-                    ?: rewriteAttributionSource(value, host, target)
-                    ?: value
-            }
-        }
-
-        private fun rewriteAttributionSource(
-            value: Any?,
-            fromPackage: String,
-            toPackage: String
-        ): Any? {
-            val sourceClass = findClass("android.content.AttributionSource")
-                ?: return null
-            if (!sourceClass.isInstance(value)) return null
-            return runCatching {
-                val packageName = method(sourceClass, "getPackageName")
-                    ?.invoke(value) as? String
-                if (packageName != fromPackage) return@runCatching value
-                val builderClass = loadClass(
-                    "android.content.AttributionSource\$Builder"
-                )
-                val builder = constructor(builderClass, sourceClass)
-                    ?.newInstance(value)
-                    ?: return@runCatching null
-                val setPackage = method(
-                    builderClass,
-                    "setPackageName",
-                    String::class.java
-                )
-                    ?: return@runCatching null
-                setPackage.invoke(builder, toPackage)
-                method(
-                    builderClass,
-                    "setUid",
-                    Int::class.javaPrimitiveType!!
-                )?.invoke(
-                    builder,
-                    if (toPackage == hostPackage) {
-                        ContainerIdentity.hostUid()
-                    } else if (toPackage == targetPackage) {
-                        targetUid
-                    } else {
-                        method(sourceClass, "getUid")?.invoke(value)
-                    }
-                )
-                method(builderClass, "build")?.invoke(builder)
-            }.getOrNull()
-        }
-
-        private fun rewritePackageOps(value: Any?): Any? {
-            val packageOpsClass = findClass("android.app.AppOpsManager\$PackageOps")
-                ?: return null
-            if (!packageOpsClass.isInstance(value)) return null
-            return runCatching {
-                val packageName = method(packageOpsClass, "getPackageName")
-                    ?.invoke(value) as? String
-                    ?: return@runCatching null
-                if (packageName != hostPackage) return@runCatching value
-                method(packageOpsClass, "getUid")?.invoke(value)
-                @Suppress("UNCHECKED_CAST")
-                val ops = method(packageOpsClass, "getOps")?.invoke(value)
-                    as List<Any?>
-                constructor(
-                    packageOpsClass,
-                    String::class.java,
-                    Int::class.javaPrimitiveType!!,
-                    List::class.java
-                )
-                    ?.newInstance(
-                        targetPackage,
-                        targetUid.takeIf { it > 0 }
-                            ?: ContainerIdentity.virtualUidFor(targetPackage),
-                        ops
-                    )
-            }.getOrNull()
-        }
-    }
-
-    private fun notificationEnv(): ContainerNotificationBridge.Env? {
-        val context = hostContext ?: systemContext() ?: return null
-        val target = targetPackage
-        if (target.isEmpty()) return null
-        return ContainerNotificationBridge.Env(
-            targetPackage = target,
-            instanceId = targetInstance,
-            hostPackage = hostPackage,
-            resources = targetResources,
-            context = context,
-            launchPendingIntent = {
-                launchPendingIntent(context)
-            }
-        )
-    }
-
-    private fun launchPendingIntent(context: Context): PendingIntent? = runCatching {
-        val intent = Intent()
-            .setClassName(hostPackage, CONTAINER_LAUNCH_PROXY)
-            .putExtra("space_id", targetSpace)
-            .putExtra("package", targetPackage)
-            .putExtra("instance", targetInstance)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        PendingIntent.getActivity(
-            context,
-            (targetPackage + '@' + targetInstance).hashCode(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }.onFailure { Log.w(TAG, "notification launch PendingIntent failed", it) }
-        .getOrNull()
-
-    /**
-     * AMS calls carry the caller package as a String. For startActivity and
-     * IntentSender APIs this must be the host package; rewriting keeps the
-     * target package visible only to the app/native layer.
-     */
     private class AmRewriteHandler(private val delegate: Any) : InvocationHandler {
         override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
             if (aiInfoCaptureActive &&
@@ -1276,388 +946,10 @@ object SystemServiceIdentity {
      * PackageManager wrapper, with a thread-local guard so its internal
      * delegation to the host package manager does not recurse into this proxy.
      */
-    private class PackageQueryHandler(private val delegate: Any) : InvocationHandler {
 
-        private class Routed(val value: Any?)
+    internal val NOT_ROUTED = Any()
 
-        override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
-            val values = args ?: emptyArray()
-            if (packageManagerDelegation.get()) {
-                return invokeDelegate(delegate, method, values)
-            }
-            val name = method.name
-            val requestedPackage = values.firstNotNullOfOrNull {
-                when (it) {
-                    is String -> it
-                    is VersionedPackage -> it.packageName
-                    is ComponentName -> it.packageName
-                    else -> null
-                }
-            }
-            if (requestedPackage == hostPackage && isHostPackageQuery(name)) {
-                return hiddenHostPackageResult(method.returnType, name)
-            }
-            val legacy = legacyPackageManager
-            if (legacy != null) {
-                val routed = routeThroughPackageManager(legacy, name, values)
-                if (routed !== NOT_ROUTED) return (routed as Routed).value
-            }
-            val target = targetPackage
-            if (target.isEmpty()) {
-                return invokeDelegate(delegate, method, values)
-            }
-            val queried = values.firstNotNullOfOrNull {
-                when (it) {
-                    is String -> it
-                    is VersionedPackage -> it.packageName
-                    else -> null
-                }
-            }
-            val virtualRegistry = registry
-            // checkPermission(permission, packageName, ...): the first string
-            // is the permission, so handle it before the package lookup.
-            if (name.startsWith("checkPermission")) {
-                val strings = values.filterIsInstance<String>()
-                val permission = strings.getOrNull(0)
-                val pkg = strings.getOrNull(1)
-                val permissions = virtualPermissions
-                if (permission != null && pkg != null && permissions != null &&
-                    (pkg == target || virtualRegistry?.isVirtualPackage(pkg) == true)
-                ) {
-                    return permissions.checkPackagePermission(pkg, permission)
-                }
-            }
-            if (queried != null &&
-                (queried == target || virtualRegistry?.isVirtualPackage(queried) == true)
-            ) {
-                val packageInfo = if (queried == target) {
-                    targetPackageInfo
-                } else {
-                    virtualRegistry?.findPackageInfo(queried)
-                }
-                val appInfo = if (queried == target) {
-                    targetAppInfo
-                } else {
-                    virtualRegistry?.findApplicationInfo(queried)
-                }
-                when {
-                    name.startsWith("getPackageInfo") -> packageInfo?.let { return it }
-                    name.startsWith("getApplicationInfo") -> appInfo?.let { return it }
-                    name.startsWith("getPackageUid") -> {
-                        if (queried == target) return Process.myUid()
-                        virtualRegistry?.packageUid(queried)?.let { return it }
-                    }
-                }
-            }
-            val uid = values.firstOrNull() as? Int
-            if (uid != null) {
-                val packageForUid = when {
-                    uid == Process.myUid() -> target
-                    else -> registry?.packageForUid(uid)
-                }
-                if (packageForUid != null) {
-                    when (name) {
-                        "getPackagesForUid" -> return arrayOf(packageForUid)
-                        "getNameForUid" -> return packageForUid
-                    }
-                }
-            }
-            return invokeDelegate(delegate, method, values)
-        }
-
-        private fun isHostPackageQuery(name: String): Boolean =
-            name.startsWith("getPackageInfo") ||
-                name.startsWith("getApplicationInfo") ||
-                name.startsWith("getPackageUid") ||
-                name.startsWith("getPackageGids") ||
-                name.startsWith("getResourcesForApplication") ||
-                name == "getLaunchIntentForPackage" ||
-                name == "getLeanbackLaunchIntentForPackage" ||
-                name == "isPackageAvailable"
-
-        private fun hiddenHostPackageResult(
-            returnType: Class<*>,
-            name: String
-        ): Any? = when {
-            returnType == Boolean::class.javaPrimitiveType -> false
-            returnType == Int::class.javaPrimitiveType -> -1
-            returnType == Long::class.javaPrimitiveType -> -1L
-            name.startsWith("getPackageGids") -> IntArray(0)
-            else -> null
-        }
-
-        private fun routeThroughPackageManager(
-            pm: PackageManager,
-            name: String,
-            args: Array<Any?>
-        ): Any? {
-            fun intFlags(value: Any?): Int = when (value) {
-                is Int -> value
-                is Long -> value.toInt()
-                else -> 0
-            }
-
-            fun viaPm(block: () -> Any?): Any = Routed(viaDelegation { block() })
-
-            // IPackageManager component lookups return null when absent;
-            // ApplicationPackageManager turns null into NameNotFoundException.
-            // The wrapper throws the checked exception, which an AIDL proxy
-            // cannot propagate, so convert it back to null here.
-            fun viaPmNullable(block: () -> Any?): Any = Routed(
-                viaDelegation {
-                    try {
-                        block()
-                    } catch (e: PackageManager.NameNotFoundException) {
-                        null
-                    }
-                }
-            )
-
-            return when (name) {
-                "getPackageInfo" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(1))
-                    viaPmNullable { pm.getPackageInfo(pkg, flags) }
-                }
-                "getApplicationInfo" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(1))
-                    viaPmNullable { pm.getApplicationInfo(pkg, flags) }
-                }
-                "getPackageUid" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(1))
-                    viaPm { pm.getPackageUid(pkg, flags) }
-                }
-                "getInstallSourceInfo" -> {
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                        return NOT_ROUTED
-                    }
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    viaPmNullable { pm.getInstallSourceInfo(pkg) }
-                }
-                "getActivityInfo", "getReceiverInfo", "getServiceInfo", "getProviderInfo" -> {
-                    val component = args.getOrNull(0) as? ComponentName ?: return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(1))
-                    if (isContainerPackage(component.packageName)) {
-                        viaPmNullable {
-                            componentInfo(pm, name, component, flags)
-                        }
-                    } else {
-                        Routed(viaDelegation {
-                            runCatching {
-                                componentInfo(pm, name, component, flags)
-                            }.getOrNull() ?: findInstalledComponent(
-                                pm,
-                                name,
-                                component,
-                                flags
-                            )
-                        })
-                    }
-                }
-                "resolveIntent" -> {
-                    val intent = args.getOrNull(0) as? Intent ?: return NOT_ROUTED
-                    if (!isContainerIntent(intent)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(2))
-                    viaPm { pm.resolveActivity(intent, flags) }
-                }
-                "resolveService" -> {
-                    val intent = args.getOrNull(0) as? Intent ?: return NOT_ROUTED
-                    if (!isContainerIntent(intent)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(2))
-                    viaPm { pm.resolveService(intent, flags) }
-                }
-                "queryIntentActivities" -> {
-                    val intent = args.getOrNull(0) as? Intent ?: return NOT_ROUTED
-                    if (!isContainerIntent(intent)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(2))
-                    viaPm { slice(pm.queryIntentActivities(intent, flags)) }
-                }
-                "queryIntentServices" -> {
-                    val intent = args.getOrNull(0) as? Intent ?: return NOT_ROUTED
-                    if (!isContainerIntent(intent)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(2))
-                    viaPm { slice(pm.queryIntentServices(intent, flags)) }
-                }
-                "queryIntentReceivers" -> {
-                    val intent = args.getOrNull(0) as? Intent ?: return NOT_ROUTED
-                    if (!isContainerIntent(intent)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(2))
-                    viaPm { slice(pm.queryBroadcastReceivers(intent, flags)) }
-                }
-                "queryIntentContentProviders" -> {
-                    val intent = args.getOrNull(0) as? Intent ?: return NOT_ROUTED
-                    if (!isContainerIntent(intent)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(2))
-                    viaPm { slice(pm.queryIntentContentProviders(intent, flags)) }
-                }
-                "resolveContentProvider" -> {
-                    val authority = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(1))
-                    // Route every authority through the wrapper under the
-                    // delegation guard. Probing it first would recurse through
-                    // the host ApplicationPackageManager's own mPM call.
-                    viaPm { pm.resolveContentProvider(authority, flags) }
-                }
-                "getInstalledPackages" -> {
-                    val flags = intFlags(args.getOrNull(0))
-                    viaPm { slice(pm.getInstalledPackages(flags)) }
-                }
-                "getInstalledApplications" -> {
-                    val flags = intFlags(args.getOrNull(0))
-                    viaPm { slice(pm.getInstalledApplications(flags)) }
-                }
-                "getPackagesHoldingPermissions" -> {
-                    val permissions = args.getOrNull(0) as? Array<*> ?: return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(1))
-                    val names = permissions.filterIsInstance<String>().toTypedArray()
-                    viaPm { slice(pm.getPackagesHoldingPermissions(names, flags)) }
-                }
-                "checkSignatures" -> {
-                    val first = args.getOrNull(0)
-                    val second = args.getOrNull(1)
-                    if (first !is String || second !is String) return NOT_ROUTED
-                    if (!isContainerPackage(first) && !isContainerPackage(second)) {
-                        return NOT_ROUTED
-                    }
-                    viaPm { pm.checkSignatures(first, second) }
-                }
-                "getPackageGids" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    val flags = intFlags(args.getOrNull(1))
-                    viaPmNullable { pm.getPackageGids(pkg, flags) }
-                }
-                "getApplicationEnabledSetting" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    Routed(
-                        componentStates["$pkg/*"]
-                            ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-                    )
-                }
-                "setApplicationEnabledSetting" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    val state = (args.getOrNull(1) as? Int)
-                        ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-                    componentStates["$pkg/*"] = state
-                    Routed(null)
-                }
-                "getComponentEnabledSetting" -> {
-                    val component = args.getOrNull(0) as? ComponentName ?: return NOT_ROUTED
-                    if (!isContainerPackage(component.packageName)) return NOT_ROUTED
-                    Routed(
-                        componentStates[component.flattenToString()]
-                            ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-                    )
-                }
-                "setComponentEnabledSetting" -> {
-                    val component = args.getOrNull(0) as? ComponentName ?: return NOT_ROUTED
-                    if (!isContainerPackage(component.packageName)) return NOT_ROUTED
-                    val state = (args.getOrNull(1) as? Int)
-                        ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-                    componentStates[component.flattenToString()] = state
-                    Routed(null)
-                }
-                "getInstallerPackageName" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    viaPm { pm.getInstallerPackageName(pkg) }
-                }
-                "getLaunchIntentSenderForPackage" -> {
-                    val pkg = args.getOrNull(0) as? String ?: return NOT_ROUTED
-                    if (!isContainerPackage(pkg)) return NOT_ROUTED
-                    Routed(null)
-                }
-                else -> NOT_ROUTED
-            }
-        }
-
-        private fun isContainerPackage(packageName: String?): Boolean =
-            packageName != null &&
-                (packageName == targetPackage || registry?.isVirtualPackage(packageName) == true)
-
-        private fun componentInfo(
-            pm: PackageManager,
-            query: String,
-            component: ComponentName,
-            flags: Int
-        ): Any? = when (query) {
-            "getActivityInfo" -> pm.getActivityInfo(component, flags)
-            "getReceiverInfo" -> pm.getReceiverInfo(component, flags)
-            "getServiceInfo" -> pm.getServiceInfo(component, flags)
-            else -> pm.getProviderInfo(component, flags)
-        }
-
-        /**
-         * Some system package visibility policies expose an installed package
-         * and its manifest components via getPackageInfo(), while a direct
-         * component lookup still returns null. Recover the same component
-         * information from package metadata before returning null to the AIDL
-         * caller. Native SDKs frequently invoke this Java lookup through JNI
-         * and abort the process if it receives a pending checked exception.
-         */
-        private fun findInstalledComponent(
-            pm: PackageManager,
-            query: String,
-            component: ComponentName,
-            flags: Int
-        ): Any? {
-            val componentFlag = when (query) {
-                "getReceiverInfo" -> PackageManager.GET_RECEIVERS
-                "getServiceInfo" -> PackageManager.GET_SERVICES
-                "getProviderInfo" -> PackageManager.GET_PROVIDERS
-                else -> PackageManager.GET_ACTIVITIES
-            }
-            val packageInfo = runCatching {
-                pm.getPackageInfo(
-                    component.packageName,
-                    flags or componentFlag
-                )
-            }.getOrNull() ?: return null
-            val className = component.className
-            return when (query) {
-                "getReceiverInfo" -> packageInfo.receivers
-                    .orEmpty()
-                    .firstOrNull { it.name == className }
-                "getServiceInfo" -> packageInfo.services
-                    .orEmpty()
-                    .firstOrNull { it.name == className }
-                "getProviderInfo" -> packageInfo.providers
-                    .orEmpty()
-                    .firstOrNull { it.name == className }
-                else -> packageInfo.activities
-                    .orEmpty()
-                    .firstOrNull { it.name == className }
-            }
-        }
-
-        private fun isContainerIntent(intent: Intent): Boolean {
-            val component = intent.component
-            if (component != null) return isContainerPackage(component.packageName)
-            return isContainerPackage(intent.`package`)
-        }
-
-        private fun slice(list: List<*>?): Any? {
-            if (list == null) return null
-            return runCatching {
-                val sliceClass = loadClass("android.content.pm.ParceledListSlice")
-                constructor(sliceClass, List::class.java)?.newInstance(list)
-            }.onFailure {
-                Log.w(TAG, "ParceledListSlice unavailable", it)
-            }.getOrNull()
-        }
-    }
-
-    private val NOT_ROUTED = Any()
-
-    private inline fun <T> viaDelegation(block: () -> T): T {
+    internal inline fun <T> viaDelegation(block: () -> T): T {
         packageManagerDelegation.set(true)
         try {
             return block()
@@ -1666,6 +958,6 @@ object SystemServiceIdentity {
         }
     }
 
-    private const val CONTAINER_LAUNCH_PROXY =
+    internal const val CONTAINER_LAUNCH_PROXY =
         "com.coke.nestspace.container.ContainerLaunchProxyActivity"
 }

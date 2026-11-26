@@ -11,7 +11,6 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
@@ -85,7 +84,6 @@ object ContainerProcessPool {
     )
 
     private val slotState = ContainerSlotState(SLOT_COUNT)
-    private val pssCache = ConcurrentHashMap<Int, PssSample>()
     private val maintenanceExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "container-pool-maintenance").apply { isDaemon = true }
     }
@@ -105,8 +103,6 @@ object ContainerProcessPool {
 
     @Volatile
     private var autoLimitRefreshedAt: Long = 0L
-
-    private data class PssSample(val sampledAt: Long, val memoryKb: Long)
 
     /** Slot of the host process this code runs in, or -1 in the main process. */
     fun currentSlot(): Int = processSlot
@@ -223,7 +219,9 @@ object ContainerProcessPool {
         val slots = slotState.liveSlots()
         if (slots.isEmpty()) return null
         val samples = slots.mapNotNull { slot ->
-            markerPid(context, slot)?.let(::residentKb)?.takeIf { it > 0L }
+            markerPid(context, slot)
+                ?.let(SlotProcessProbe::residentKb)
+                ?.takeIf { it > 0L }
         }
         return if (samples.isEmpty()) {
             null
@@ -416,7 +414,9 @@ object ContainerProcessPool {
      */
     fun slotForPid(context: Context, pid: Int): Int? {
         if (pid <= 0) return null
-        (0 until SLOT_COUNT).firstOrNull { slot -> markerPid(context, slot) == pid }
+        (0 until SLOT_COUNT).firstOrNull { slot ->
+            markerPid(context, slot) == pid
+        }
             ?.let { return it }
         context.getSystemService(ActivityManager::class.java)
             ?.runningAppProcesses
@@ -427,7 +427,7 @@ object ContainerProcessPool {
                     context.packageName + it == processName
                 }.takeIf { it >= 0 }?.let { return it }
             }
-        val processPids = processPidsByName()
+        val processPids = SlotProcessProbe.processPidsByName()
         return (0 until SLOT_COUNT).firstOrNull { slot ->
             processPids[context.packageName + slotProcessSuffixes[slot]] == pid
         }
@@ -554,7 +554,7 @@ object ContainerProcessPool {
                 val manifestProcessName = context.packageName + slotProcessSuffixes[slot]
                 val info = running[manifestProcessName]
                 val processIndex = processIndexCache
-                    ?: processPidsByName().also { processIndexCache = it }
+                    ?: SlotProcessProbe.processPidsByName().also { processIndexCache = it }
                 val pid = info?.pid ?: processIndex[manifestProcessName]
                     ?: markerPid(context, slot)
                 if (pid == null) {
@@ -575,7 +575,7 @@ object ContainerProcessPool {
                     active = slot == active ||
                         info?.importance ==
                             ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND,
-                    memoryKb = residentKb(pid)
+                    memoryKb = SlotProcessProbe.residentKb(pid)
                 )
             }
             .filter { slotState.isCurrent(it.key, it.slot) }
@@ -634,7 +634,7 @@ object ContainerProcessPool {
             ?.runningAppProcesses
             ?.firstOrNull { it.processName == processName }
             ?.pid
-            ?: pidOfProcess(processName)
+            ?: SlotProcessProbe.pidOfProcess(processName)
             ?: markerPid(context, slot)
     }
 
@@ -644,34 +644,6 @@ object ContainerProcessPool {
      * to real physical memory than VmRSS. Fall back to VmRSS when the kernel
      * or SELinux does not expose smaps_rollup.
      */
-    private fun residentKb(pid: Int): Long {
-        val now = SystemClock.elapsedRealtime()
-        pssCache[pid]?.takeIf { now - it.sampledAt <= PSS_CACHE_MS }?.let {
-            return it.memoryKb
-        }
-        val pss = runCatching {
-            File("/proc/$pid/smaps_rollup").useLines { lines ->
-                lines.firstOrNull { it.startsWith("Pss:") }
-                    ?.trim()
-                    ?.split(Regex("\\s+"))
-                    ?.getOrNull(1)
-                    ?.toLongOrNull()
-            }
-        }.getOrNull()
-        val memoryKb = if (pss != null && pss > 0) {
-            pss
-        } else runCatching {
-            File("/proc/$pid/status").useLines { lines ->
-                lines.firstOrNull { it.startsWith("VmRSS:") }
-                    ?.trim()
-                    ?.split(Regex("\\s+"))
-                    ?.getOrNull(1)
-                    ?.toLongOrNull()
-            } ?: 0L
-        }.getOrDefault(0L)
-        pssCache[pid] = PssSample(now, memoryKb)
-        return memoryKb
-    }
 
     /** Marks that the slot process was actually started for this session. */
     fun markLaunched(context: Context, key: String) {
@@ -778,8 +750,8 @@ object ContainerProcessPool {
         var retired = 0
         for (slot in 0 until SLOT_COUNT) {
             val markerFile = slotMarkerFile(context, slot)
-            val pid = readSlotMarker(markerFile) ?: continue
-            if (!sameUidPidExists(pid)) {
+            val pid = SlotProcessProbe.readSlotMarker(markerFile) ?: continue
+            if (!SlotProcessProbe.sameUidPidExists(pid)) {
                 markerFile.delete()
                 continue
             }
@@ -788,20 +760,20 @@ object ContainerProcessPool {
                 "retire stale slot $slot pid=$pid"
             )
             runCatching {
-                com.coke.nestspace.control.ContainerUiKeepAlive
+                com.coke.nestspace.container.control.ContainerUiKeepAlive
                     .unbind(context, slot)
             }
             Process.killProcess(pid)
-            waitForProcessExit(pid)
-            if (sameUidPidExists(pid)) {
+            SlotProcessProbe.waitForProcessExit(pid)
+            if (SlotProcessProbe.sameUidPidExists(pid)) {
                 runCatching {
                     Os.kill(pid, OsConstants.SIGKILL)
                 }.onFailure {
                     Log.w(TAG, "retire stale slot $slot failed", it)
                 }
-                waitForProcessExit(pid)
+                SlotProcessProbe.waitForProcessExit(pid)
             }
-            if (!sameUidPidExists(pid)) {
+            if (!SlotProcessProbe.sameUidPidExists(pid)) {
                 markerFile.delete()
             }
             retired += 1
@@ -899,65 +871,14 @@ object ContainerProcessPool {
     private fun slotMarkerFile(context: Context, slot: Int): File =
         File(context.applicationContext.filesDir, "slot_owner_$slot.pid")
 
-    private fun readSlotMarker(file: File): Int? {
-        val lines = runCatching { file.readLines() }.getOrNull().orEmpty()
-        val pid = lines.asReversed()
-            .firstNotNullOfOrNull { it.trim().toIntOrNull() }
-            ?.takeIf { it > 0 && it != Process.myPid() }
-            ?: return null
-        return pid
-    }
-
-    private fun markerPid(context: Context, slot: Int): Int? {
-        val pid = readSlotMarker(slotMarkerFile(context, slot))
-            ?: return null
-        // Guard against pid reuse after the slot died.
-        val status = runCatching { File("/proc/$pid/status").readText() }.getOrNull()
-            ?: return null
-        val uid = status.lineSequence()
-            .firstOrNull { it.startsWith("Uid:") }
-            ?.split(Regex("\\s+"))
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-        return pid.takeIf { uid == Process.myUid() }
-    }
-
-    private fun waitForProcessExit(pid: Int) {
-        val deadline = SystemClock.uptimeMillis() + KILL_TIMEOUT_MS
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (!sameUidPidExists(pid)) return
-            runCatching { Thread.sleep(50L) }
-                .onFailure {
-                    Thread.currentThread().interrupt()
-                    return
-                }
-        }
-    }
-
-    private fun pidOfProcess(processName: String): Int? {
-        return processPidsByName()[processName]
-    }
-
-    private fun processPidsByName(): Map<String, Int> {
-        val dirs = File("/proc").listFiles() ?: return emptyMap()
-        return buildMap {
-            dirs.forEach { dir ->
-                val pid = dir.name.toIntOrNull() ?: return@forEach
-                if (!dir.isDirectory) return@forEach
-                val processName = runCatching {
-                    File(dir, "cmdline").readText().trim('\u0000')
-                }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return@forEach
-                putIfAbsent(processName, pid)
-            }
-        }
-    }
+    private fun markerPid(context: Context, slot: Int): Int? = SlotProcessProbe.markerPid(slotMarkerFile(context, slot))
 
     private fun killSlotProcess(context: Context, slot: Int): Boolean {
         // The main process may hold a keep-alive UI-service binding for a
         // headless slot. Release it before killing/reusing the process.
         if (currentSlot() < 0) {
             runCatching {
-                com.coke.nestspace.control.ContainerUiKeepAlive.unbind(context, slot)
+                com.coke.nestspace.container.control.ContainerUiKeepAlive.unbind(context, slot)
             }
         }
         val processName = context.packageName + slotProcessSuffixes[slot]
@@ -967,7 +888,7 @@ object ContainerProcessPool {
             ?.runningAppProcesses
             ?.firstOrNull { it.processName == processName }
             ?.pid
-            ?: pidOfProcess(processName)
+            ?: SlotProcessProbe.pidOfProcess(processName)
             ?: markerPid(context, slot)
             ?: return true
         if (pid == Process.myPid()) return false
@@ -977,8 +898,8 @@ object ContainerProcessPool {
         val deadline = SystemClock.uptimeMillis() + KILL_TIMEOUT_MS
         var delayMs = 25L
         while (SystemClock.uptimeMillis() < deadline) {
-            if (!sameUidPidExists(pid)) {
-                pssCache.remove(pid)
+            if (!SlotProcessProbe.sameUidPidExists(pid)) {
+                SlotProcessProbe.forgetPid(pid)
                 return true
             }
             try {
@@ -989,7 +910,7 @@ object ContainerProcessPool {
                 break
             }
         }
-        var stopped = !sameUidPidExists(pid)
+        var stopped = !SlotProcessProbe.sameUidPidExists(pid)
         if (!stopped) {
             runCatching {
                 Os.kill(pid, OsConstants.SIGKILL)
@@ -998,7 +919,7 @@ object ContainerProcessPool {
             }
             val retryDeadline = SystemClock.uptimeMillis() + KILL_TIMEOUT_MS / 2
             while (SystemClock.uptimeMillis() < retryDeadline) {
-                if (!sameUidPidExists(pid)) {
+                if (!SlotProcessProbe.sameUidPidExists(pid)) {
                     stopped = true
                     break
                 }
@@ -1010,21 +931,9 @@ object ContainerProcessPool {
                 }
             }
         }
-        if (stopped) pssCache.remove(pid)
+        if (stopped) SlotProcessProbe.forgetPid(pid)
         if (!stopped) Log.w(TAG, "process $processName is still alive after kill")
         return stopped
-    }
-
-    private fun sameUidPidExists(pid: Int): Boolean {
-        if (pid <= 0) return false
-        val status = runCatching { File("/proc/$pid/status").readText() }.getOrNull()
-            ?: return false
-        val uid = status.lineSequence()
-            .firstOrNull { it.startsWith("Uid:") }
-            ?.split(Regex("\\s+"))
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-        return uid == Process.myUid()
     }
 
     private fun stopAndFinish(
@@ -1076,7 +985,7 @@ object ContainerProcessPool {
     private fun retainedSlots(): Set<Int> =
         (0 until SLOT_COUNT)
             .filterTo(linkedSetOf()) {
-                com.coke.nestspace.control.ContainerUiKeepAlive.isRetained(it)
+                com.coke.nestspace.container.control.ContainerUiKeepAlive.isRetained(it)
             }
 
     private fun instanceOf(key: String): String =

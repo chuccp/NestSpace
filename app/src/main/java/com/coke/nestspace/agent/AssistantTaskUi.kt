@@ -1,31 +1,16 @@
 package com.coke.nestspace.agent
 
-import com.coke.nestspace.i18n.AppLanguage
-import com.coke.nestspace.task.OperationTaskRegistry
+import com.coke.nestspace.core.i18n.AppLanguage
+import com.coke.nestspace.agent.sdk.task.AgentTaskControls
+import com.coke.nestspace.agent.sdk.task.AgentTaskPrimaryAction
+import com.coke.nestspace.agent.sdk.task.AgentTaskState
+import com.coke.nestspace.agent.sdk.task.AgentTaskUiState
+import com.coke.nestspace.agent.sdk.task.agentTaskControls
+import com.coke.nestspace.agent.task.OperationTaskRegistry
 
-enum class AssistantTaskUiState(val api: String) {
-    WAITING("waiting"),
-    RUNNING("running"),
-    PAUSED("paused"),
-    NEEDS_ATTENTION("needs_attention"),
-    CANCELLING("cancelling"),
-    FINISHED("finished")
-}
-
-enum class AssistantTaskPrimaryAction(val api: String) {
-    NONE("none"),
-    PAUSE("pause"),
-    RESUME("resume"),
-    HANDLE("handle"),
-    RETRY_CLEANUP("retry_cleanup"),
-    VIEW_RESULT("view_result")
-}
-
-data class AssistantTaskControls(
-    val uiState: AssistantTaskUiState,
-    val primaryAction: AssistantTaskPrimaryAction,
-    val canCancel: Boolean
-)
+typealias AssistantTaskUiState = AgentTaskUiState
+typealias AssistantTaskPrimaryAction = AgentTaskPrimaryAction
+typealias AssistantTaskControls = AgentTaskControls
 
 /**
  * Keeps detailed scheduler states out of the Compose layer. The task card
@@ -34,42 +19,10 @@ data class AssistantTaskControls(
 fun assistantTaskControls(
     state: OperationTaskRegistry.State,
     interruptible: Boolean = true
-): AssistantTaskControls = when (state) {
-    OperationTaskRegistry.State.QUEUED -> AssistantTaskControls(
-        AssistantTaskUiState.WAITING,
-        AssistantTaskPrimaryAction.NONE,
-        canCancel = true
-    )
-    OperationTaskRegistry.State.PREPARING,
-    OperationTaskRegistry.State.RUNNING,
-    OperationTaskRegistry.State.FINALIZING -> AssistantTaskControls(
-        AssistantTaskUiState.RUNNING,
-        if (interruptible) AssistantTaskPrimaryAction.PAUSE else AssistantTaskPrimaryAction.NONE,
-        canCancel = interruptible
-    )
-    OperationTaskRegistry.State.PAUSED -> AssistantTaskControls(
-        AssistantTaskUiState.PAUSED,
-        AssistantTaskPrimaryAction.RESUME,
-        canCancel = true
-    )
-    OperationTaskRegistry.State.WAITING_USER -> AssistantTaskControls(
-        AssistantTaskUiState.NEEDS_ATTENTION,
-        AssistantTaskPrimaryAction.HANDLE,
-        canCancel = true
-    )
-    OperationTaskRegistry.State.CANCELLING -> AssistantTaskControls(
-        AssistantTaskUiState.CANCELLING,
-        AssistantTaskPrimaryAction.NONE,
-        canCancel = false
-    )
-    OperationTaskRegistry.State.SUCCEEDED,
-    OperationTaskRegistry.State.FAILED,
-    OperationTaskRegistry.State.CANCELLED -> AssistantTaskControls(
-        AssistantTaskUiState.FINISHED,
-        AssistantTaskPrimaryAction.VIEW_RESULT,
-        canCancel = false
-    )
-}
+): AssistantTaskControls = agentTaskControls(
+    state = AgentTaskState.valueOf(state.name),
+    interruptible = interruptible
+)
 
 /**
  * Worker goals are model-generated and can contain execution notes. Keep the

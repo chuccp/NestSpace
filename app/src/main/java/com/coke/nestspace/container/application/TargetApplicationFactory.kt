@@ -6,7 +6,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.coke.nestspace.container.ContainerCompat
 import com.coke.nestspace.container.ContainerContext
-import com.coke.nestspace.runtime.RuntimeApplicationSpec
+import com.coke.nestspace.container.api.RuntimeApplicationSpec
 
 /**
  * Target Application construction backend. All hardened-Application detection
