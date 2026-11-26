@@ -38,15 +38,6 @@ class ContainerClassLoader(
 
     override fun installTargetContext(context: Context) {
         targetContext = context
-        val loaded = synchronized(lock) {
-            loadedClasses.toList().mapNotNull { name: String ->
-                findLoadedClass(name)
-            }
-        }
-        // Reflection can resolve field types and therefore call back into this
-        // loader. Seeding while holding the loader lock creates a lock inversion
-        // with class initialization on another thread.
-        loaded.forEach { seedContext(it, it.name) }
     }
 
     override fun findResource(name: String): URL? =

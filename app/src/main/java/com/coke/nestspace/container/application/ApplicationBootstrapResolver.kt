@@ -34,6 +34,7 @@ internal sealed interface ApplicationBootstrap {
     data class ApplicationLikePair(
         val likeClass: Class<*>,
         val realClass: Class<out Application>,
+        val patcherPrimerClass: Class<out Application>? = null,
         val allowManifestFallback: Boolean = true
     ) : ApplicationBootstrap
 
@@ -133,6 +134,44 @@ internal object ApplicationBootstrapResolver {
         Log.d(TAG, "using manifest Application: ${manifestClass ?: "<default>"}")
         return ApplicationBootstrap.ManifestApplication
     }
+
+    private fun patcherWrapper(
+        spec: RuntimeApplicationSpec,
+        loader: ClassLoader
+    ): Class<out Application>? {
+        val manifestClass = spec.applicationInfo.className
+        val candidates = buildList {
+            manifestClass
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::add)
+            addAll(classNames(spec).filter {
+                BootstrapClassNamePolicy.isPlausibleApplication(it)
+            })
+        }.distinct()
+        for (name in candidates) {
+            val wrapper = loadClass(loader, name)
+                ?.takeIf { Application::class.java.isAssignableFrom(it) }
+                ?.asSubclass(Application::class.java)
+                ?: continue
+            if (!isInstantiable(wrapper)) continue
+            if (runCatching { wrapper.getConstructor() }.isFailure) continue
+            if (!isPatcherWrapper(wrapper)) continue
+            Log.d(TAG, "patcher wrapper Application: ${wrapper.name}")
+            return wrapper
+        }
+        return null
+    }
+
+    private fun isPatcherWrapper(type: Class<*>): Boolean =
+        generateSequence(type as Class<*>?) { it.superclass }
+            .any { owner ->
+                owner.declaredMethods.any { method ->
+                    (method.name == "onBaseContextAttached" &&
+                        method.parameterCount == 3) ||
+                        (method.name == "createInlineFence" &&
+                            method.parameterCount >= 6)
+                }
+            }
 
     private fun hasExternalApplicationWrapper(
         spec: RuntimeApplicationSpec,
@@ -235,17 +274,17 @@ internal object ApplicationBootstrapResolver {
         val manifestClass = spec.applicationInfo.className
             ?.takeIf { it.isNotBlank() }
             ?: return null
-        val wrapper = loadClass(loader, manifestClass)
-            ?.takeIf { Application::class.java.isAssignableFrom(it) }
-            ?.asSubclass(Application::class.java)
-            ?: return null
         if (!BootstrapClassNamePolicy.isExternalApplicationClass(
-                wrapper.name,
+                manifestClass,
                 spec.packageName
             )
         ) {
             return null
         }
+        val wrapper = loadClass(loader, manifestClass)
+            ?.takeIf { Application::class.java.isAssignableFrom(it) }
+            ?.asSubclass(Application::class.java)
+            ?: return null
         val hasDelegateField = generateSequence(wrapper as Class<*>?) { it.superclass }
             .any { type ->
                 hasApplicationDelegateField(type.declaredFields.map { it.type })
@@ -301,10 +340,21 @@ internal object ApplicationBootstrapResolver {
             .distinct()
             .sortedWith(
                 compareByDescending<Class<out Application>> {
+                    if (isPatcherWrapper(it)) 2 else 0
+                }.thenByDescending {
+                    inheritanceDepth(it)
+                }.thenByDescending {
                     if (it.simpleName.contains("Real", ignoreCase = true)) 1 else 0
                 }.thenBy { it.name.length }.thenBy { it.name }
             )
             .toList()
+        realClasses.take(12).forEach { type ->
+            Log.d(
+                TAG,
+                "real Application candidate ${type.name} " +
+                    "patcher=${isPatcherWrapper(type)}"
+            )
+        }
 
         for (like in likes) {
             for (real in realClasses) {
@@ -314,7 +364,11 @@ internal object ApplicationBootstrapResolver {
                     TAG,
                     "ApplicationLike pair like=${like.type.name} real=${real.name}"
                 )
-                return ApplicationBootstrap.ApplicationLikePair(like.type, real)
+                return ApplicationBootstrap.ApplicationLikePair(
+                    like.type,
+                    real,
+                    patcherWrapper(spec, loader)
+                )
             }
         }
         Log.w(TAG, "ApplicationLike classes found but no matching real Application")

@@ -116,6 +116,9 @@ object TargetApplicationFactory {
         attachBaseContext(wrapper, context)
         val delegate = findDelegatingApplication(wrapper)
             ?: error("delegating Application delegate was not created")
+        if (context is ContainerContext) {
+            context.targetApplication = delegate
+        }
         Log.d(TAG, "delegating Application attached: ${delegate.javaClass.name}")
         return wrapper
     }
@@ -144,6 +147,7 @@ object TargetApplicationFactory {
         bootstrap: ApplicationBootstrap.ApplicationLikePair,
         context: Context
     ): Application {
+        primePatcherSingleton(bootstrap.patcherPrimerClass, context)
         val base = Application()
         if (context is ContainerContext) {
             context.targetApplication = base
@@ -165,6 +169,25 @@ object TargetApplicationFactory {
         ContainerCompat.rememberAppLike(real, appLike)
         Log.d(TAG, "embedded application attached: ${real.javaClass.name}")
         return real
+    }
+
+    private fun primePatcherSingleton(
+        patcherClass: Class<out Application>?,
+        context: Context
+    ) {
+        patcherClass ?: return
+        runCatching {
+            val patcher = patcherClass.getDeclaredConstructor()
+                .apply { isAccessible = true }
+                .newInstance()
+            android.content.ContextWrapper::class.java
+                .getDeclaredField("mBase")
+                .apply { isAccessible = true }
+                .set(patcher, context)
+            Log.d(TAG, "primed patcher singleton ${patcherClass.name}")
+        }.onFailure {
+            Log.w(TAG, "prime patcher singleton failed", it)
+        }
     }
 
     private fun attachRegularApplication(

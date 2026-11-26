@@ -36,18 +36,10 @@ class RuntimeDexPathClassLoader(
         RuntimeDexPathClassLoader::class.java.classLoader
     private val seededClasses =
         java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val targetLoadedClasses =
-        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     @Volatile private var targetContext: Context? = null
 
     override fun installTargetContext(context: Context) {
         targetContext = context
-        val loaded = synchronized(lock) {
-            targetLoadedClasses.toList().mapNotNull { name: String ->
-                findLoadedClass(name)
-            }
-        }
-        loaded.forEach { seedContext(it, it.name) }
     }
 
     override fun findLibrary(name: String): String? {
@@ -97,7 +89,6 @@ class RuntimeDexPathClassLoader(
         if (name.startsWith("com.coke.nestspace.")) {
             hostClassLoader?.let {
                 return it.loadClass(name).also { type ->
-                    noteTargetClass(type, name)
                     if (resolve) resolveClass(type)
                 }
             }
@@ -139,7 +130,6 @@ class RuntimeDexPathClassLoader(
                 resolvingFallback.remove()
             }
         }
-        noteTargetClass(loaded, name)
         if (loaded.classLoader === this && shouldSeedEarly(name)) {
             seedContext(loaded, name)
         }
@@ -268,10 +258,6 @@ class RuntimeDexPathClassLoader(
         name.endsWith("Builder") ||
             name.endsWith("ContextHolder") ||
             name.endsWith("ContextProvider")
-
-    private fun noteTargetClass(type: Class<*>, name: String) {
-        if (type.classLoader === this) targetLoadedClasses.add(name)
-    }
 
     private companion object {
         const val TAG = "RuntimeDexLoader"

@@ -157,7 +157,9 @@ object TargetCrashGuard {
     }
 
     private fun isTargetFailure(throwable: Throwable): Boolean =
-        throwable is Exception || throwable is LinkageError
+        throwable is Exception ||
+            throwable is LinkageError ||
+            throwable is AssertionError
 
     /**
      * Target-created threads (thread pools, split installers) usually inherit

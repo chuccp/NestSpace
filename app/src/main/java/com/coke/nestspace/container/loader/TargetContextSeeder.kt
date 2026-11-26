@@ -29,6 +29,19 @@ internal object TargetContextSeeder {
         seeding.set(true)
         try {
             seedInternal(type, context)
+        } catch (error: LinkageError) {
+            Log.w(
+                TAG,
+                "skip context seeding for ${type.name}: " +
+                    "optional field type unavailable",
+                error
+            )
+        } catch (error: ReflectiveOperationException) {
+            Log.w(
+                TAG,
+                "skip context seeding for ${type.name}",
+                error
+            )
         } finally {
             seeding.remove()
         }

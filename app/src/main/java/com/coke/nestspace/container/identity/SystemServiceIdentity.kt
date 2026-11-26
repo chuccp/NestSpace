@@ -1442,15 +1442,22 @@ object SystemServiceIdentity {
                 }
                 "getActivityInfo", "getReceiverInfo", "getServiceInfo", "getProviderInfo" -> {
                     val component = args.getOrNull(0) as? ComponentName ?: return NOT_ROUTED
-                    if (!isContainerPackage(component.packageName)) return NOT_ROUTED
                     val flags = intFlags(args.getOrNull(1))
-                    viaPmNullable {
-                        when (name) {
-                            "getActivityInfo" -> pm.getActivityInfo(component, flags)
-                            "getReceiverInfo" -> pm.getReceiverInfo(component, flags)
-                            "getServiceInfo" -> pm.getServiceInfo(component, flags)
-                            else -> pm.getProviderInfo(component, flags)
+                    if (isContainerPackage(component.packageName)) {
+                        viaPmNullable {
+                            componentInfo(pm, name, component, flags)
                         }
+                    } else {
+                        Routed(viaDelegation {
+                            runCatching {
+                                componentInfo(pm, name, component, flags)
+                            }.getOrNull() ?: findInstalledComponent(
+                                pm,
+                                name,
+                                component,
+                                flags
+                            )
+                        })
                     }
                 }
                 "resolveIntent" -> {
@@ -1575,6 +1582,61 @@ object SystemServiceIdentity {
         private fun isContainerPackage(packageName: String?): Boolean =
             packageName != null &&
                 (packageName == targetPackage || registry?.isVirtualPackage(packageName) == true)
+
+        private fun componentInfo(
+            pm: PackageManager,
+            query: String,
+            component: ComponentName,
+            flags: Int
+        ): Any? = when (query) {
+            "getActivityInfo" -> pm.getActivityInfo(component, flags)
+            "getReceiverInfo" -> pm.getReceiverInfo(component, flags)
+            "getServiceInfo" -> pm.getServiceInfo(component, flags)
+            else -> pm.getProviderInfo(component, flags)
+        }
+
+        /**
+         * Some system package visibility policies expose an installed package
+         * and its manifest components via getPackageInfo(), while a direct
+         * component lookup still returns null. Recover the same component
+         * information from package metadata before returning null to the AIDL
+         * caller. Native SDKs frequently invoke this Java lookup through JNI
+         * and abort the process if it receives a pending checked exception.
+         */
+        private fun findInstalledComponent(
+            pm: PackageManager,
+            query: String,
+            component: ComponentName,
+            flags: Int
+        ): Any? {
+            val componentFlag = when (query) {
+                "getReceiverInfo" -> PackageManager.GET_RECEIVERS
+                "getServiceInfo" -> PackageManager.GET_SERVICES
+                "getProviderInfo" -> PackageManager.GET_PROVIDERS
+                else -> PackageManager.GET_ACTIVITIES
+            }
+            val packageInfo = runCatching {
+                pm.getPackageInfo(
+                    component.packageName,
+                    flags or componentFlag
+                )
+            }.getOrNull() ?: return null
+            val className = component.className
+            return when (query) {
+                "getReceiverInfo" -> packageInfo.receivers
+                    .orEmpty()
+                    .firstOrNull { it.name == className }
+                "getServiceInfo" -> packageInfo.services
+                    .orEmpty()
+                    .firstOrNull { it.name == className }
+                "getProviderInfo" -> packageInfo.providers
+                    .orEmpty()
+                    .firstOrNull { it.name == className }
+                else -> packageInfo.activities
+                    .orEmpty()
+                    .firstOrNull { it.name == className }
+            }
+        }
 
         private fun isContainerIntent(intent: Intent): Boolean {
             val component = intent.component

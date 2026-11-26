@@ -13,6 +13,7 @@ import com.coke.nestspace.container.intent.ContainerIntentResolver
 import com.coke.nestspace.container.job.ContainerJobScheduler
 import com.coke.nestspace.container.loader.ApkClassIndex
 import com.coke.nestspace.container.loader.CompleteClassBridge
+import com.coke.nestspace.container.loader.ContainerClassLoader
 import com.coke.nestspace.container.loader.NativeLibs
 import com.coke.nestspace.container.loader.PluginClassPathResolver
 import com.coke.nestspace.container.loader.HostBootstrapClassLoader
@@ -1047,10 +1048,8 @@ class ContainerSession private constructor(
             )
         fun normalizeApplicationInfo(targetInfo: android.content.pm.ApplicationInfo?) {
             targetInfo ?: return
-            val virtualBaseApk = virtualEnvironment.virtualApkPaths.firstOrNull()
-                ?: spec.baseApkPath
-            targetInfo.sourceDir = virtualBaseApk
-            targetInfo.publicSourceDir = virtualBaseApk
+            targetInfo.sourceDir = spec.baseApkPath
+            targetInfo.publicSourceDir = spec.baseApkPath
             targetInfo.nativeLibraryDir =
                 virtualEnvironment.virtualNativeLibraryDir
                     ?: targetInfo.nativeLibraryDir
@@ -1205,6 +1204,17 @@ class ContainerSession private constructor(
         }
 
         attach.isAccessible = true
+        val attachApplicationInfos = listOf(
+            info.applicationInfo,
+            context.applicationInfo,
+            application.applicationInfo,
+            spec.applicationInfo,
+            spec.packageInfo.applicationInfo
+        ).filterNotNull().distinctBy { System.identityHashCode(it) }
+        attachApplicationInfos.forEach { targetInfo ->
+            targetInfo.sourceDir = spec.baseApkPath
+            targetInfo.publicSourceDir = spec.baseApkPath
+        }
         Log.d(
             TAG,
             "target activity phase=attach-start class=${targetClass.name}"
@@ -1228,6 +1238,7 @@ class ContainerSession private constructor(
         )
         applyTargetResources(target, resources, theme)
         installVirtualTaskRoot(target)
+        bindTargetWindowTokenResources(target)
         targetHosts[target] = host
         logJniSurface(target)
         Log.d(
@@ -1388,6 +1399,31 @@ class ContainerSession private constructor(
                 "finishing=${target.isFinishing}"
         )
         return target
+    }
+
+    private fun bindTargetWindowTokenResources(target: Activity) {
+        runCatching {
+            val clientField = generateSequence(target.javaClass as Class<*>?) {
+                it.superclass
+            }.flatMap { it.declaredFields.asSequence() }
+                .firstOrNull {
+                    it.name == "mWindowTokenClient" ||
+                        it.name == "mWindowClient"
+                }
+                ?: return@runCatching
+            clientField.isAccessible = true
+            val client = clientField.get(target) ?: return@runCatching
+            val resourcesField = generateSequence(client.javaClass as Class<*>?) {
+                it.superclass
+            }.flatMap { it.declaredFields.asSequence() }
+                .firstOrNull { it.name == "mResources" }
+                ?: return@runCatching
+            resourcesField.isAccessible = true
+            resourcesField.set(client, target.resources)
+            Log.d(TAG, "bound target window token resources")
+        }.onFailure {
+            Log.w(TAG, "bind target window token resources failed", it)
+        }
     }
 
     private fun inspectMissingField(error: Throwable, loader: ClassLoader) {
@@ -2360,11 +2396,10 @@ class ContainerSession private constructor(
                     )
                 }
             } else {
-                val systemLoader = ClassLoader.getSystemClassLoader()
-                PathClassLoader(
+                ContainerClassLoader(
                     classPath,
                     nativeSearchPath,
-                    systemLoader.parent
+                    host.classLoader
                 )
             }
             Log.d(
@@ -2450,11 +2485,25 @@ class ContainerSession private constructor(
                 virtualSplitApkPaths = installLayout.virtualSplitApkPaths
             )
             installOptionalCoreFileBridge()
-            loader = ContainerCompat.installRuntimeClassLoader(
-                spec,
-                loader,
+            loader = withContainerClassLoader(loader) {
+                ContainerCompat.installRuntimeClassLoader(
+                    spec,
+                    loader,
+                    appInfo,
+                    runtimeNativeLibs?.absolutePath
+                )
+            }
+            // Packer AppComponentFactory implementations can mutate the
+            // shared ActivityThread ApplicationInfo while installing their
+            // runtime loader. Republish the imported APK snapshot afterwards;
+            // otherwise AppCompat reopens a system-installed /data/app path
+            // that does not exist in this process.
+            appInfo.sourceDir = installLayout.virtualBaseApkPath
+            appInfo.publicSourceDir = installLayout.virtualBaseApkPath
+            publishApplicationMetadata(
+                activityThread,
                 appInfo,
-                runtimeNativeLibs?.absolutePath
+                spec.packageName
             )
             NativeLibs.addNativeSearchPaths(
                 loader,
@@ -2735,12 +2784,13 @@ class ContainerSession private constructor(
                     Log.d(TAG, "virtual identity revision=1 androidId=present")
                 }
 
-            // Resources and the runtime class loader are already bound to the
-            // imported files. From this point on, expose the stable installed-
-            // app path to the target so packers cannot observe a half-virtual
-            // package whose code path and PackageManager metadata disagree.
-            appInfo.sourceDir = installLayout.virtualBaseApkPath
-            appInfo.publicSourceDir = installLayout.virtualBaseApkPath
+            // Framework resource loaders open sourceDir natively and do not
+            // consistently pass through the path hooks. Publish the actual
+            // imported snapshot before Application.attachBaseContext; a
+            // synthetic /data/app path makes WebView and AppCompat resource
+            // initialization fail before the first Activity is created.
+            appInfo.sourceDir = spec.baseApkPath
+            appInfo.publicSourceDir = spec.baseApkPath
             appInfo.nativeLibraryDir = exposedNativeLibraryDir
             runCatching {
                 appInfo.javaClass
