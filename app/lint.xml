@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- The container deliberately implements Android APIs above minSdk 24 and
+         dispatches them according to the emulated target SDK. Lint cannot
+         prove those runtime branches from the host context. -->
+    <issue id="NewApi">
+        <ignore path="src/main/java/com/coke/nestspace/container/**" />
+        <ignore path="src/main/res/values/themes.xml" />
+    </issue>
+
+    <!-- Reflection and framework calls below are part of the virtual Android
+         environment rather than ordinary host-app code. -->
+    <issue id="SoonBlockedPrivateApi">
+        <ignore path="src/main/java/com/coke/nestspace/container/**" />
+    </issue>
+    <issue id="MissingPermission">
+        <ignore path="src/main/java/com/coke/nestspace/container/ContainerContext.kt" />
+    </issue>
+    <issue id="WrongConstant">
+        <ignore path="src/main/java/com/coke/nestspace/container/**" />
+    </issue>
+
+    <!-- Container activities explicitly opt out of predictive back so the host
+         can forward back to target apps that install their own callbacks. -->
+    <issue id="GestureBackNavigation">
+        <ignore path="src/main/java/com/coke/nestspace/container/StageAActivity.kt" />
+    </issue>
+
+    <!-- Package visibility and non-debuggable container builds are required by
+         the virtual-app host rather than defects in the normal app flow. -->
+    <issue id="QueryAllPackagesPermission">
+        <ignore path="src/main/AndroidManifest.xml" />
+    </issue>
+    <issue id="HardcodedDebugMode">
+        <ignore path="src/debug/AndroidManifest.xml" />
+    </issue>
+</lint>

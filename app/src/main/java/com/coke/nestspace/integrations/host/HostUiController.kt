@@ -73,7 +73,7 @@ object HostUiController {
         val result = RootShell.exec(script, 30_000L)
         val xml = between(result.output, "__NESTSPACE_XML__", "__NESTSPACE_META__")
             ?: return null
-        val cleanXml = xml.trimStart { it.isWhitespace() || it == '﻿' }
+        val cleanXml = xml.trimStart { it.isWhitespace() || it == '\uFEFF' }
         if (!cleanXml.contains("<hierarchy")) return null
         val meta = between(result.output, "__NESTSPACE_META__", "__NESTSPACE_SIZE__").orEmpty()
         val sizeText = result.output.substringAfter("__NESTSPACE_SIZE__", "")

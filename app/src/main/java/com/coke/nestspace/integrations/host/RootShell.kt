@@ -107,7 +107,11 @@ object RootShell {
         }
 
         if (!finished) {
-            process.destroyForcibly()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                process.destroyForcibly()
+            } else {
+                process.destroy()
+            }
             reader.join(1_000L)
             return RootResult(
                 ok = false,

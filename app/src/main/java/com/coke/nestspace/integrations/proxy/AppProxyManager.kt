@@ -2,6 +2,7 @@ package com.coke.nestspace.integrations.proxy
 
 import android.app.Application
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import com.coke.nestspace.features.browser.BrowserProxyManager
 import com.coke.nestspace.core.i18n.AppLanguage
@@ -11,6 +12,7 @@ import java.net.Proxy
 import java.net.ProxySelector
 import java.net.SocketAddress
 import java.net.URI
+import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -202,7 +204,14 @@ object AppProxyManager {
     }
 
     private fun syncBrowserProxy(context: Context) {
-        if (Application.getProcessName() != context.packageName) return
+        val processName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Application.getProcessName()
+        } else {
+            runCatching {
+                File("/proc/self/cmdline").readText().trimEnd('\u0000')
+            }.getOrDefault(context.packageName)
+        }
+        if (processName != context.packageName) return
         runCatching {
             BrowserProxyManager.apply(context.applicationContext)
         }.onFailure {

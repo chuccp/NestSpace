@@ -176,7 +176,7 @@ private fun saveWechatQr(context: Context): String {
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
             ?: error("Cannot create image in Pictures")
         try {
-            context.resources.openRawResource(R.drawable.wechat_group).use { input ->
+            context.resources.openRawResource(R.raw.wechat_group).use { input ->
                 resolver.openOutputStream(uri)?.use { output -> input.copyTo(output) }
                     ?: error("Cannot open image output")
             }
@@ -194,7 +194,7 @@ private fun saveWechatQr(context: Context): String {
             "NestSpace"
         ).apply { mkdirs() }
         val target = File(directory, name)
-        context.resources.openRawResource(R.drawable.wechat_group).use { input ->
+        context.resources.openRawResource(R.raw.wechat_group).use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
         }
         target.absolutePath

@@ -615,6 +615,7 @@ SDK 包当前包含 88 个单元测试，覆盖：
 ./gradlew :testapp:assembleDebug :testapp:assembleSecure
 ```
 
-`./gradlew :app:lintDebug` 仍停在项目既有失败基线：193 errors、352 warnings、
-2 hints；本轮 SDK 文件没有被 lint 报告。没有通过新增全局 ignore 或 baseline
-掩盖问题。
+`./gradlew :app:lintDebug` 已通过：0 errors、352 warnings、2 hints。虚拟容器
+跨版本 API、私有框架字段等宿主兼容检查在 `app/lint.xml` 中按目录定向忽略；
+通知权限、资源类型、API 版本分支和 Compose Locale 可观察性等真实问题已修复。
+没有使用全局 lint baseline。

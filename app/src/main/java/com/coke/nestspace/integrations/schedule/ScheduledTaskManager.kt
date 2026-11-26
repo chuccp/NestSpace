@@ -1,11 +1,14 @@
 package com.coke.nestspace.integrations.schedule
 
+import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
@@ -374,7 +377,7 @@ class ScheduledTaskManager(context: Context) {
 
     private fun notifyResult(task: ScheduledTask) {
         val context = appContext
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+        if (!canPostNotifications(context)) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(
                 NotificationChannel(
@@ -405,12 +408,12 @@ class ScheduledTaskManager(context: Context) {
             .setContentIntent(content)
             .setAutoCancel(true)
             .build()
-        NotificationManagerCompat.from(context).notify(task.id.hashCode(), notification)
+        postNotification(context, task.id.hashCode(), notification)
     }
 
     private fun notifyAlarm(task: ScheduledTask) {
         val context = appContext
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+        if (!canPostNotifications(context)) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -453,7 +456,8 @@ class ScheduledTaskManager(context: Context) {
             .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
             .setAutoCancel(true)
             .build()
-        NotificationManagerCompat.from(context).notify(
+        postNotification(
+            context,
             task.id.hashCode() + 1,
             notification
         )
@@ -485,6 +489,21 @@ class ScheduledTaskManager(context: Context) {
                 )
             }.filter { it.id.isNotBlank() && it.goal.isNotBlank() }
         }.getOrDefault(emptyList())
+    }
+
+    private fun canPostNotifications(context: Context): Boolean =
+        (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED) &&
+            NotificationManagerCompat.from(context).areNotificationsEnabled()
+
+    @SuppressLint("MissingPermission")
+    private fun postNotification(
+        context: Context,
+        id: Int,
+        notification: android.app.Notification
+    ) {
+        NotificationManagerCompat.from(context).notify(id, notification)
     }
 
     private fun save(tasks: List<ScheduledTask>) {

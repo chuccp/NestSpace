@@ -1,12 +1,15 @@
 package com.coke.nestspace.agent
 
+import android.annotation.SuppressLint
 import com.coke.nestspace.container.ContainerProcessPool
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -311,7 +314,7 @@ object UserGateManager {
         dismissLabel: String
     ) {
         val context = appContext ?: return
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+        if (!canPostNotifications(context)) return
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(title)
@@ -332,7 +335,7 @@ object UserGateManager {
                 dismissLabel,
                 action(context, id, 2, UserGateReceiver.ACTION_CONFIRM_DENY)
             )
-        NotificationManagerCompat.from(context).notify(CONFIRM_NOTIFICATION, builder.build())
+        postNotification(context, CONFIRM_NOTIFICATION, builder.build())
     }
 
     private fun notifyTakeover(
@@ -343,7 +346,7 @@ object UserGateManager {
         tabId: String?
     ) {
         val context = appContext ?: return
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+        if (!canPostNotifications(context)) return
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(title)
@@ -364,7 +367,7 @@ object UserGateManager {
                 AppLanguage.tr("跳过", "Skip"),
                 action(context, id, 4, UserGateReceiver.ACTION_TAKEOVER_SKIP)
             )
-        NotificationManagerCompat.from(context).notify(TAKEOVER_NOTIFICATION, builder.build())
+        postNotification(context, TAKEOVER_NOTIFICATION, builder.build())
     }
 
     private fun openTarget(
@@ -385,6 +388,21 @@ object UserGateManager {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
+
+    private fun canPostNotifications(context: Context): Boolean =
+        (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED) &&
+            NotificationManagerCompat.from(context).areNotificationsEnabled()
+
+    @SuppressLint("MissingPermission")
+    private fun postNotification(
+        context: Context,
+        id: Int,
+        notification: android.app.Notification
+    ) {
+        NotificationManagerCompat.from(context).notify(id, notification)
     }
 
     private fun action(

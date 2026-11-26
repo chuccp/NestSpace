@@ -1,5 +1,6 @@
 package com.coke.nestspace.features.browser
 
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
@@ -156,6 +157,7 @@ object BrowserDownloader {
         throw IOException("Download failed")
     }
 
+    @SuppressLint("NewApi")
     private suspend fun writeToMediaStore(
         context: Context,
         connection: HttpURLConnection,
@@ -330,6 +332,7 @@ object BrowserDownloader {
             ?.use { if (it.moveToFirst()) it.getLong(0) else 0L } ?: 0L
     }.getOrDefault(0L)
 
+    @SuppressLint("NewApi")
     private fun exists(
         resolver: android.content.ContentResolver,
         projection: Array<String>,

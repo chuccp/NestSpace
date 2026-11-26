@@ -174,8 +174,14 @@ object AppUpdateManager {
 
     private fun installedVersion(context: Context): String {
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.versionCode.toLong()
+        }
         return packageInfo.versionName?.takeIf { it.isNotBlank() }
-            ?: packageInfo.longVersionCode.toString()
+            ?: versionCode.toString()
     }
 
     private fun installedAbi(context: Context): String? {

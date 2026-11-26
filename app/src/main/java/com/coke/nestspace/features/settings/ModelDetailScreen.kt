@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,6 +44,7 @@ internal fun ModelDetailScreen(
     onDeleteLlm: (String) -> Unit,
     onSelectLlm: (String) -> Unit
 ) {
+    val locale = LocalConfiguration.current.locales[0]
     var actionMode by remember { mutableStateOf(false) }
     val configuredPluginKeys = configs.mapNotNull { config ->
         val providerId = config.pluginProviderId() ?: return@mapNotNull null
@@ -156,7 +158,7 @@ internal fun ModelDetailScreen(
                                         config.protocol.label
                                     } + " · " + modelLabel +
                                         " · " + String.format(
-                                            java.util.Locale.getDefault(),
+                                            locale,
                                             "%,d",
                                             config.contextTokens
                                         ) + " tokens",
@@ -231,7 +233,7 @@ internal fun ModelDetailScreen(
                             )
                             Text(
                                 String.format(
-                                    java.util.Locale.getDefault(),
+                                    locale,
                                     "%,d",
                                     option.contextTokens
                                 ) + " tokens" +

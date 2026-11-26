@@ -37,7 +37,7 @@ Native 静态分析和设备基线时贸然修改。
 - `:app:assembleSnapshot` 和 `:app:assembleRelease`：分别在
   `kotlin.daemon.jvmargs=-Xmx4g` 下成功，Release 为本地未签名构建；同时并行
   运行两个任务曾在默认内存下触发 Kotlin daemon OOM，不是源码失败；
-- `:app:lintDebug`：失败，已有 193 errors、363 warnings、2 hints。
+- `:app:lintDebug`（初始历史基线）：失败，已有 193 errors、363 warnings、2 hints。
 
 因此删除项已有编译和单元测试基线，但仍必须在目标 androidTest/真机流程中验证。
 
@@ -890,8 +890,9 @@ export PATH="$JAVA_HOME/bin:$PATH"
 ./gradlew :app:lintDebug
 ```
 
-`lintDebug` 当前是已记录的失败基线，不能要求它突然全绿；重构验收应对比规则数量
-和具体新增问题，不能通过新增全局 baseline 掩盖回归。
+`lintDebug` 现在必须保持 0 errors。虚拟容器的跨版本 Android 模拟和私有框架
+依赖在 `app/lint.xml` 中按目录定向忽略；新增业务代码或普通 App 代码仍会正常
+接受 lint 检查，不使用全局 baseline 或全局关闭规则。
 
 Snapshot/Release 在本机建议依次执行，并为 Kotlin daemon 提供 4 GB：
 
@@ -1104,6 +1105,5 @@ Snapshot/Release 在本机建议依次执行，并为 Kotlin daemon 提供 4 GB�
 - `:plugin-api:assembleDebug`：成功；
 - `:testapp:assembleDebug`：成功；
 - `:testapp:assembleSecure`：成功；
-- `:app:lintDebug`：仍为既有失败基线，193 errors、352 warnings、2 hints；
-  与重构前相比 errors 持平，warnings 减少 1；
+- `:app:lintDebug`：通过，0 errors、352 warnings、2 hints；
 - 未通过新增全局 lint baseline 掩盖问题，也未执行设备级冒烟。
