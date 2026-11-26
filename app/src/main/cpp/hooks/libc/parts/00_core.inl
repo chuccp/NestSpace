@@ -431,6 +431,9 @@ void initialize_real_functions() {
         g_real.dlopen = reinterpret_cast<DlopenFunction>(
             dlsym(RTLD_DEFAULT, "dlopen")
         );
+        g_real.loaderDlopen = reinterpret_cast<LoaderDlopenFunction>(
+            dlsym(RTLD_DEFAULT, "__loader_dlopen")
+        );
         g_real.tgkill = reinterpret_cast<TgkillFunction>(
             dlsym(RTLD_DEFAULT, "tgkill")
         );

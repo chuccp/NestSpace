@@ -654,9 +654,52 @@ int hook_dladdr(const void* address, Dl_info* info) {
     return result;
 }
 
-void* hook_dlopen(const char* filename, int flags) {
-    record_hook_event(kHookEventLoader);
-    g_dlopen_calls.fetch_add(1, std::memory_order_relaxed);
+namespace {
+
+const char* module_basename(const char* path) {
+    if (path == nullptr) return "";
+    const char* separator = strrchr(path, '/');
+    return separator == nullptr ? path : separator + 1;
+}
+
+struct LoadedModuleSearch {
+    const char* name;
+    bool found;
+};
+
+int find_loaded_module(
+    struct dl_phdr_info* info,
+    size_t,
+    void* data
+) {
+    auto* search = static_cast<LoadedModuleSearch*>(data);
+    if (search == nullptr || info == nullptr) return 0;
+    if (strcmp(module_basename(info->dlpi_name), search->name) != 0) {
+        return 0;
+    }
+    search->found = true;
+    return 1;
+}
+
+bool is_module_loaded(const char* path) {
+    const char* name = module_basename(path);
+    if (name[0] == '\0') return false;
+    LoadedModuleSearch search{name, false};
+    if (g_real.dlIteratePhdr != nullptr) {
+        g_real.dlIteratePhdr(find_loaded_module, &search);
+    } else {
+        dl_iterate_phdr(find_loaded_module, &search);
+    }
+    return search.found;
+}
+
+}  // namespace
+
+void* invoke_dlopen(
+    const char* filename,
+    int flags,
+    const void* caller_address
+) {
     std::string rewritten;
     const char* actual = rewrite_target_path(filename, &rewritten)
         ? rewritten.c_str()
@@ -664,19 +707,55 @@ void* hook_dlopen(const char* filename, int flags) {
     if (actual != nullptr && strstr(actual, "libart.so") != nullptr) {
         actual = "libart.so";
     }
-    void* handle = g_real.dlopen
-        ? g_real.dlopen(actual, flags)
-        : dlopen(actual, flags);
+    auto open_library = [caller_address](const char* path, int open_flags) {
+        return g_real.loaderDlopen != nullptr
+            ? g_real.loaderDlopen(path, open_flags, caller_address)
+            : g_real.dlopen != nullptr
+                ? g_real.dlopen(path, open_flags)
+                : dlopen(path, open_flags);
+    };
+    void* handle = open_library(actual, flags);
+    if (handle == nullptr &&
+        (flags & RTLD_NOLOAD) != 0 &&
+        is_module_loaded(actual)) {
+        // Some vendor linkers do not resolve RTLD_NOLOAD from a target
+        // class-loader namespace even when dl_iterate_phdr already exposes the
+        // module. Retry without the probe-only flag after verifying the same
+        // module is loaded, so absent-library probes keep their semantics.
+        __android_log_print(
+            ANDROID_LOG_DEBUG,
+            "NestSpaceNative",
+            "resolve loaded RTLD_NOLOAD module=%s",
+            actual
+        );
+        handle = open_library(actual, flags & ~RTLD_NOLOAD);
+    }
     if (handle == nullptr && actual != nullptr &&
         actual[0] == '/' && g_real.dlopen != nullptr) {
         if (preload_dependency_closure(actual, g_real.dlopen) > 0) {
-            handle = g_real.dlopen(actual, flags);
+            handle = open_library(actual, flags);
         }
     }
     if (handle != nullptr && current_environment() != nullptr) {
         refresh_loaded_modules();
     }
     return handle;
+}
+
+void* hook_dlopen(const char* filename, int flags) {
+    record_hook_event(kHookEventLoader);
+    g_dlopen_calls.fetch_add(1, std::memory_order_relaxed);
+    return invoke_dlopen(filename, flags, __builtin_return_address(0));
+}
+
+void* hook_loader_dlopen(
+    const char* filename,
+    int flags,
+    const void* caller_address
+) {
+    record_hook_event(kHookEventLoader);
+    g_dlopen_calls.fetch_add(1, std::memory_order_relaxed);
+    return invoke_dlopen(filename, flags, caller_address);
 }
 
 void* hook_dlsym(void* handle, const char* name) {

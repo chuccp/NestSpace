@@ -17,6 +17,7 @@ import android.graphics.drawable.Drawable
 import android.util.Log
 import com.coke.nestspace.container.identity.ContainerIdentity
 import com.coke.nestspace.container.intent.ContainerIntentResolver
+import com.coke.nestspace.container.intent.ManifestIntentFilters
 import com.coke.nestspace.container.loader.ApkDescriptor
 import com.coke.nestspace.container.loader.ApkInspector
 import com.coke.nestspace.engine.SpaceStore
@@ -193,8 +194,21 @@ class VirtualPackageRegistry(
 
     fun findReceiverInfo(component: ComponentName?): ActivityInfo? {
         if (component == null) return null
-        val entry = entry(component.packageName) ?: return null
-        return entry.resolver.findReceiver(component.className)
+        val record = record(component.packageName) ?: return null
+        val manifest = runCatching {
+            ManifestIntentFilters.parse(record.baseApkPath)
+        }.getOrNull()
+        if (manifest != null && component.className in manifest.receivers) {
+            return ActivityInfo().apply {
+                packageName = component.packageName
+                name = component.className
+                applicationInfo = toMinimalApplicationInfo(record)
+                enabled = true
+                exported = true
+            }
+        }
+        val loaded = entry(component.packageName) ?: return null
+        return loaded.resolver.findReceiver(component.className)
     }
 
     fun findProviderByAuthority(authority: String?): ProviderInfo? {

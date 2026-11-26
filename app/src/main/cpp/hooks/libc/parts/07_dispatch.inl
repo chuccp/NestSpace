@@ -144,9 +144,6 @@
     if (strcmp(name, "__system_property_serial") == 0) {
         return reinterpret_cast<void*>(hook_property_serial);
     }
-    if (strcmp(name, "dlopen") == 0 || strcmp(name, "__loader_dlopen") == 0) {
-        return reinterpret_cast<void*>(hook_dlopen);
-    }
     if (strcmp(name, "dlsym") == 0) {
         return reinterpret_cast<void*>(hook_dlsym);
     }
@@ -205,8 +202,11 @@
 
 void* loader_replacement_for(const char* name) {
     if (name == nullptr) return nullptr;
-    if (strcmp(name, "dlopen") == 0 || strcmp(name, "__loader_dlopen") == 0) {
+    if (strcmp(name, "dlopen") == 0) {
         return reinterpret_cast<void*>(hook_dlopen);
+    }
+    if (strcmp(name, "__loader_dlopen") == 0) {
+        return reinterpret_cast<void*>(hook_loader_dlopen);
     }
     if (strcmp(name, "dlsym") == 0) {
         return reinterpret_cast<void*>(hook_dlsym);

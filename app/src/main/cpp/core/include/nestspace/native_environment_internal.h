@@ -223,6 +223,7 @@ using SigactionFunction = int (*)(
 using SignalFunction = sighandler_t (*)(int, sighandler_t);
 using MemsetFunction = void* (*)(void*, int, size_t);
 using DlopenFunction = void* (*)(const char*, int);
+using LoaderDlopenFunction = void* (*)(const char*, int, const void*);
 using TgkillFunction = int (*)(pid_t, pid_t, int);
 using KillFunction = int (*)(pid_t, int);
 using RaiseFunction = int (*)(int);
@@ -330,6 +331,7 @@ struct RealFunctions {
     SignalFunction signalCall = nullptr;
     MemsetFunction memsetCall = nullptr;
     DlopenFunction dlopen = nullptr;
+    LoaderDlopenFunction loaderDlopen = nullptr;
     TgkillFunction tgkill = nullptr;
     KillFunction killProcess = nullptr;
     RaiseFunction raiseSignal = nullptr;
