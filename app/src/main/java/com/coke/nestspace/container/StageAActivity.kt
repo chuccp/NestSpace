@@ -2438,11 +2438,7 @@ open class StageAActivity : Activity() {
         val loader = currentSession?.loader
         if (loader != null) {
             ProcessNameCompat.withProcessName(currentSession.spec.targetProcessName) {
-                try {
-                    withContainerClassLoader(loader, block)
-                } finally {
-                    currentSession.scheduleNativeHookRefresh()
-                }
+                withContainerClassLoader(loader, block)
             }
         } else {
             block()

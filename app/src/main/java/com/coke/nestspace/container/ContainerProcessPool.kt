@@ -766,6 +766,49 @@ object ContainerProcessPool {
         editor.apply()
     }
 
+    /**
+     * A slot process can outlive the main process after argv[0] is changed to
+     * the target package. Before a new host accepts any launch, stop every
+     * live slot marker from a previous main-process instance. The marker is
+     * written from inside the slot, so this does not depend on ActivityManager
+     * still associating the renamed process with NestSpace.
+     */
+    fun retireStaleSlots(context: Context): Int {
+        if (currentSlot() >= 0) return 0
+        var retired = 0
+        for (slot in 0 until SLOT_COUNT) {
+            val markerFile = slotMarkerFile(context, slot)
+            val pid = readSlotMarker(markerFile) ?: continue
+            if (!sameUidPidExists(pid)) {
+                markerFile.delete()
+                continue
+            }
+            Log.w(
+                TAG,
+                "retire stale slot $slot pid=$pid"
+            )
+            runCatching {
+                com.coke.nestspace.control.ContainerUiKeepAlive
+                    .unbind(context, slot)
+            }
+            Process.killProcess(pid)
+            waitForProcessExit(pid)
+            if (sameUidPidExists(pid)) {
+                runCatching {
+                    Os.kill(pid, OsConstants.SIGKILL)
+                }.onFailure {
+                    Log.w(TAG, "retire stale slot $slot failed", it)
+                }
+                waitForProcessExit(pid)
+            }
+            if (!sameUidPidExists(pid)) {
+                markerFile.delete()
+            }
+            retired += 1
+        }
+        return retired
+    }
+
     fun activityClass(slot: Int): Class<out StageAActivity> = slotActivities[slot]
 
     fun isolatedActivityClass(slot: Int): Class<out StageAActivity> =
@@ -856,11 +899,18 @@ object ContainerProcessPool {
     private fun slotMarkerFile(context: Context, slot: Int): File =
         File(context.applicationContext.filesDir, "slot_owner_$slot.pid")
 
+    private fun readSlotMarker(file: File): Int? {
+        val lines = runCatching { file.readLines() }.getOrNull().orEmpty()
+        val pid = lines.asReversed()
+            .firstNotNullOfOrNull { it.trim().toIntOrNull() }
+            ?.takeIf { it > 0 && it != Process.myPid() }
+            ?: return null
+        return pid
+    }
+
     private fun markerPid(context: Context, slot: Int): Int? {
-        val pid = runCatching {
-            slotMarkerFile(context, slot).readText().trim().toIntOrNull()
-        }.getOrNull() ?: return null
-        if (pid <= 0 || pid == Process.myPid()) return null
+        val pid = readSlotMarker(slotMarkerFile(context, slot))
+            ?: return null
         // Guard against pid reuse after the slot died.
         val status = runCatching { File("/proc/$pid/status").readText() }.getOrNull()
             ?: return null
@@ -870,6 +920,18 @@ object ContainerProcessPool {
             ?.getOrNull(1)
             ?.toIntOrNull()
         return pid.takeIf { uid == Process.myUid() }
+    }
+
+    private fun waitForProcessExit(pid: Int) {
+        val deadline = SystemClock.uptimeMillis() + KILL_TIMEOUT_MS
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (!sameUidPidExists(pid)) return
+            runCatching { Thread.sleep(50L) }
+                .onFailure {
+                    Thread.currentThread().interrupt()
+                    return
+                }
+        }
     }
 
     private fun pidOfProcess(processName: String): Int? {

@@ -4,9 +4,6 @@ import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import java.io.File
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 
 /**
@@ -27,13 +24,6 @@ object RuntimeProcessSentinel {
         private val pid = Process.myPid()
         private val startedAt = System.currentTimeMillis()
         private val startedElapsed = SystemClock.elapsedRealtime()
-        private val executor: ScheduledExecutorService =
-            Executors.newSingleThreadScheduledExecutor { runnable ->
-                Thread(runnable, "nestspace-runtime-sentinel").apply {
-                    isDaemon = true
-                    priority = Thread.MIN_PRIORITY
-                }
-            }
         private val lock = Any()
 
         @Volatile
@@ -47,14 +37,6 @@ object RuntimeProcessSentinel {
 
         init {
             synchronized(lock) { writeLocked() }
-            executor.scheduleAtFixedRate(
-                { runCatching { write() }.onFailure {
-                    Log.w(TAG, "heartbeat write failed", it)
-                } },
-                1L,
-                1L,
-                TimeUnit.SECONDS
-            )
         }
 
         fun markPhase(value: String) {
@@ -73,7 +55,6 @@ object RuntimeProcessSentinel {
             status = "clean"
             phase = reason
             synchronized(lock) { writeLocked() }
-            executor.shutdownNow()
         }
 
         private fun write() {

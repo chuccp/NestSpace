@@ -76,9 +76,6 @@ import java.lang.reflect.Field
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * ActivityThread is process-global, but a slot process alternates between
@@ -340,6 +337,16 @@ private class HostProcessState(
     }
 }
 
+private fun installOptionalCoreFileBridge() {
+    if (NativeEnvironmentBridge.readPropertyForDiagnostics(
+            "debug.nestspace.core_file_bridge"
+        ) != "1"
+    ) {
+        return
+    }
+    NativeEnvironmentBridge.installCoreFileBridge()
+}
+
 /**
  * One live virtual-app session: target Application + ClassLoader + Resources.
  *
@@ -491,14 +498,11 @@ class ContainerSession private constructor(
     private var lastNativeHookCount = -1
     private var lastNativeScannedCount = -1
     private var lastNativeTargetModuleCount = -1
-    private val nativeRefreshPending = AtomicBoolean(false)
     private val nativeHookExecutor: ScheduledExecutorService by lazy {
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "nestspace-native-hook-pump").apply { isDaemon = true }
         }
     }
-    private var fastNativeHookPump: ScheduledFuture<*>? = null
-    private var slowNativeHookPump: ScheduledFuture<*>? = null
     private var publishedLoadedApk: Any? = null
 
     @Volatile
@@ -637,7 +641,6 @@ class ContainerSession private constructor(
             Log.w(TAG, "cleared native environment before first activity")
         }
         startupCoordinator.mark(AndroidStartupPhase.READY, 0L)
-        startNativeHookPump()
         Log.d(TAG, "session initialized ${spec.packageName}")
     }
 
@@ -687,60 +690,6 @@ class ContainerSession private constructor(
 
     private object NativeHookTrial {
         const val enabled = true
-    }
-
-    /** Coalesces lifecycle-triggered refreshes onto the native worker. */
-    internal fun scheduleNativeHookRefresh() {
-        if (ExternalApplicationBootstrap.lastRealApplication != null) return
-        if (!nativeRefreshPending.compareAndSet(false, true)) return
-        runCatching {
-            nativeHookExecutor.execute {
-                try {
-                    refreshNativeHooksSafely(scanElfFallback = false)
-                } finally {
-                    nativeRefreshPending.set(false)
-                }
-            }
-        }.onFailure {
-            nativeRefreshPending.set(false)
-            Log.w(TAG, "native hook refresh scheduling failed", it)
-        }
-    }
-
-    private fun startNativeHookPump() {
-        if (ExternalApplicationBootstrap.lastRealApplication != null) return
-        synchronized(nativeHookExecutor) {
-            if (fastNativeHookPump != null || slowNativeHookPump != null) return
-            fastNativeHookPump = nativeHookExecutor.scheduleAtFixedRate(
-                { refreshNativeHooksSafely(scanElfFallback = false) },
-                0L,
-                250L,
-                TimeUnit.MILLISECONDS
-            )
-            nativeHookExecutor.schedule(
-                {
-                    fastNativeHookPump?.cancel(false)
-                    fastNativeHookPump = null
-                    // The maps/ELF file fallback is intentionally one-shot
-                    // after target startup. Running it on every 250 ms hook
-                    // refresh reads large native libraries while they are
-                    // still being loaded and can stall the whole target.
-                    refreshNativeHooksSafely(scanElfFallback = true)
-                    synchronized(nativeHookExecutor) {
-                        if (slowNativeHookPump == null) {
-                            slowNativeHookPump = nativeHookExecutor.scheduleAtFixedRate(
-                                { refreshNativeHooksSafely(scanElfFallback = false) },
-                                0L,
-                                2L,
-                                TimeUnit.SECONDS
-                            )
-                        }
-                    }
-                },
-                NATIVE_ELF_FALLBACK_DELAY_SECONDS,
-                TimeUnit.SECONDS
-            )
-        }
     }
 
     private fun refreshNativeHooksSafely(scanElfFallback: Boolean) {
@@ -994,10 +943,7 @@ class ContainerSession private constructor(
     }
 
     fun destroy() {
-        nativeRefreshPending.set(false)
         nativeHookExecutor.shutdownNow()
-        fastNativeHookPump = null
-        slowNativeHookPump = null
         runCatching { runtimeProfile?.close() }
             .onFailure { Log.w(TAG, "runtime profile cleanup failed", it) }
         NativeEnvironmentBridge.clear()
@@ -1186,6 +1132,11 @@ class ContainerSession private constructor(
         )
         Log.d(TAG, "activity class=${targetClass.name}")
 
+        Log.d(
+            TAG,
+            "target activity phase=theme class=${targetClass.name} " +
+                "loader=${targetClass.classLoader?.javaClass?.name}"
+        )
         val theme = resources.newTheme().apply {
             applyStyle(resolveTheme(info), true)
         }
@@ -1205,7 +1156,15 @@ class ContainerSession private constructor(
             )
             return target
         }
+        Log.d(
+            TAG,
+            "target activity phase=construct-start class=${targetClass.name}"
+        )
         val target = targetClass.getDeclaredConstructor().newInstance()
+        Log.d(
+            TAG,
+            "target activity phase=construct-ready class=${targetClass.name}"
+        )
 
         val attach = Activity::class.java.declaredMethods
             .firstOrNull { it.name == "attach" }
@@ -1246,6 +1205,10 @@ class ContainerSession private constructor(
         }
 
         attach.isAccessible = true
+        Log.d(
+            TAG,
+            "target activity phase=attach-start class=${targetClass.name}"
+        )
         try {
             attach.invoke(target, *args.toTypedArray())
         } catch (t: Throwable) {
@@ -1259,10 +1222,18 @@ class ContainerSession private constructor(
             )
             throw t
         }
+        Log.d(
+            TAG,
+            "target activity phase=attach-ready class=${targetClass.name}"
+        )
         applyTargetResources(target, resources, theme)
         installVirtualTaskRoot(target)
         targetHosts[target] = host
         logJniSurface(target)
+        Log.d(
+            TAG,
+            "target activity phase=oncreate-start class=${targetClass.name}"
+        )
         try {
             instrumentation.callActivityOnCreate(target, savedState)
         } catch (t: Throwable) {
@@ -1351,6 +1322,10 @@ class ContainerSession private constructor(
             }
             throw t
         }
+        Log.d(
+            TAG,
+            "target activity phase=oncreate-ready class=${targetClass.name}"
+        )
         val activityCalledField = runCatching {
             Activity::class.java
                 .getDeclaredField("mCalled")
@@ -2163,7 +2138,6 @@ class ContainerSession private constructor(
         args?.firstOrNull() === original
 
     companion object {
-        private const val NATIVE_ELF_FALLBACK_DELAY_SECONDS = 20L
         private const val TAG = "ContainerSession"
 
 
@@ -2475,7 +2449,7 @@ class ContainerSession private constructor(
                 actualSplitApkPaths = spec.splitApkPaths,
                 virtualSplitApkPaths = installLayout.virtualSplitApkPaths
             )
-            NativeEnvironmentBridge.installCoreFileBridge()
+            installOptionalCoreFileBridge()
             loader = ContainerCompat.installRuntimeClassLoader(
                 spec,
                 loader,
@@ -2653,7 +2627,7 @@ class ContainerSession private constructor(
                     runtimeNativeLibraries.directories.map(File::getAbsolutePath),
                     runtimeNativeLibraries.files.map(File::getAbsolutePath)
                 )
-                NativeEnvironmentBridge.installCoreFileBridge()
+                installOptionalCoreFileBridge()
             }
             // Install the synchronized identity notification filter before
             // the target Application creates its worker threads. Installing
@@ -2662,7 +2636,10 @@ class ContainerSession private constructor(
             if (!externalApplication &&
                 NativeEnvironmentBridge.readPropertyForDiagnostics(
                     "debug.nestspace.disable_native_environment"
-                ) != "1"
+                ) != "1" &&
+                NativeEnvironmentBridge.readPropertyForDiagnostics(
+                    "debug.nestspace.syscall_gateway"
+                ) == "1"
             ) {
                 NativeEnvironmentBridge.installSyscallGateway()
             }

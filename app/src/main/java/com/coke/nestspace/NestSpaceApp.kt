@@ -71,6 +71,13 @@ class NestSpaceApp : Application() {
             )
         }
         if (!isMainProcess()) return
+        val retiredSlots = ContainerProcessPool.retireStaleSlots(this)
+        if (retiredSlots > 0) {
+            android.util.Log.w(
+                "NestSpaceApp",
+                "retired $retiredSlots stale container slot(s)"
+            )
+        }
         runCatching {
             com.coke.nestspace.plugin.PluginPackageInstaller
                 .get(this)
